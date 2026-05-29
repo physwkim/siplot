@@ -8,7 +8,7 @@
 use egui::{Color32, Rect};
 
 use crate::core::colormap::Colormap;
-use crate::core::transform::{Margins, Transform};
+use crate::core::transform::{Axis, Margins, Scale, Transform};
 
 /// Identifier for a single `Plot` instance.
 ///
@@ -34,6 +34,14 @@ pub struct Plot {
     /// first observed `limits` here so the home view survives pan/zoom
     /// (`doc/design.md` §8·§11.6). `None` until the first frame.
     pub home_limits: Option<(f64, f64, f64, f64)>,
+    /// X-axis scale (linear or log10) (`doc/design.md` §13 A3).
+    pub x_scale: Scale,
+    /// Y-axis scale (linear or log10).
+    pub y_scale: Scale,
+    /// Reverse the X-axis on-screen direction (`doc/design.md` §13 A2).
+    pub x_inverted: bool,
+    /// Reverse the Y-axis on-screen direction.
+    pub y_inverted: bool,
 }
 
 impl Plot {
@@ -47,12 +55,29 @@ impl Plot {
             margins: Margins::ZERO,
             colormap: None,
             home_limits: None,
+            x_scale: Scale::Linear,
+            y_scale: Scale::Linear,
+            x_inverted: false,
+            y_inverted: false,
         }
     }
 
-    /// Build the data↔screen transform for the given data-area rect.
+    /// Build the data↔screen transform for the given data-area rect, honoring
+    /// the per-axis scale and inversion.
     pub fn transform(&self, area: Rect) -> Transform {
         let (x_min, x_max, y_min, y_max) = self.limits;
-        Transform::new(x_min, x_max, y_min, y_max, area)
+        let x = Axis {
+            min: x_min,
+            max: x_max,
+            scale: self.x_scale,
+            inverted: self.x_inverted,
+        };
+        let y = Axis {
+            min: y_min,
+            max: y_max,
+            scale: self.y_scale,
+            inverted: self.y_inverted,
+        };
+        Transform::with_axes(x, y, area)
     }
 }

@@ -144,16 +144,16 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
     let font = FontId::proportional(11.0);
     let tick_len = 4.0;
 
-    let (xticks, xstep) = nice_ticks(t.x_min, t.x_max, 8);
-    let (yticks, ystep) = nice_ticks(t.y_min, t.y_max, 6);
+    let (xticks, xstep) = nice_ticks(t.x.min, t.x.max, 8);
+    let (yticks, ystep) = nice_ticks(t.y.min, t.y.max, 6);
 
     // Grid lines first, so the frame and ticks sit on top of them.
     for &xv in &xticks {
-        let px = t.data_to_pixel(xv, t.y_min).x;
+        let px = t.data_to_pixel(xv, t.y.min).x;
         painter.vline(px, area.y_range(), grid);
     }
     for &yv in &yticks {
-        let py = t.data_to_pixel(t.x_min, yv).y;
+        let py = t.data_to_pixel(t.x.min, yv).y;
         painter.hline(area.x_range(), py, grid);
     }
 
@@ -166,7 +166,7 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
 
     // X ticks + labels below the bottom edge.
     for &xv in &xticks {
-        let px = t.data_to_pixel(xv, t.y_min).x;
+        let px = t.data_to_pixel(xv, t.y.min).x;
         painter.line_segment(
             [pos2(px, area.bottom()), pos2(px, area.bottom() + tick_len)],
             axis,
@@ -181,7 +181,7 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
     }
     // Y ticks + labels left of the left edge.
     for &yv in &yticks {
-        let py = t.data_to_pixel(t.x_min, yv).y;
+        let py = t.data_to_pixel(t.x.min, yv).y;
         painter.line_segment(
             [pos2(area.left() - tick_len, py), pos2(area.left(), py)],
             axis,

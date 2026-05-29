@@ -1,16 +1,91 @@
 //! The data↔screen coordinate transform — the single source of truth.
 //!
 //! Both consumers derive their mapping from one [`Transform`] built from the
-//! same (limits, area): the wgpu shader gets an orthographic data→NDC matrix
-//! ([`Transform::ortho_matrix`]), and the egui chrome gets a data→pixel
-//! [`RectTransform`] plus [`Transform::data_to_pixel`] / [`Transform::pixel_to_data`]
-//! (`doc/design.md` §4). Computing the mapping in two places is what makes the
-//! image and the axes drift apart by a pixel, so it lives here once.
+//! same (limits, area): the wgpu shader gets an orthographic transformed→NDC
+//! matrix ([`Transform::ortho_matrix`]), and the egui chrome gets
+//! [`Transform::data_to_pixel`] / [`Transform::pixel_to_data`] (`doc/design.md`
+//! §4). Computing the mapping in two places is what makes the image and the
+//! axes drift apart by a pixel, so it lives here once.
 //!
-//! Scope: linear, single Y axis, non-inverted. Log/inverted/skew axes arrive in
-//! later steps (`doc/design.md` §11) as flags on this type.
+//! Each axis is an [`Axis`] with a [`Scale`] (linear or log10) and an
+//! `inverted` flag. Everything funnels through one normalized coordinate
+//! `t ∈ [0, 1]` ([`Axis::norm`] / [`Axis::denorm`]), so linear, inverted, and
+//! log axes share a single code path (`doc/design.md` §13 Wave A).
+//!
+//! Scope note: [`Transform::ortho_matrix`] is affine, so it expresses linear and
+//! inverted axes exactly. For a log axis the GPU producers upload `log10`-mapped
+//! coordinates and the matrix maps the log-space limits linearly; the pixel
+//! mapping ([`Axis::norm`]) is exact for all scales (`doc/design.md` §12·§13 A3).
 
 use egui::{Pos2, Rect, emath::RectTransform, pos2};
+
+/// Per-axis scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scale {
+    /// `t = (v - min) / (max - min)`.
+    Linear,
+    /// `t = (log10 v - log10 min) / (log10 max - log10 min)`; requires `min > 0`.
+    Log10,
+}
+
+/// One axis: a data range, a scale, and a direction flag.
+///
+/// Preconditions: `max > min`; for [`Scale::Log10`], also `min > 0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Axis {
+    pub min: f64,
+    pub max: f64,
+    pub scale: Scale,
+    /// When true, the normalized coordinate is flipped (`t → 1 - t`), reversing
+    /// the on-screen direction of the axis.
+    pub inverted: bool,
+}
+
+impl Axis {
+    /// A linear, non-inverted axis over `[min, max]`.
+    pub fn linear(min: f64, max: f64) -> Self {
+        Self {
+            min,
+            max,
+            scale: Scale::Linear,
+            inverted: false,
+        }
+    }
+
+    /// Map a data value to its normalized coordinate `t ∈ [0, 1]` (0 at the low
+    /// screen edge, 1 at the high edge), applying scale and inversion.
+    pub fn norm(&self, v: f64) -> f64 {
+        let t = match self.scale {
+            Scale::Linear => (v - self.min) / (self.max - self.min),
+            Scale::Log10 => (v.log10() - self.min.log10()) / (self.max.log10() - self.min.log10()),
+        };
+        if self.inverted { 1.0 - t } else { t }
+    }
+
+    /// Inverse of [`Axis::norm`]: map a normalized coordinate back to data.
+    pub fn denorm(&self, t: f64) -> f64 {
+        let t = if self.inverted { 1.0 - t } else { t };
+        match self.scale {
+            Scale::Linear => self.min + t * (self.max - self.min),
+            Scale::Log10 => {
+                let lmin = self.min.log10();
+                let lmax = self.max.log10();
+                10f64.powf(lmin + t * (lmax - lmin))
+            }
+        }
+    }
+
+    /// The axis range in transformed (post-scale) space, as `(value at t = 0,
+    /// value at t = 1)`. Inversion swaps the endpoints. This is the affine
+    /// coordinate the orthographic matrix maps to NDC.
+    fn effective_range(&self) -> (f64, f64) {
+        let (lo, hi) = match self.scale {
+            Scale::Linear => (self.min, self.max),
+            Scale::Log10 => (self.min.log10(), self.max.log10()),
+        };
+        if self.inverted { (hi, lo) } else { (lo, hi) }
+    }
+}
 
 /// Plot margins as fractions of the full widget rect, matching silx
 /// `setAxesMargins`. Insetting the full widget rect by these yields the data
@@ -48,32 +123,33 @@ impl Margins {
 
 /// Linear mapping between data space and the data area's screen pixels.
 ///
-/// Preconditions: `x_max > x_min` and `y_max > y_min` (non-degenerate limits;
-/// the widget is responsible for enforcing a minimum span).
+/// Preconditions: each axis is non-degenerate (`max > min`; `min > 0` for log).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform {
-    pub x_min: f64,
-    pub x_max: f64,
-    pub y_min: f64,
-    pub y_max: f64,
+    pub x: Axis,
+    pub y: Axis,
     /// Data-area rectangle in egui points (screen space).
     pub area: Rect,
 }
 
 impl Transform {
-    /// Build a transform mapping the given data limits into `area`.
+    /// Build a linear, non-inverted transform mapping the given limits into
+    /// `area` (back-compatible constructor).
     pub fn new(x_min: f64, x_max: f64, y_min: f64, y_max: f64, area: Rect) -> Self {
         Self {
-            x_min,
-            x_max,
-            y_min,
-            y_max,
+            x: Axis::linear(x_min, x_max),
+            y: Axis::linear(y_min, y_max),
             area,
         }
     }
 
-    /// Map data coordinates to screen pixels (egui points). Y is flipped:
-    /// data `y_max` is at the top of the area, `y_min` at the bottom.
+    /// Build a transform from explicit axes.
+    pub fn with_axes(x: Axis, y: Axis, area: Rect) -> Self {
+        Self { x, y, area }
+    }
+
+    /// Map data coordinates to screen pixels (egui points). The Y axis points up
+    /// in data space, so its low value sits at the bottom of the area.
     pub fn data_to_pixel(&self, x: f64, y: f64) -> Pos2 {
         let (px, py) = self.data_to_pixel_f64(x, y);
         pos2(px as f32, py as f32)
@@ -87,39 +163,46 @@ impl Transform {
     fn data_to_pixel_f64(&self, x: f64, y: f64) -> (f64, f64) {
         let (left, right) = (self.area.left() as f64, self.area.right() as f64);
         let (top, bottom) = (self.area.top() as f64, self.area.bottom() as f64);
-        let px = left + (x - self.x_min) / (self.x_max - self.x_min) * (right - left);
-        // y flip: y_max -> top, y_min -> bottom
-        let py = top + (self.y_max - y) / (self.y_max - self.y_min) * (bottom - top);
+        let tx = self.x.norm(x);
+        let ty = self.y.norm(y);
+        let px = left + tx * (right - left);
+        // ty = 0 (low) -> bottom, ty = 1 (high) -> top.
+        let py = bottom + ty * (top - bottom);
         (px, py)
     }
 
     fn pixel_to_data_f64(&self, px: f64, py: f64) -> (f64, f64) {
         let (left, right) = (self.area.left() as f64, self.area.right() as f64);
         let (top, bottom) = (self.area.top() as f64, self.area.bottom() as f64);
-        let x = self.x_min + (px - left) / (right - left) * (self.x_max - self.x_min);
-        let y = self.y_max - (py - top) / (bottom - top) * (self.y_max - self.y_min);
-        (x, y)
+        let tx = (px - left) / (right - left);
+        let ty = (py - bottom) / (top - bottom);
+        (self.x.denorm(tx), self.y.denorm(ty))
     }
 
-    /// data→pixel [`RectTransform`] for drawing chrome with egui's painter. The
-    /// `from` rect carries the Y flip (its `min.y` is `y_max`).
+    /// data→pixel [`RectTransform`] for the linear, non-inverted case (a
+    /// convenience for affine chrome work). Not meaningful for log/inverted
+    /// axes; use [`Transform::data_to_pixel`] there.
     pub fn rect_transform(&self) -> RectTransform {
         let from = Rect::from_min_max(
-            pos2(self.x_min as f32, self.y_max as f32),
-            pos2(self.x_max as f32, self.y_min as f32),
+            pos2(self.x.min as f32, self.y.max as f32),
+            pos2(self.x.max as f32, self.y.min as f32),
         );
         RectTransform::from_to(from, self.area)
     }
 
-    /// Column-major data→NDC orthographic matrix for the wgpu shader. Maps
-    /// `[x_min, x_max] × [y_min, y_max]` to NDC `[-1, 1]²` at `z = 0`, with
-    /// `y_max → +1` (top) to match egui-wgpu's viewport. Equivalent to pygfx's
-    /// `OrthographicCamera::show_rect` (`doc/design.md` §4).
+    /// Column-major transformed→NDC orthographic matrix for the wgpu shader.
+    /// Maps each axis's [`Axis::effective_range`] to NDC `[-1, 1]` at `z = 0`,
+    /// with the high edge of Y at `+1` (top) to match egui-wgpu's viewport.
+    /// Affine, so it expresses linear and inverted axes exactly; for a log axis
+    /// the producers must upload `log10`-mapped coordinates (`doc/design.md`
+    /// §4·§13 A3). Equivalent to pygfx's `OrthographicCamera::show_rect`.
     pub fn ortho_matrix(&self) -> [[f32; 4]; 4] {
-        let sx = (2.0 / (self.x_max - self.x_min)) as f32;
-        let sy = (2.0 / (self.y_max - self.y_min)) as f32;
-        let tx = (-(self.x_max + self.x_min) / (self.x_max - self.x_min)) as f32;
-        let ty = (-(self.y_max + self.y_min) / (self.y_max - self.y_min)) as f32;
+        let (ex0, ex1) = self.x.effective_range();
+        let (ey0, ey1) = self.y.effective_range();
+        let sx = (2.0 / (ex1 - ex0)) as f32;
+        let sy = (2.0 / (ey1 - ey0)) as f32;
+        let tx = (-(ex1 + ex0) / (ex1 - ex0)) as f32;
+        let ty = (-(ey1 + ey0) / (ey1 - ey0)) as f32;
         [
             [sx, 0.0, 0.0, 0.0],
             [0.0, sy, 0.0, 0.0],
@@ -242,5 +325,81 @@ mod tests {
         assert_eq!(area.top(), 20.0);
         assert_eq!(area.right(), 190.0);
         assert_eq!(area.bottom(), 100.0);
+    }
+
+    #[test]
+    fn axis_norm_denorm_round_trip_all_scales() {
+        let axes = [
+            Axis::linear(-3.0, 5.0),
+            Axis {
+                min: -3.0,
+                max: 5.0,
+                scale: Scale::Linear,
+                inverted: true,
+            },
+            Axis {
+                min: 1.0,
+                max: 1000.0,
+                scale: Scale::Log10,
+                inverted: false,
+            },
+            Axis {
+                min: 1.0,
+                max: 1000.0,
+                scale: Scale::Log10,
+                inverted: true,
+            },
+        ];
+        for axis in axes {
+            for &v in &[axis.min, axis.max, axis.denorm(0.5), axis.denorm(0.27)] {
+                let t = axis.norm(v);
+                let back = axis.denorm(t);
+                assert!((back - v).abs() <= 1e-9 * v.abs().max(1.0), "{axis:?}: {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn inverted_axis_flips_endpoints() {
+        let a = Axis::linear(0.0, 10.0);
+        let b = Axis {
+            inverted: true,
+            ..a
+        };
+        assert!(close(a.norm(0.0), 0.0, 1e-12) && close(a.norm(10.0), 1.0, 1e-12));
+        assert!(close(b.norm(0.0), 1.0, 1e-12) && close(b.norm(10.0), 0.0, 1e-12));
+    }
+
+    #[test]
+    fn log_axis_maps_decades_evenly() {
+        let a = Axis {
+            min: 1.0,
+            max: 1000.0,
+            scale: Scale::Log10,
+            inverted: false,
+        };
+        // Three decades -> 10 at 1/3, 100 at 2/3.
+        assert!(close(a.norm(1.0), 0.0, 1e-12));
+        assert!(close(a.norm(10.0), 1.0 / 3.0, 1e-12));
+        assert!(close(a.norm(100.0), 2.0 / 3.0, 1e-12));
+        assert!(close(a.norm(1000.0), 1.0, 1e-12));
+    }
+
+    #[test]
+    fn inverted_ortho_flips_ndc() {
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0));
+        let t = Transform::with_axes(
+            Axis {
+                inverted: true,
+                ..Axis::linear(0.0, 10.0)
+            },
+            Axis::linear(0.0, 10.0),
+            area,
+        );
+        let m = t.ortho_matrix();
+        let ndc_x = |x: f32| m[0][0] * x + m[3][0];
+        // x_min now maps to +1 and x_max to -1 (flipped).
+        assert!((ndc_x(0.0) - 1.0).abs() <= 1e-5);
+        assert!((ndc_x(10.0) + 1.0).abs() <= 1e-5);
     }
 }
