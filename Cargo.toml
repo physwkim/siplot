@@ -114,3 +114,7 @@ path = "examples/plot_markers.rs"
 [[example]]
 name = "shapes"
 path = "examples/shapes.rs"
+
+[[example]]
+name = "triangles"
+path = "examples/triangles.rs"

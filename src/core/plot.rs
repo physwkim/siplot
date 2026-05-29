@@ -12,6 +12,7 @@ use crate::core::marker::Marker;
 use crate::core::roi::Roi;
 use crate::core::shape::Shape;
 use crate::core::transform::{Axis, Margins, Scale, Transform, keep_aspect_limits};
+use crate::core::triangles::Triangles;
 
 /// Identifier for a single `Plot` instance.
 ///
@@ -66,6 +67,9 @@ pub struct Plot {
     /// Polygon / rectangle / polyline / line shapes drawn over the data area
     /// (silx `addShape`). Static overlays drawn every frame.
     pub shapes: Vec<Shape>,
+    /// Per-vertex-colored filled triangle meshes drawn in the data layer (silx
+    /// `addTriangles`). Drawn every frame under the chrome.
+    pub triangles: Vec<Triangles>,
     /// Graph title, drawn centered above the data area (silx `setGraphTitle`,
     /// `BackendBase.setGraphTitle`). `None` reserves no top space for it.
     pub title: Option<String>,
@@ -107,6 +111,7 @@ impl Plot {
             rois: Vec::new(),
             markers: Vec::new(),
             shapes: Vec::new(),
+            triangles: Vec::new(),
             title: None,
             x_label: None,
             y_label: None,

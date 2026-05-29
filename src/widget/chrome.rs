@@ -15,6 +15,7 @@ use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::roi::Roi;
 use crate::core::shape::{Shape, ShapeKind};
 use crate::core::transform::{Axis, Scale, Transform, YAxis};
+use crate::core::triangles::Triangles;
 
 /// Colors used to draw the chrome, derived from the active egui visuals so the
 /// chrome follows light/dark theme.
@@ -602,6 +603,20 @@ pub fn draw_markers(
                 }
             }
         }
+    }
+}
+
+/// Draw each per-vertex-colored triangle mesh in the data layer (silx
+/// `addTriangles`), clipped to the data area. Each vertex is transformed
+/// data→pixel via the shared transform, so the mesh follows pan/zoom and any
+/// log / inverted / aspect axes (`doc/design.md` §8).
+pub fn draw_triangles(painter: &Painter, t: &Transform, triangles: &[Triangles]) {
+    let painter = painter.with_clip_rect(t.area);
+    for tris in triangles {
+        if tris.indices.is_empty() {
+            continue;
+        }
+        painter.add(egui::Shape::mesh(tris.mesh(t)));
     }
 }
 

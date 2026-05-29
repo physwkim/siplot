@@ -151,6 +151,12 @@ impl PlotWidget {
             },
         ));
 
+        // Per-vertex-colored triangle meshes (silx addTriangles) sit in the data
+        // layer: over the wgpu image/curve, under the chrome grid and frame.
+        if !plot.triangles.is_empty() {
+            chrome::draw_triangles(painter, &transform, &plot.triangles);
+        }
+
         // Chrome (egui), drawn on top of / in the gutters around the data layer.
         chrome::draw_axes(painter, &transform, &style);
         if let Some(t_right) = &transform_right {
