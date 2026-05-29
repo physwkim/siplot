@@ -8,10 +8,24 @@
 
 struct Params {
     ortho: mat4x4<f32>,
-    rect: vec4<f32>,   // data-space extent: (x0, y0, x1, y1)
-    clim: vec2<f32>,   // (vmin, vmax)
+    rect: vec4<f32>,    // data-space extent: (x0, y0, x1, y1)
+    clim: vec2<f32>,    // (vmin, vmax)
     alpha: f32,
+    axis_log: vec2<f32>, // 1.0 if that axis is log10, else 0.0
 };
+
+// 1 / ln(10), to turn the natural log into log10.
+const INV_LN10: f32 = 0.4342944819032518;
+
+// Map a data coordinate to the affine (transformed) space the ortho matrix
+// expects: identity for a linear axis, log10 for a log axis. Must match
+// core::transform::Axis::norm so chrome and shader agree (doc/design.md §4).
+fn apply_scale(p: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        select(p.x, log(p.x) * INV_LN10, params.axis_log.x > 0.5),
+        select(p.y, log(p.y) * INV_LN10, params.axis_log.y > 0.5),
+    );
+}
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var data_tex: texture_2d<f32>;   // R32Float, unfilterable
@@ -41,8 +55,13 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     let dx = mix(params.rect.x, params.rect.z, t.x);
     let dy = mix(params.rect.y, params.rect.w, t.y);
 
+    // Note: log axes warp only the quad corners here; texels interpolate
+    // linearly across the quad, so an image under a log axis is corner-correct
+    // but interior-distorted (doc/design.md §12·§13 A3 limitation).
+    let eff = apply_scale(vec2<f32>(dx, dy));
+
     var out: VsOut;
-    out.pos = params.ortho * vec4<f32>(dx, dy, 0.0, 1.0);
+    out.pos = params.ortho * vec4<f32>(eff, 0.0, 1.0);
     // uv.y = 0 at the bottom vertex, so texture row 0 (data[0]) is at the
     // bottom: y increases upward (matplotlib origin='lower' / silx convention).
     out.uv = t;

@@ -31,12 +31,15 @@ const VERTEX_ATTRS: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
 }];
 
 /// Uniform block for the curve shader. Layout matches `Params` in `curve.wgsl`
-/// (std140-compatible: mat4 at 0, vec4 at 64, total 80).
+/// (std140: mat4 @0, vec4 @64, vec2 @80, total 96).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CurveParams {
     ortho: [[f32; 4]; 4],
     color: [f32; 4],
+    /// 1.0 if that axis is log10, else 0.0 (x, y).
+    axis_log: [f32; 2],
+    _pad: [f32; 2],
 }
 
 /// A polyline to draw, in data coordinates. `x[i], y[i]` is vertex `i`; the
@@ -197,7 +200,7 @@ impl GpuCurve {
             color,
         };
         // Seed the uniform; the per-frame transform overwrites `ortho`.
-        gpu.write_uniforms(queue, IDENTITY);
+        gpu.write_uniforms(queue, IDENTITY, [0.0, 0.0]);
         gpu
     }
 
@@ -228,11 +231,19 @@ impl GpuCurve {
         true
     }
 
-    /// Update the per-frame data->NDC transform (and re-stamp the color).
-    pub(crate) fn write_uniforms(&self, queue: &wgpu::Queue, ortho: [[f32; 4]; 4]) {
+    /// Update the per-frame data->NDC transform and axis-scale flags (and
+    /// re-stamp the color). `axis_log` is `[x, y]` with 1.0 for a log10 axis.
+    pub(crate) fn write_uniforms(
+        &self,
+        queue: &wgpu::Queue,
+        ortho: [[f32; 4]; 4],
+        axis_log: [f32; 2],
+    ) {
         let params = CurveParams {
             ortho,
             color: self.color,
+            axis_log,
+            _pad: [0.0, 0.0],
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
     }

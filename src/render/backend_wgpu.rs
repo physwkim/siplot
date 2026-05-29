@@ -249,6 +249,8 @@ impl egui_wgpu::CallbackTrait for ClearCallback {
 pub(crate) struct ImageCallback {
     /// data→NDC orthographic matrix from the plot's `Transform`.
     pub ortho: [[f32; 4]; 4],
+    /// Per-axis log flag `[x, y]` (1.0 = log10), matching the transform.
+    pub axis_log: [f32; 2],
 }
 
 impl egui_wgpu::CallbackTrait for ImageCallback {
@@ -264,7 +266,7 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
         if let Some(image) = &res.image {
-            image.write_uniforms(queue, self.ortho);
+            image.write_uniforms(queue, self.ortho, self.axis_log);
         }
         Vec::new()
     }
@@ -289,6 +291,8 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
 pub(crate) struct CurveCallback {
     /// data→NDC orthographic matrix from the plot's `Transform`.
     pub ortho: [[f32; 4]; 4],
+    /// Per-axis log flag `[x, y]` (1.0 = log10), matching the transform.
+    pub axis_log: [f32; 2],
 }
 
 impl egui_wgpu::CallbackTrait for CurveCallback {
@@ -304,7 +308,7 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
         if let Some(curve) = &res.curve {
-            curve.write_uniforms(queue, self.ortho);
+            curve.write_uniforms(queue, self.ortho, self.axis_log);
         }
         Vec::new()
     }

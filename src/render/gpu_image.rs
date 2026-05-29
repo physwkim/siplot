@@ -26,7 +26,7 @@ const IDENTITY: [[f32; 4]; 4] = [
 ];
 
 /// Uniform block for the image shader. Layout matches `Params` in `image.wgsl`
-/// (std140-compatible: mat4 at 0, vec4 at 64, vec2 at 80, f32 at 88, total 96).
+/// (std140: mat4 @0, vec4 @64, vec2 @80, f32 @88, vec2 @96, total 112).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ImageParams {
@@ -34,7 +34,10 @@ struct ImageParams {
     rect: [f32; 4],
     clim: [f32; 2],
     alpha: f32,
-    _pad: f32,
+    _pad0: f32,
+    /// 1.0 if that axis is log10, else 0.0 (x, y).
+    axis_log: [f32; 2],
+    _pad1: [f32; 2],
 }
 
 /// A 2D scalar (or single-channel) image to display, in data coordinates.
@@ -340,7 +343,7 @@ impl GpuImage {
             alpha: image.alpha,
         };
         // Seed the uniform; the per-frame transform overwrites `ortho`.
-        gpu.write_uniforms(queue, IDENTITY);
+        gpu.write_uniforms(queue, IDENTITY, [0.0, 0.0]);
         gpu
     }
 
@@ -388,14 +391,23 @@ impl GpuImage {
         );
     }
 
-    /// Update the per-frame data->NDC transform (and re-stamp the static fields).
-    pub(crate) fn write_uniforms(&self, queue: &wgpu::Queue, ortho: [[f32; 4]; 4]) {
+    /// Update the per-frame data->NDC transform and axis-scale flags (and
+    /// re-stamp the static fields). `axis_log` is `[x, y]` with 1.0 for a log10
+    /// axis, matching the plot's transform.
+    pub(crate) fn write_uniforms(
+        &self,
+        queue: &wgpu::Queue,
+        ortho: [[f32; 4]; 4],
+        axis_log: [f32; 2],
+    ) {
         let params = ImageParams {
             ortho,
             rect: self.rect,
             clim: self.clim,
             alpha: self.alpha,
-            _pad: 0.0,
+            _pad0: 0.0,
+            axis_log,
+            _pad1: [0.0, 0.0],
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
     }

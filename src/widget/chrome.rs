@@ -9,7 +9,7 @@
 use egui::{Align2, Color32, FontId, Painter, Rect, Stroke, Visuals, pos2};
 
 use crate::core::colormap::Colormap;
-use crate::core::transform::Transform;
+use crate::core::transform::{Axis, Scale, Transform};
 
 /// Colors used to draw the chrome, derived from the active egui visuals so the
 /// chrome follows light/dark theme.
@@ -136,6 +136,46 @@ fn format_tick(v: f64, step: f64) -> String {
     format!("{v:.decimals$}")
 }
 
+/// Decade tick values within `[min, max]` for a log10 axis: one tick per power
+/// of ten (…, 0.1, 1, 10, 100, …). Empty if the range is not strictly positive.
+fn log_decade_ticks(min: f64, max: f64) -> Vec<f64> {
+    let valid = min.is_finite() && max.is_finite() && min > 0.0 && max > min;
+    if !valid {
+        return Vec::new();
+    }
+    let k0 = min.log10().ceil() as i32;
+    let k1 = max.log10().floor() as i32;
+    (k0..=k1).map(|k| 10f64.powi(k)).collect()
+}
+
+/// Format a log-axis decade tick: plain decimal in the everyday range,
+/// scientific notation outside it (e.g. 1e-6, 1e9).
+fn format_log_tick(v: f64) -> String {
+    if (1e-4..1e6).contains(&v) {
+        format!("{v}")
+    } else {
+        format!("{v:e}")
+    }
+}
+
+/// Tick values plus their formatted labels for one axis: "nice" numbers on a
+/// linear axis, one-per-decade on a log axis.
+fn axis_ticks(axis: &Axis, max_ticks: usize) -> Vec<(f64, String)> {
+    match axis.scale {
+        Scale::Linear => {
+            let (ticks, step) = nice_ticks(axis.min, axis.max, max_ticks);
+            ticks
+                .into_iter()
+                .map(|v| (v, format_tick(v, step)))
+                .collect()
+        }
+        Scale::Log10 => log_decade_ticks(axis.min, axis.max)
+            .into_iter()
+            .map(|v| (v, format_log_tick(v)))
+            .collect(),
+    }
+}
+
 /// Draw the frame, grid, ticks, and tick labels around the data area.
 pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
     let area = t.area;
@@ -144,16 +184,16 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
     let font = FontId::proportional(11.0);
     let tick_len = 4.0;
 
-    let (xticks, xstep) = nice_ticks(t.x.min, t.x.max, 8);
-    let (yticks, ystep) = nice_ticks(t.y.min, t.y.max, 6);
+    let xticks = axis_ticks(&t.x, 8);
+    let yticks = axis_ticks(&t.y, 6);
 
     // Grid lines first, so the frame and ticks sit on top of them.
-    for &xv in &xticks {
-        let px = t.data_to_pixel(xv, t.y.min).x;
+    for (xv, _) in &xticks {
+        let px = t.data_to_pixel(*xv, t.y.min).x;
         painter.vline(px, area.y_range(), grid);
     }
-    for &yv in &yticks {
-        let py = t.data_to_pixel(t.x.min, yv).y;
+    for (yv, _) in &yticks {
+        let py = t.data_to_pixel(t.x.min, *yv).y;
         painter.hline(area.x_range(), py, grid);
     }
 
@@ -165,8 +205,8 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
     );
 
     // X ticks + labels below the bottom edge.
-    for &xv in &xticks {
-        let px = t.data_to_pixel(xv, t.y.min).x;
+    for (xv, label) in &xticks {
+        let px = t.data_to_pixel(*xv, t.y.min).x;
         painter.line_segment(
             [pos2(px, area.bottom()), pos2(px, area.bottom() + tick_len)],
             axis,
@@ -174,14 +214,14 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
         painter.text(
             pos2(px, area.bottom() + tick_len + 2.0),
             Align2::CENTER_TOP,
-            format_tick(xv, xstep),
+            label,
             font.clone(),
             style.text,
         );
     }
     // Y ticks + labels left of the left edge.
-    for &yv in &yticks {
-        let py = t.data_to_pixel(t.x.min, yv).y;
+    for (yv, label) in &yticks {
+        let py = t.data_to_pixel(t.x.min, *yv).y;
         painter.line_segment(
             [pos2(area.left() - tick_len, py), pos2(area.left(), py)],
             axis,
@@ -189,7 +229,7 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
         painter.text(
             pos2(area.left() - tick_len - 3.0, py),
             Align2::RIGHT_CENTER,
-            format_tick(yv, ystep),
+            label,
             font.clone(),
             style.text,
         );
@@ -273,6 +313,28 @@ mod tests {
         assert_eq!(format_tick(2.0, 1.0), "2");
         assert_eq!(format_tick(0.5, 0.5), "0.5");
         assert_eq!(format_tick(0.25, 0.05), "0.25");
+    }
+
+    #[test]
+    fn log_decade_ticks_are_one_per_power_of_ten() {
+        // [1, 1000] spans decades 0..=3 → 1, 10, 100, 1000.
+        assert_eq!(
+            log_decade_ticks(1.0, 1000.0),
+            vec![1.0, 10.0, 100.0, 1000.0]
+        );
+        // Sub-decade range [2, 9] has no integer power of ten inside it.
+        assert!(log_decade_ticks(2.0, 9.0).is_empty());
+        // Non-positive or inverted limits yield no ticks (log undefined).
+        assert!(log_decade_ticks(0.0, 100.0).is_empty());
+        assert!(log_decade_ticks(-1.0, 100.0).is_empty());
+        assert!(log_decade_ticks(100.0, 1.0).is_empty());
+    }
+
+    #[test]
+    fn format_log_tick_plain_in_range_scientific_outside() {
+        assert_eq!(format_log_tick(10.0), "10");
+        assert_eq!(format_log_tick(0.01), "0.01");
+        assert_eq!(format_log_tick(1e8), "1e8");
     }
 
     #[test]

@@ -13,6 +13,7 @@
 use egui::{Color32, PointerButton, Pos2, Rect, Sense, Stroke, Ui};
 
 use crate::core::plot::Plot;
+use crate::core::transform::Scale;
 use crate::render::backend_wgpu::{ClearCallback, CurveCallback, ImageCallback};
 use crate::widget::{chrome, interaction};
 
@@ -47,6 +48,11 @@ impl PlotWidget {
         // Final transform for this frame (after any interaction).
         let transform = plot.transform(area);
         let ortho = transform.ortho_matrix();
+        // Per-axis log flags for the shaders (must match the transform's scale).
+        let axis_log = [
+            f32::from(transform.x.scale == Scale::Log10),
+            f32::from(transform.y.scale == Scale::Log10),
+        ];
 
         // Convert sRGB Color32 to linear, premultiplied RGBA expected by the shader.
         let bg = egui::Rgba::from(plot.data_background).to_array();
@@ -60,11 +66,11 @@ impl PlotWidget {
         ));
         painter.add(egui_wgpu::Callback::new_paint_callback(
             area,
-            ImageCallback { ortho },
+            ImageCallback { ortho, axis_log },
         ));
         painter.add(egui_wgpu::Callback::new_paint_callback(
             area,
-            CurveCallback { ortho },
+            CurveCallback { ortho, axis_log },
         ));
 
         // Chrome (egui), drawn on top of / in the gutters around the data layer.
