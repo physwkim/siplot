@@ -1,0 +1,8 @@
+/target
+Cargo.lock
+
+# Local upstream/reference clones (each has its own .git); not part of this repo.
+/egui
+/fastplotlib
+/silx
+/wgpu-native
