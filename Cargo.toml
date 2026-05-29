@@ -67,3 +67,7 @@ path = "examples/roi.rs"
 [[example]]
 name = "decimation"
 path = "examples/decimation.rs"
+
+[[example]]
+name = "large_image"
+path = "examples/large_image.rs"
