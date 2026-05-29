@@ -61,6 +61,11 @@ impl PlotWidget {
             None => (ortho_left, axis_log_left),
         };
 
+        // Data-area size in physical pixels, for the curve's pixel-space line
+        // expansion (`area` is in logical points).
+        let ppp = ui.ctx().pixels_per_point();
+        let viewport_px = [area.width() * ppp, area.height() * ppp];
+
         // Convert sRGB Color32 to linear, premultiplied RGBA expected by the shader.
         let bg = egui::Rgba::from(plot.data_background).to_array();
         let style = chrome::Style::from_visuals(ui.visuals());
@@ -85,6 +90,7 @@ impl PlotWidget {
                 axis_log_left,
                 ortho_right,
                 axis_log_right,
+                viewport_px,
             },
         ));
 

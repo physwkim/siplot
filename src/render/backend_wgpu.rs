@@ -321,6 +321,8 @@ pub(crate) struct CurveCallback {
     pub ortho_right: [[f32; 4]; 4],
     /// Per-axis log flag `[x, y]` for the right axis.
     pub axis_log_right: [f32; 2],
+    /// Data-area size in physical pixels, for the pixel-space line expansion.
+    pub viewport_px: [f32; 2],
 }
 
 impl CurveCallback {
@@ -347,7 +349,7 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
         for curve in &res.curves {
             let (ortho, axis_log) = self.matrices_for(curve.y_axis);
-            curve.write_uniforms(queue, ortho, axis_log);
+            curve.write_uniforms(queue, ortho, axis_log, self.viewport_px);
         }
         Vec::new()
     }

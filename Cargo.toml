@@ -47,3 +47,7 @@ path = "examples/aspect_ratio.rs"
 [[example]]
 name = "y2_axis"
 path = "examples/y2_axis.rs"
+
+[[example]]
+name = "thick_lines"
+path = "examples/thick_lines.rs"
