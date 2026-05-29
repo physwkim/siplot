@@ -428,9 +428,10 @@ eframe 앱 부트스트랩 시 `NativeOptions`에서 wgpu 백엔드를 선택하
 7. **dirty-range 업로드**: `set_data`로 이미지/곡선 일부만 갱신, `prepare`에서
    부분 `write_*` 검증(라이브 갱신 데모).
 
-이후 마일스톤(범위 밖, 후속): log/inverted/aspect-ratio, 마커/shape,
+이후 마일스톤(2차 페이즈): log/inverted/aspect-ratio, 마커/shape,
 피킹, ROI selector, 대용량 decimation, 이미지 타일링, save_graph, y2 축,
-두꺼운 라인/심볼 SDF, 컬러맵 카탈로그 확장.
+두꺼운 라인/심볼 SDF, 컬러맵 카탈로그 확장. → **§13에서 의존성 순서와
+단계별 검증 기준으로 단계화한다.**
 
 ---
 
@@ -440,12 +441,77 @@ eframe 앱 부트스트랩 시 `NativeOptions`에서 wgpu 백엔드를 선택하
   계열. 왕복 변환 단위테스트로 봉인.
 - **pixels_per_point / DPI**: 라인 두께·심볼 크기·±3px 피킹은 물리픽셀 기준.
   `ViewportInPixels`로 일관 처리.
-- **log축 정규화 위치**: 셰이더 변환 vs 업로드 전 CPU 변환. silx는 CPU 변환 +
-  clim 조정. 1차는 linear만이라 보류, 켤 때 한 곳에서 결정.
+- **log축 정규화 위치** (결정됨, §13 A3): 좌표를 **업로드 전 CPU에서 log10
+  변환**한다(silx와 동일). `Transform`은 축당 `scale ∈ {Linear, Log10}`을
+  들고, 데이터 값 `v`를 정규화 `t∈[0,1]`로 보내는 단일 함수에서 log를
+  적용한다(곡선/chrome 모두 같은 경로). ortho `Mat4`는 항상 정규화 공간을
+  선형 매핑하므로 affine으로 충분하다. **이미지+log 한계**: 텍셀이 데이터
+  등간격이라 log 공간에서 왜곡된다. 1차에는 곡선·축만 log를 지원하고,
+  이미지+log는 프래그먼트 셰이더 역매핑으로 후속 처리한다(§13 A3 한계).
 - **egui_plot 의존?**: 미사용 결정. chrome을 자체 구현해 wgpu transform과 강결합.
   필요하면 외부 `egui_plot` repo를 참고 구현으로만 본다.
 - **멀티-plot**: `callback_resources`는 전역 TypeMap이라 `HashMap<PlotId,_>`로
   분리. PlotId 발급/회수(위젯 소멸 시 GPU 리소스 정리) 정책 필요.
+
+---
+
+## 13. 2차 페이즈 — 백로그 단계 계획
+
+§11 슬라이스 1(1~7단계) 완료 후의 백로그를 의존성 순서로 웨이브화한다.
+규칙은 1차와 동일: 코드 주석 영어, 항목마다 fmt/clippy/nextest 통과 + 단계별
+커밋, 가능한 한 순수 함수에 단위테스트. 각 항목에 "done = …" 검증 기준을 둔다.
+
+### Wave A — 좌표계 일반화 (`core::transform`; 가장 많은 기능이 의존)
+
+단일 진실원 규칙(§4)을 유지하기 위해, 축을 `Axis { min, max, scale, inverted }`
+로 일반화한다(`scale ∈ {Linear, Log10}`). 데이터 값 `v`를 정규화 `t∈[0,1]`로
+보내는 **단일 함수** `norm(axis, v)`와 그 역 `denorm`을 두고, `data_to_pixel` /
+`pixel_to_data` / `ortho_matrix`가 전부 이 한 경로에서 파생되게 한다.
+
+- **A1. 축 모델 일반화**: 위 `Axis`/`norm` 도입, 기존 linear 동작 보존.
+  done = 기존 transform 단위테스트 전부 통과 + `norm`/`denorm` 왕복 항등 테스트.
+- **A2. inverted 축 (X/Y)**: 정규화에서 `t → 1−t`. affine이라 ortho로도 표현됨.
+  done = 뒤집힌 축에서 이미지·곡선·눈금이 1px 정합.
+- **A3. log 축 (X/Y)**: `norm`이 log10 적용(`min>0` 전제), chrome은 데케이드
+  눈금. 좌표는 CPU에서 변환(§12 결정). done = 로그 축 곡선 + 데케이드 눈금
+  데모. **한계**: 이미지+log는 텍셀 왜곡 때문에 후속(프래그먼트 역매핑).
+- **A4. aspect-ratio lock**: 데이터 단위를 정사각으로 유지하도록 한계를 확장
+  보정(이미지 왜곡 방지). done = 정사각 픽셀에서 원이 원으로 보임.
+- **A5. y2 축**: 두 번째 Y 한계 + 우측 눈금, 곡선이 `y`/`y2`에 바인딩.
+  done = 좌/우 다른 스케일의 두 곡선이 각자 축에 정합.
+
+### Wave B — 1D 비주얼 (`render::gpu_curve` + 새 점 파이프라인)
+
+- **B1. 두꺼운 라인**: line-strip → quad-expansion(triangle-strip) 셰이더,
+  픽셀 폭 uniform(물리픽셀 기준, §12 DPI). done = 폭 ≥1px 가변 라인.
+- **B2. 마커/심볼**: 점 인스턴싱 + SDF 프래그먼트(circle/square/cross/plus/
+  triangle). done = 곡선 정점에 심볼, 크기 픽셀 기준.
+
+### Wave C — 상호작용/피킹 (`widget::interaction`)
+
+- **C1. hover crosshair**: 데이터 좌표 십자선 + 좌표 라벨.
+- **C2. 피킹(±3px)**: pixel→data 박스로 곡선 최근접 점/이미지 인덱스 산출,
+  결과를 `Response`/콜백으로 반환. done = 클릭 지점의 점/픽셀 인덱스 정확.
+- **C3. ROI selector**: 사각/수평/수직 영역 아이템 + egui 핸들 드래그, 변경
+  이벤트 emit. done = 핸들 드래그로 bounds 갱신·이벤트 수신.
+
+### Wave D — 스케일/대용량
+
+- **D1. decimation**: 큰 곡선을 픽셀 칼럼당 min/max로 다운샘플해 드로우(시각
+  동일, 정점 수 ↓). done = N≫픽셀에서 시각 동일 + 정점 감소 측정.
+- **D2. 이미지 타일링**: `max_texture_dimension_2d` 초과 이미지를 타일 분할
+  업로드/드로우. done = 한도 초과 이미지가 정상 표시.
+
+### Wave E — 운영
+
+- **E1. save_graph(PNG)**: 오프스크린 타깃 렌더 후 리드백 저장.
+  done = 현재 뷰가 PNG로 저장됨.
+- **E2. 컬러맵 카탈로그**: viridis 외 magma/inferno/plasma/cividis/gray 등 +
+  reverse. done = 이름으로 컬러맵 선택 + 컬러바 반영.
+
+순서 메모: A가 토대(B/C가 좌표·픽셀폭에 의존), E2는 독립적이라 어느 시점에나
+가능(워밍업으로 먼저 처리). 이미지+log, 두꺼운 라인 join/cap, ROI 전체 종류는
+각 항목 내 후속으로 표시한다.
 
 ---
 
