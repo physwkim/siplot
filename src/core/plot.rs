@@ -8,6 +8,7 @@
 use egui::{Color32, Rect};
 
 use crate::core::colormap::Colormap;
+use crate::core::marker::Marker;
 use crate::core::roi::Roi;
 use crate::core::transform::{Axis, Margins, Scale, Transform, keep_aspect_limits};
 
@@ -58,6 +59,9 @@ pub struct Plot {
     /// handles. Dragging an edge updates that ROI's bounds in place and the
     /// widget reports the changed index (`doc/design.md` §13 C3).
     pub rois: Vec<Roi>,
+    /// Point / line markers drawn over the data area (silx `addMarker`). Each is
+    /// a static overlay; the widget draws the list every frame.
+    pub markers: Vec<Marker>,
     /// Graph title, drawn centered above the data area (silx `setGraphTitle`,
     /// `BackendBase.setGraphTitle`). `None` reserves no top space for it.
     pub title: Option<String>,
@@ -97,6 +101,7 @@ impl Plot {
             y2: None,
             crosshair: false,
             rois: Vec::new(),
+            markers: Vec::new(),
             title: None,
             x_label: None,
             y_label: None,

@@ -106,3 +106,7 @@ path = "examples/colormap_norm.rs"
 [[example]]
 name = "rgba_image"
 path = "examples/rgba_image.rs"
+
+[[example]]
+name = "plot_markers"
+path = "examples/plot_markers.rs"

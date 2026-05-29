@@ -180,6 +180,11 @@ impl PlotWidget {
             chrome::draw_rois(painter, &transform, &plot.rois, &style);
         }
 
+        // Point / line markers over the data layer (silx addMarker).
+        if !plot.markers.is_empty() {
+            chrome::draw_markers(painter, &transform, transform_right.as_ref(), &plot.markers);
+        }
+
         // Hover crosshair + coordinate readout over the data area.
         if plot.crosshair
             && let Some(p) = response.hover_pos()

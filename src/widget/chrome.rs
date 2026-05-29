@@ -7,11 +7,13 @@
 //! colorbar; this is the chrome counterpart of silx's `_PlotWidget` margins.
 
 use egui::epaint::TextShape;
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Visuals, pos2};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Visuals, pos2, vec2};
 
 use crate::core::colormap::{Colormap, Normalization};
+use crate::core::items::LineStyle;
+use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::roi::Roi;
-use crate::core::transform::{Axis, Scale, Transform};
+use crate::core::transform::{Axis, Scale, Transform, YAxis};
 
 /// Colors used to draw the chrome, derived from the active egui visuals so the
 /// chrome follows light/dark theme.
@@ -411,6 +413,193 @@ pub fn draw_rois(painter: &Painter, t: &Transform, rois: &[Roi], style: &Style) 
         for c in roi.handle_centers(t) {
             let h = Rect::from_center_size(c, egui::vec2(6.0, 6.0));
             painter.rect_filled(h, egui::CornerRadius::ZERO, style.axis);
+        }
+    }
+}
+
+/// Draw a polyline `path` honoring a [`LineStyle`]: solid for `Solid`, dashes
+/// (via egui's dashed-line builder) for the dashed styles, nothing for `None`.
+/// When `gap_color` is set on a dashed line, the gaps are first filled with a
+/// solid line in that color (silx `gapcolor`), then the dashes drawn on top.
+fn draw_styled_line(
+    painter: &Painter,
+    path: Vec<Pos2>,
+    color: Color32,
+    width: f32,
+    line_style: &LineStyle,
+    gap_color: Option<Color32>,
+) {
+    if path.len() < 2 || !line_style.draws_line() {
+        return;
+    }
+    let stroke = Stroke::new(width, color);
+    match line_style.painter_dashes(width) {
+        None => {
+            painter.add(egui::Shape::line(path, stroke));
+        }
+        Some((dashes, gaps, offset)) => {
+            if let Some(gc) = gap_color {
+                painter.add(egui::Shape::line(path.clone(), Stroke::new(width, gc)));
+            }
+            for shape in egui::Shape::dashed_line_with_offset(&path, stroke, &dashes, &gaps, offset)
+            {
+                painter.add(shape);
+            }
+        }
+    }
+}
+
+/// Draw one marker symbol centered at `c` with full extent `size` (logical
+/// points). Filled glyphs use `color`; the stroked glyphs (+ ×) use a line
+/// weight scaled from the size.
+fn draw_marker_symbol(painter: &Painter, c: Pos2, symbol: MarkerSymbol, size: f32, color: Color32) {
+    let r = (size * 0.5).max(1.0);
+    let stroke = Stroke::new((size * 0.18).max(1.0), color);
+    match symbol {
+        MarkerSymbol::Circle => {
+            painter.add(egui::Shape::circle_filled(c, r, color));
+        }
+        MarkerSymbol::Point => {
+            painter.add(egui::Shape::circle_filled(c, (r * 0.4).max(1.5), color));
+        }
+        MarkerSymbol::Pixel => {
+            painter.add(egui::Shape::rect_filled(
+                Rect::from_center_size(c, vec2(1.0, 1.0)),
+                egui::CornerRadius::ZERO,
+                color,
+            ));
+        }
+        MarkerSymbol::Square => {
+            painter.add(egui::Shape::rect_filled(
+                Rect::from_center_size(c, vec2(size, size)),
+                egui::CornerRadius::ZERO,
+                color,
+            ));
+        }
+        MarkerSymbol::Diamond => {
+            let pts = vec![
+                pos2(c.x, c.y - r),
+                pos2(c.x + r, c.y),
+                pos2(c.x, c.y + r),
+                pos2(c.x - r, c.y),
+            ];
+            painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        MarkerSymbol::Plus => {
+            painter.line_segment([pos2(c.x - r, c.y), pos2(c.x + r, c.y)], stroke);
+            painter.line_segment([pos2(c.x, c.y - r), pos2(c.x, c.y + r)], stroke);
+        }
+        MarkerSymbol::Cross => {
+            painter.line_segment([pos2(c.x - r, c.y - r), pos2(c.x + r, c.y + r)], stroke);
+            painter.line_segment([pos2(c.x - r, c.y + r), pos2(c.x + r, c.y - r)], stroke);
+        }
+    }
+}
+
+/// Draw marker label `text` anchored at `pos`, optionally over a filled `bg` box.
+fn draw_marker_label(
+    painter: &Painter,
+    pos: Pos2,
+    anchor: Align2,
+    text: &str,
+    color: Color32,
+    bg: Option<Color32>,
+) {
+    let font = FontId::proportional(11.0);
+    let galley = painter.layout_no_wrap(text.to_owned(), font, color);
+    let rect = anchor.anchor_size(pos, galley.size());
+    if let Some(bg) = bg {
+        painter.rect_filled(
+            rect.expand2(vec2(3.0, 1.0)),
+            egui::CornerRadius::same(2),
+            bg,
+        );
+    }
+    painter.galley(rect.min, galley, color);
+}
+
+/// Draw each marker over the data area (silx `addMarker`): point markers as a
+/// symbol, vertical/horizontal markers as a full-span line in the marker's line
+/// style, each with optional label text. A marker bound to the right (y2) axis
+/// uses `t_right` when present (`doc/design.md` §8).
+pub fn draw_markers(
+    painter: &Painter,
+    t_left: &Transform,
+    t_right: Option<&Transform>,
+    markers: &[Marker],
+) {
+    for m in markers {
+        let t = match (m.y_axis, t_right) {
+            (YAxis::Right, Some(tr)) => tr,
+            _ => t_left,
+        };
+        let area = t.area;
+        match m.kind {
+            MarkerKind::Point { symbol, size, .. } => {
+                let pos = m.screen_point(t).expect("point marker has a screen point");
+                if !area.contains(pos) {
+                    continue;
+                }
+                draw_marker_symbol(painter, pos, symbol, size, m.color);
+                if let Some(text) = &m.text {
+                    draw_marker_label(
+                        painter,
+                        pos + vec2(size * 0.5 + 3.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        text,
+                        m.color,
+                        m.bgcolor,
+                    );
+                }
+            }
+            MarkerKind::VLine { .. } => {
+                let px = m.screen_x(t).expect("vline marker has a screen x");
+                if px < area.left() || px > area.right() {
+                    continue;
+                }
+                draw_styled_line(
+                    painter,
+                    vec![pos2(px, area.top()), pos2(px, area.bottom())],
+                    m.color,
+                    m.line_width,
+                    &m.line_style,
+                    None,
+                );
+                if let Some(text) = &m.text {
+                    draw_marker_label(
+                        painter,
+                        pos2(px + 3.0, area.top() + 2.0),
+                        Align2::LEFT_TOP,
+                        text,
+                        m.color,
+                        m.bgcolor,
+                    );
+                }
+            }
+            MarkerKind::HLine { .. } => {
+                let py = m.screen_y(t).expect("hline marker has a screen y");
+                if py < area.top() || py > area.bottom() {
+                    continue;
+                }
+                draw_styled_line(
+                    painter,
+                    vec![pos2(area.left(), py), pos2(area.right(), py)],
+                    m.color,
+                    m.line_width,
+                    &m.line_style,
+                    None,
+                );
+                if let Some(text) = &m.text {
+                    draw_marker_label(
+                        painter,
+                        pos2(area.left() + 3.0, py - 2.0),
+                        Align2::LEFT_BOTTOM,
+                        text,
+                        m.color,
+                        m.bgcolor,
+                    );
+                }
+            }
         }
     }
 }

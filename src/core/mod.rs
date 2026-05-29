@@ -6,6 +6,7 @@
 pub mod colormap;
 pub mod decimate;
 pub mod items;
+pub mod marker;
 pub mod plot;
 pub mod roi;
 pub mod transform;

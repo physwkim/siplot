@@ -32,6 +32,39 @@ impl LineStyle {
     pub(crate) fn draws_line(&self) -> bool {
         !matches!(self, LineStyle::None)
     }
+
+    /// Dash and gap lengths plus the phase offset for egui's
+    /// [`egui::Shape::dashed_line_with_offset`], or `None` for a solid (un-dashed)
+    /// line. This is the painter-overlay counterpart of the GPU curve's
+    /// `dash_spec`: the same proportions, expressed as the dash/gap arrays egui's
+    /// dashed-line builder consumes (lengths in logical points). Predefined
+    /// patterns scale with `max(width, 1)` so they look right at any thickness.
+    pub(crate) fn painter_dashes(&self, width: f32) -> Option<(Vec<f32>, Vec<f32>, f32)> {
+        let u = width.max(1.0);
+        match self {
+            LineStyle::None | LineStyle::Solid => None,
+            // on, off
+            LineStyle::Dashed => Some((vec![5.0 * u], vec![4.0 * u], 0.0)),
+            // dot, gap
+            LineStyle::Dotted => Some((vec![1.5 * u], vec![2.5 * u], 0.0)),
+            // dash, gap, dot, gap
+            LineStyle::DashDot => Some((vec![6.0 * u, 1.5 * u], vec![3.0 * u, 3.0 * u], 0.0)),
+            LineStyle::Custom { offset, pattern } => {
+                // pattern = [on, off, on, off, ...]: dashes are the even indices,
+                // gaps the odd ones. egui cycles each array independently.
+                let dashes: Vec<f32> = pattern.iter().step_by(2).copied().collect();
+                let gaps: Vec<f32> = pattern.iter().skip(1).step_by(2).copied().collect();
+                // A pattern with no gap (or a zero-length period) is just a solid
+                // line: leave it un-dashed so the modulo stays well-defined.
+                let period: f32 = dashes.iter().chain(&gaps).sum();
+                if dashes.is_empty() || gaps.is_empty() || period <= 0.0 {
+                    None
+                } else {
+                    Some((dashes, gaps, *offset))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -45,5 +78,54 @@ mod tests {
         assert!(LineStyle::Dashed.draws_line());
         assert!(LineStyle::DashDot.draws_line());
         assert!(LineStyle::Dotted.draws_line());
+    }
+
+    #[test]
+    fn painter_dashes_solid_and_none_are_undashed() {
+        assert_eq!(LineStyle::Solid.painter_dashes(1.0), None);
+        assert_eq!(LineStyle::None.painter_dashes(1.0), None);
+    }
+
+    #[test]
+    fn painter_dashes_predefined_scale_with_width() {
+        // Dashed at width 1: on 5, off 4.
+        assert_eq!(
+            LineStyle::Dashed.painter_dashes(1.0),
+            Some((vec![5.0], vec![4.0], 0.0))
+        );
+        // Width 2 doubles the unit.
+        assert_eq!(
+            LineStyle::Dashed.painter_dashes(2.0),
+            Some((vec![10.0], vec![8.0], 0.0))
+        );
+        // Dash-dot: dashes [6, 1.5], gaps [3, 3].
+        assert_eq!(
+            LineStyle::DashDot.painter_dashes(1.0),
+            Some((vec![6.0, 1.5], vec![3.0, 3.0], 0.0))
+        );
+    }
+
+    #[test]
+    fn painter_dashes_custom_splits_on_off_and_keeps_offset() {
+        let style = LineStyle::Custom {
+            offset: 2.0,
+            pattern: vec![3.0, 1.0, 2.0, 4.0],
+        };
+        assert_eq!(
+            style.painter_dashes(1.0),
+            Some((vec![3.0, 2.0], vec![1.0, 4.0], 2.0))
+        );
+        // A dash with no gap is solid (no usable period).
+        let no_gap = LineStyle::Custom {
+            offset: 0.0,
+            pattern: vec![3.0],
+        };
+        assert_eq!(no_gap.painter_dashes(1.0), None);
+        // An empty pattern is solid.
+        let empty = LineStyle::Custom {
+            offset: 0.0,
+            pattern: vec![],
+        };
+        assert_eq!(empty.painter_dashes(1.0), None);
     }
 }
