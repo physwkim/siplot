@@ -51,3 +51,7 @@ path = "examples/y2_axis.rs"
 [[example]]
 name = "thick_lines"
 path = "examples/thick_lines.rs"
+
+[[example]]
+name = "markers"
+path = "examples/markers.rs"

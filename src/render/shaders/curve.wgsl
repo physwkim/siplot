@@ -39,16 +39,17 @@ fn to_ndc(p: vec2<f32>) -> vec2<f32> {
     return clip.xy / clip.w;
 }
 
-// Per-corner endpoint selector (0 = segment start, 1 = segment end) and the
-// perpendicular offset side, for the two triangles (start-, start+, end-) and
-// (end-, start+, end+).
-const ENDPOINT = array<u32, 6>(0u, 0u, 1u, 1u, 0u, 1u);
-const SIDE = array<f32, 6>(-1.0, 1.0, -1.0, -1.0, 1.0, 1.0);
-
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
     let seg = vid / 6u;
     let corner = vid % 6u;
+
+    // Per-corner endpoint selector (0 = segment start, 1 = segment end) and the
+    // perpendicular offset side, for the two triangles (start-, start+, end-)
+    // and (end-, start+, end+). Function-local `var` arrays so the dynamic index
+    // works on every backend.
+    var endpoint = array<u32, 6>(0u, 0u, 1u, 1u, 0u, 1u);
+    var side = array<f32, 6>(-1.0, 1.0, -1.0, -1.0, 1.0, 1.0);
 
     let half_vp = params.viewport_px * 0.5;
     // Endpoints in pixel space (NDC scaled by half the viewport).
@@ -65,8 +66,8 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
         normal = vec2<f32>(-dir.y, dir.x);
     }
 
-    let base = select(px0, px1, ENDPOINT[corner] == 1u);
-    let pos_px = base + normal * (params.half_width_px * SIDE[corner]);
+    let base = select(px0, px1, endpoint[corner] == 1u);
+    let pos_px = base + normal * (params.half_width_px * side[corner]);
     // Back to NDC.
     return vec4<f32>(pos_px / half_vp, 0.0, 1.0);
 }

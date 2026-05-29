@@ -44,6 +44,49 @@ struct CurveParams {
     _pad: [f32; 3],
 }
 
+/// Marker symbol drawn at each curve vertex (silx `symbol`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Symbol {
+    Circle,
+    Square,
+    /// Diagonal "×".
+    Cross,
+    /// Upright "+".
+    Plus,
+    /// Upward-pointing triangle.
+    Triangle,
+}
+
+impl Symbol {
+    /// Shader symbol code (must match the `switch` in `markers.wgsl`).
+    fn code(self) -> u32 {
+        match self {
+            Symbol::Circle => 0,
+            Symbol::Square => 1,
+            Symbol::Cross => 2,
+            Symbol::Plus => 3,
+            Symbol::Triangle => 4,
+        }
+    }
+}
+
+/// Uniform block for the marker shader. Layout matches `Params` in
+/// `markers.wgsl` (std140: mat4 @0, vec4 @64, vec2 @80, vec2 @88, f32 @96,
+/// u32 @100; padded to 112).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MarkerParams {
+    ortho: [[f32; 4]; 4],
+    color: [f32; 4],
+    axis_log: [f32; 2],
+    viewport_px: [f32; 2],
+    /// Half the marker size, in physical pixels.
+    half_size_px: f32,
+    /// Symbol code; see [`Symbol::code`].
+    symbol: u32,
+    _pad: [f32; 2],
+}
+
 /// A polyline to draw, in data coordinates. `x[i], y[i]` is vertex `i`; the
 /// vertices are connected in order.
 #[derive(Clone, Debug)]
@@ -53,13 +96,17 @@ pub struct CurveData {
     pub color: Color32,
     /// Line width in physical pixels (`doc/design.md` §12·§13 B1).
     pub width: f32,
+    /// Marker symbol drawn at each vertex, or `None` for a line only.
+    pub symbol: Option<Symbol>,
+    /// Marker size (full extent) in physical pixels.
+    pub marker_size: f32,
     /// Which Y axis this curve is plotted against (left by default).
     pub y_axis: YAxis,
 }
 
 impl CurveData {
     /// Build a curve from equal-length x/y arrays with the given line color, a
-    /// 1px width, plotted against the main left Y axis.
+    /// 1px width, no markers, plotted against the main left Y axis.
     pub fn new(x: Vec<f64>, y: Vec<f64>, color: Color32) -> Self {
         assert_eq!(x.len(), y.len(), "x and y must have equal length");
         Self {
@@ -67,6 +114,8 @@ impl CurveData {
             y,
             color,
             width: 1.0,
+            symbol: None,
+            marker_size: 7.0,
             y_axis: YAxis::Left,
         }
     }
@@ -77,6 +126,18 @@ impl CurveData {
         self
     }
 
+    /// Draw `symbol` markers at each vertex (size via [`Self::with_marker_size`]).
+    pub fn with_symbol(mut self, symbol: Symbol) -> Self {
+        self.symbol = Some(symbol);
+        self
+    }
+
+    /// Set the marker size (full extent) in physical pixels (clamped to ≥ 0).
+    pub fn with_marker_size(mut self, size: f32) -> Self {
+        self.marker_size = size.max(0.0);
+        self
+    }
+
     /// Bind this curve to the given Y axis (left or right/y2).
     pub fn with_y_axis(mut self, y_axis: YAxis) -> Self {
         self.y_axis = y_axis;
@@ -84,9 +145,12 @@ impl CurveData {
     }
 }
 
-/// The render pipeline shared by all curves.
+/// The render pipelines shared by all curves: the thick-line pipeline and the
+/// marker pipeline. Both take the same bind-group layout (a 112-byte uniform at
+/// binding 0 plus the shared points storage buffer at binding 1).
 pub struct CurvePipeline {
     pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) marker_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -95,6 +159,10 @@ impl CurvePipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("egui-silx curve"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/curve.wgsl").into()),
+        });
+        let marker_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("egui-silx markers"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/markers.wgsl").into()),
         });
 
         let bind_group_layout =
@@ -164,8 +232,36 @@ impl CurvePipeline {
             cache: None,
         });
 
+        // Marker pipeline: same layout, one quad (6 vertices) per point.
+        let marker_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("egui-silx marker pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &marker_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &marker_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             pipeline,
+            marker_pipeline,
             bind_group_layout,
         }
     }
@@ -180,9 +276,16 @@ pub struct GpuCurve {
     capacity: u32,
     params: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Marker uniform + bind group (shares the points buffer at binding 1).
+    marker_params: wgpu::Buffer,
+    marker_bind_group: wgpu::BindGroup,
     color: [f32; 4],
     /// Line width in physical pixels.
     width: f32,
+    /// Marker symbol, or `None` for a line only.
+    symbol: Option<Symbol>,
+    /// Marker size (full extent) in physical pixels.
+    marker_size: f32,
     /// Which Y axis this curve is bound to; selects the per-frame ortho matrix.
     pub(crate) y_axis: YAxis,
 }
@@ -238,6 +341,28 @@ impl GpuCurve {
             ],
         });
 
+        // Marker uniform + bind group: same layout, sharing the points buffer.
+        let marker_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("egui-silx marker params"),
+            size: std::mem::size_of::<MarkerParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let marker_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("egui-silx marker bg"),
+            layout: &pipeline.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: marker_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: points.as_entire_binding(),
+                },
+            ],
+        });
+
         // sRGB Color32 -> linear, premultiplied RGBA (matches the alpha-blend target).
         let color = egui::Rgba::from(curve.color).to_array();
 
@@ -247,11 +372,15 @@ impl GpuCurve {
             capacity,
             params,
             bind_group,
+            marker_params,
+            marker_bind_group,
             color,
             width: curve.width,
+            symbol: curve.symbol,
+            marker_size: curve.marker_size,
             y_axis: curve.y_axis,
         };
-        // Seed the uniform; the per-frame transform/viewport overwrite it.
+        // Seed the uniforms; the per-frame transform/viewport overwrite them.
         gpu.write_uniforms(queue, IDENTITY, [0.0, 0.0], [1.0, 1.0]);
         gpu
     }
@@ -281,6 +410,8 @@ impl GpuCurve {
         self.count = positions.len() as u32;
         self.color = egui::Rgba::from(curve.color).to_array();
         self.width = curve.width;
+        self.symbol = curve.symbol;
+        self.marker_size = curve.marker_size;
         self.y_axis = curve.y_axis;
         true
     }
@@ -305,8 +436,22 @@ impl GpuCurve {
             _pad: [0.0; 3],
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
+
+        // Marker uniform shares the same transform/viewport; symbol code is the
+        // sentinel `0` (unused) when no marker is set.
+        let marker = MarkerParams {
+            ortho,
+            color: self.color,
+            axis_log,
+            viewport_px,
+            half_size_px: 0.5 * self.marker_size,
+            symbol: self.symbol.map_or(0, Symbol::code),
+            _pad: [0.0; 2],
+        };
+        queue.write_buffer(&self.marker_params, 0, bytemuck::bytes_of(&marker));
     }
 
+    /// Draw the polyline (thick-line quads). A no-op below two points.
     pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, pipeline: &CurvePipeline) {
         // Need at least two points (one segment) to draw anything.
         if self.count < 2 {
@@ -317,5 +462,56 @@ impl GpuCurve {
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.draw(0..vertices, 0..1);
+    }
+
+    /// Draw a marker at each point, if this curve has a symbol. A no-op when no
+    /// symbol is set or there are no points.
+    pub(crate) fn draw_markers(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &CurvePipeline,
+    ) {
+        if self.symbol.is_none() || self.count == 0 {
+            return;
+        }
+        // One quad (6 vertices) per point.
+        let vertices = 6 * self.count;
+        render_pass.set_pipeline(&pipeline.marker_pipeline);
+        render_pass.set_bind_group(0, &self.marker_bind_group, &[]);
+        render_pass.draw(0..vertices, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbol_codes_match_shader_switch() {
+        // These must stay in sync with the `switch` cases in markers.wgsl.
+        assert_eq!(Symbol::Circle.code(), 0);
+        assert_eq!(Symbol::Square.code(), 1);
+        assert_eq!(Symbol::Cross.code(), 2);
+        assert_eq!(Symbol::Plus.code(), 3);
+        assert_eq!(Symbol::Triangle.code(), 4);
+    }
+
+    #[test]
+    fn curve_data_defaults_and_builders() {
+        let c = CurveData::new(vec![0.0, 1.0], vec![0.0, 1.0], Color32::WHITE);
+        assert_eq!(c.width, 1.0);
+        assert_eq!(c.symbol, None);
+        assert_eq!(c.marker_size, 7.0);
+        assert_eq!(c.y_axis, YAxis::Left);
+
+        let c = c
+            .with_width(-3.0) // clamped to 0
+            .with_symbol(Symbol::Plus)
+            .with_marker_size(-1.0) // clamped to 0
+            .with_y_axis(YAxis::Right);
+        assert_eq!(c.width, 0.0);
+        assert_eq!(c.symbol, Some(Symbol::Plus));
+        assert_eq!(c.marker_size, 0.0);
+        assert_eq!(c.y_axis, YAxis::Right);
     }
 }

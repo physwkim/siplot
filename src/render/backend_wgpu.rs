@@ -363,8 +363,12 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
         let res: &WgpuResources = resources
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
+        // Lines first, then markers, so markers sit on top of every line.
         for curve in &res.curves {
             curve.draw(render_pass, &res.curve_pipeline);
+        }
+        for curve in &res.curves {
+            curve.draw_markers(render_pass, &res.curve_pipeline);
         }
     }
 }
