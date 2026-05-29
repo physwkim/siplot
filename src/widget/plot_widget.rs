@@ -180,6 +180,12 @@ impl PlotWidget {
             chrome::draw_rois(painter, &transform, &plot.rois, &style);
         }
 
+        // Shapes (polygons / rectangles / polylines / lines) over the data layer
+        // (silx addShape). Bound to the main (left) axes.
+        if !plot.shapes.is_empty() {
+            chrome::draw_shapes(painter, &transform, &plot.shapes);
+        }
+
         // Point / line markers over the data layer (silx addMarker).
         if !plot.markers.is_empty() {
             chrome::draw_markers(painter, &transform, transform_right.as_ref(), &plot.markers);

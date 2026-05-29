@@ -110,3 +110,7 @@ path = "examples/rgba_image.rs"
 [[example]]
 name = "plot_markers"
 path = "examples/plot_markers.rs"
+
+[[example]]
+name = "shapes"
+path = "examples/shapes.rs"

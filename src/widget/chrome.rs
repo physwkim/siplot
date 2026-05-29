@@ -13,6 +13,7 @@ use crate::core::colormap::{Colormap, Normalization};
 use crate::core::items::LineStyle;
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::roi::Roi;
+use crate::core::shape::{Shape, ShapeKind};
 use crate::core::transform::{Axis, Scale, Transform, YAxis};
 
 /// Colors used to draw the chrome, derived from the active egui visuals so the
@@ -597,6 +598,86 @@ pub fn draw_markers(
                         text,
                         m.color,
                         m.bgcolor,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Draw each shape over the data area (silx `addShape`): filled and/or outlined
+/// polygons and rectangles, open polylines, and full-span horizontal/vertical
+/// lines, in the shape's line style. Drawing is clipped to the data area. Fill
+/// is convex-only (egui's `convex_polygon`): correct for rectangles and convex
+/// polygons (`doc/design.md` §8).
+pub fn draw_shapes(painter: &Painter, t: &Transform, shapes: &[Shape]) {
+    let painter = painter.with_clip_rect(t.area);
+    let area = t.area;
+    for s in shapes {
+        match s.kind {
+            ShapeKind::Polygon | ShapeKind::Rectangle => {
+                let pts = s.screen_points(t);
+                if pts.len() < 2 {
+                    continue;
+                }
+                if s.fill {
+                    painter.add(egui::Shape::convex_polygon(
+                        pts.clone(),
+                        s.color,
+                        Stroke::NONE,
+                    ));
+                }
+                // Close the outline back to the first vertex.
+                let mut path = pts;
+                path.push(path[0]);
+                draw_styled_line(
+                    &painter,
+                    path,
+                    s.color,
+                    s.line_width,
+                    &s.line_style,
+                    s.gap_color,
+                );
+            }
+            ShapeKind::Polyline => {
+                draw_styled_line(
+                    &painter,
+                    s.screen_points(t),
+                    s.color,
+                    s.line_width,
+                    &s.line_style,
+                    s.gap_color,
+                );
+            }
+            ShapeKind::HLine => {
+                for &yv in &s.y {
+                    let py = t.data_to_pixel(t.x.min, yv).y;
+                    if py < area.top() || py > area.bottom() {
+                        continue;
+                    }
+                    draw_styled_line(
+                        &painter,
+                        vec![pos2(area.left(), py), pos2(area.right(), py)],
+                        s.color,
+                        s.line_width,
+                        &s.line_style,
+                        s.gap_color,
+                    );
+                }
+            }
+            ShapeKind::VLine => {
+                for &xv in &s.x {
+                    let px = t.data_to_pixel(xv, t.y.min).x;
+                    if px < area.left() || px > area.right() {
+                        continue;
+                    }
+                    draw_styled_line(
+                        &painter,
+                        vec![pos2(px, area.top()), pos2(px, area.bottom())],
+                        s.color,
+                        s.line_width,
+                        &s.line_style,
+                        s.gap_color,
                     );
                 }
             }

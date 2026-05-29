@@ -10,6 +10,7 @@ use egui::{Color32, Rect};
 use crate::core::colormap::Colormap;
 use crate::core::marker::Marker;
 use crate::core::roi::Roi;
+use crate::core::shape::Shape;
 use crate::core::transform::{Axis, Margins, Scale, Transform, keep_aspect_limits};
 
 /// Identifier for a single `Plot` instance.
@@ -62,6 +63,9 @@ pub struct Plot {
     /// Point / line markers drawn over the data area (silx `addMarker`). Each is
     /// a static overlay; the widget draws the list every frame.
     pub markers: Vec<Marker>,
+    /// Polygon / rectangle / polyline / line shapes drawn over the data area
+    /// (silx `addShape`). Static overlays drawn every frame.
+    pub shapes: Vec<Shape>,
     /// Graph title, drawn centered above the data area (silx `setGraphTitle`,
     /// `BackendBase.setGraphTitle`). `None` reserves no top space for it.
     pub title: Option<String>,
@@ -102,6 +106,7 @@ impl Plot {
             crosshair: false,
             rois: Vec::new(),
             markers: Vec::new(),
+            shapes: Vec::new(),
             title: None,
             x_label: None,
             y_label: None,

@@ -9,4 +9,5 @@ pub mod items;
 pub mod marker;
 pub mod plot;
 pub mod roi;
+pub mod shape;
 pub mod transform;
