@@ -28,10 +28,15 @@ The high-level examples mirror common silx examples from `silx/examples/`:
 | `compareImages.py` | `cargo run --example high_level_compare_images` | `CompareImages` widget: OnlyA / OnlyB / HalfHalf split slider / A−B subtract |
 | `imageview.py` | `cargo run --example high_level_image_view` | `ImageView` widget: central image + column-sum and row-sum side histograms |
 | `scatterview.py` | `cargo run --example high_level_scatter_view` | `ScatterView` widget: value-coloured scatter via per-point colormap |
-
-`syncPlotLocation.py` and `syncaxis.py` are partially ported. The low-level
-`sync_axes` example shows `SyncAxes` linking two `PlotView`-based plots; a
-high-level `PlotWidget` variant is not yet added.
+| `stackView.py` | `cargo run --example high_level_stack_view` | `StackView` widget: 3D volume as navigable image frames with ◀ slider ▶ |
+| `fftPlotAction.py` | `cargo run --example high_level_fft_action` | Custom toolbar toggle button swapping time/frequency domain in-place |
+| `exampleBaseline.py` | `cargo run --example high_level_baseline` | `Baseline::PerPoint` for filled std-band and stacked histograms |
+| `pygfx_backend/06_error_bars.py` | `cargo run --example high_level_error_bars` | `ErrorBars::Symmetric`, `PerPoint`, `Asymmetric` on X and Y axes |
+| `pygfx_backend/07_log_axes.py` | `cargo run --example high_level_log_axis` | `set_y_log(true)` / `set_x_log(true)` for decade-scale power law and decay |
+| `pygfx_backend/10_dual_yaxis.py` | `cargo run --example high_level_y2_axis` | `CurveData::with_y_axis(YAxis::Right)` + `set_graph_y_limits(..., YAxis::Right)` |
+| `syncaxis.py` / `syncPlotLocation.py` | `cargo run --example high_level_sync_axes` | `SyncAxes` linking four `Plot2D` panels via `PlotWidget::plot_mut()` |
+| `colormapDialog.py` | `cargo run --example high_level_colormap` | Runtime colormap / vmin / vmax / normalization picker using `update_image_spec` |
+| `scatterMask.py` | `cargo run --example high_level_scatter_mask` | Per-point alpha masking via `CurveColor::PerVertex` with threshold range slider |
 
 ## Choosing a Type
 
@@ -254,4 +259,93 @@ sv.set_data(&x, &y, &values, Colormap::viridis(vmin, vmax))?;
 // frame loop
 sv.show_toolbar(ui);
 sv.show(ui);
+```
+
+### StackView
+
+`StackView` renders a 3D volume as a stack of 2D image frames with a
+frame-navigation toolbar:
+
+```rust
+let mut sv = StackView::new(render_state, 0);
+sv.set_stack(width, height, frames, colormap)?;
+// frame loop
+sv.show_frame_controls(ui);  // ◀ slider ▶
+sv.show(ui);
+```
+
+## Axis Variants
+
+### Dual Y-axis
+
+Bind a curve to the right Y2 axis and set its limits independently:
+
+```rust
+let curve = CurveData::new(x, y, Color32::YELLOW).with_y_axis(YAxis::Right);
+let h = plot.add_curve_data(&curve);
+plot.set_item_legend(h, "secondary");
+plot.set_graph_y_limits(0.0, 1.0, YAxis::Right);
+plot.set_graph_y_label("normalized", YAxis::Right);
+```
+
+### Logarithmic Axes
+
+```rust
+plot.set_y_log(true);   // log10 Y axis — limits must be strictly positive
+plot.set_x_log(true);   // log10 X axis
+```
+
+The toolbar's LogX / LogY icon buttons call these same methods at runtime.
+
+### Error Bars
+
+```rust
+let curve = CurveData::new(x, y, color)
+    .with_y_error(ErrorBars::Symmetric(0.4))          // constant ± Y
+    .with_y_error(ErrorBars::PerPoint(err_vec))        // per-point Y
+    .with_x_error(ErrorBars::Asymmetric { lower, upper });  // asymmetric X
+plot.add_curve_data(&curve);
+```
+
+## Synchronized Axes
+
+`SyncAxes` links multiple plots so panning or zooming one updates all.
+Use `PlotWidget::plot_mut()` to expose the inner `Plot` reference:
+
+```rust
+let mut sync = SyncAxes::new();          // sync both X and Y
+// in frame loop, before show():
+{
+    let [a, b, c, d] = &mut self.plots;
+    sync.sync(&mut [a.plot_mut(), b.plot_mut(), c.plot_mut(), d.plot_mut()]);
+}
+```
+
+## Live Colormap Editing
+
+Change colormap at runtime by storing pixel data and re-uploading with a new
+`ImageSpec::scalar` whenever the settings change:
+
+```rust
+fn apply(&mut self) {
+    let cm = Colormap::new(self.name, self.vmin, self.vmax);
+    self.plot.update_image_spec(
+        self.handle,
+        ImageSpec::scalar(W, H, &self.pixels, cm),
+    );
+}
+```
+
+## Scatter Masking
+
+Use `CurveColor::PerVertex` with per-point alpha to dim or hide masked points:
+
+```rust
+let colors: Vec<Color32> = values.iter().map(|&v| {
+    let [r, g, b, _] = colormap.lut[(colormap.normalize(v) * 255.0) as usize];
+    let a = if v >= lo && v <= hi { 255 } else { 30 };
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}).collect();
+let mut spec = CurveSpec::new(&xs, &ys, Color32::WHITE);
+spec.color = CurveColor::PerVertex(&colors);
 ```
