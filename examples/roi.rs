@@ -69,6 +69,14 @@ impl eframe::App for RoiApp {
                     }
                     Roi::HRange { y } => format!("hrange #{i}  y=[{:.2}, {:.2}]", y.0, y.1),
                     Roi::VRange { x } => format!("vrange #{i}  x=[{:.2}, {:.2}]", x.0, x.1),
+                    Roi::Point { x, y } => format!("point #{i}  ({x:.2}, {y:.2})"),
+                    Roi::Line { start, end } => format!(
+                        "line #{i}  ({:.2}, {:.2}) → ({:.2}, {:.2})",
+                        start.0, start.1, end.0, end.1
+                    ),
+                    Roi::Polygon { ref vertices } => {
+                        format!("polygon #{i}  {} vertices", vertices.len())
+                    }
                 };
                 ui.painter().text(
                     pos2(ui.max_rect().left() + 12.0, ui.max_rect().top() + 12.0),

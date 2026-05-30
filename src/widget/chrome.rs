@@ -483,17 +483,48 @@ pub fn draw_rois(painter: &Painter, t: &Transform, rois: &[Roi], style: &Style) 
     let fill = Color32::from_rgba_unmultiplied(style.axis.r(), style.axis.g(), style.axis.b(), 24);
     let border = Stroke::new(1.0, style.axis);
     for roi in rois {
-        let r = roi.screen_rect(t);
-        painter.rect_filled(r, egui::CornerRadius::ZERO, fill);
-        painter.rect_stroke(
-            r,
-            egui::CornerRadius::ZERO,
-            border,
-            egui::StrokeKind::Inside,
-        );
-        for c in roi.handle_centers(t) {
-            let h = Rect::from_center_size(c, egui::vec2(6.0, 6.0));
-            painter.rect_filled(h, egui::CornerRadius::ZERO, style.axis);
+        match roi {
+            Roi::Point { x, y } => {
+                let p = t.data_to_pixel(*x, *y);
+                painter.circle_filled(p, 5.0, fill);
+                painter.circle_stroke(p, 5.0, border);
+            }
+            Roi::Line { start, end } => {
+                let a = t.data_to_pixel(start.0, start.1);
+                let b = t.data_to_pixel(end.0, end.1);
+                painter.line_segment([a, b], border);
+                for &p in &[a, b] {
+                    let h = Rect::from_center_size(p, egui::vec2(6.0, 6.0));
+                    painter.rect_filled(h, egui::CornerRadius::ZERO, style.axis);
+                }
+            }
+            Roi::Polygon { vertices } if !vertices.is_empty() => {
+                let pts: Vec<Pos2> = vertices
+                    .iter()
+                    .map(|&(x, y)| t.data_to_pixel(x, y))
+                    .collect();
+                painter.add(egui::Shape::convex_polygon(pts.clone(), fill, border));
+                for p in &pts {
+                    let h = Rect::from_center_size(*p, egui::vec2(6.0, 6.0));
+                    painter.rect_filled(h, egui::CornerRadius::ZERO, style.axis);
+                }
+            }
+            Roi::Polygon { .. } => {} // empty polygon, skip
+            _ => {
+                // Rect, HRange, VRange
+                let r = roi.screen_rect(t);
+                painter.rect_filled(r, egui::CornerRadius::ZERO, fill);
+                painter.rect_stroke(
+                    r,
+                    egui::CornerRadius::ZERO,
+                    border,
+                    egui::StrokeKind::Inside,
+                );
+                for c in roi.handle_centers(t) {
+                    let h = Rect::from_center_size(c, egui::vec2(6.0, 6.0));
+                    painter.rect_filled(h, egui::CornerRadius::ZERO, style.axis);
+                }
+            }
         }
     }
 }

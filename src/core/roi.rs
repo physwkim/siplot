@@ -21,11 +21,14 @@ pub enum RoiEdge {
     Bottom,
     /// Data `y` maximum (top of the data area).
     Top,
+    /// Generic vertex handle at `index`; used by [`Roi::Point`], [`Roi::Line`],
+    /// and [`Roi::Polygon`] variants.
+    Vertex(usize),
 }
 
 /// A region of interest in data coordinates. Bounds are kept normalized
 /// (`min ≤ max`) by [`Roi::move_edge`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Roi {
     /// Axis-aligned rectangle `x = (x_min, x_max)`, `y = (y_min, y_max)`.
     Rect { x: (f64, f64), y: (f64, f64) },
@@ -33,6 +36,12 @@ pub enum Roi {
     HRange { y: (f64, f64) },
     /// Vertical band `x = (x_min, x_max)` spanning the full Y extent.
     VRange { x: (f64, f64) },
+    /// Single movable point.
+    Point { x: f64, y: f64 },
+    /// Line segment between two movable endpoints.
+    Line { start: (f64, f64), end: (f64, f64) },
+    /// Polygon with N movable vertices (requires at least 1 vertex; 0-vertex is a no-op for drawing).
+    Polygon { vertices: Vec<(f64, f64)> },
 }
 
 impl Roi {
@@ -40,7 +49,7 @@ impl Roi {
     /// their free axis.
     pub fn screen_rect(&self, t: &Transform) -> Rect {
         let area = t.area;
-        match *self {
+        match self {
             Roi::Rect { x, y } => {
                 let a = t.data_to_pixel(x.0, y.0);
                 let b = t.data_to_pixel(x.1, y.1);
@@ -56,16 +65,55 @@ impl Roi {
                 let px1 = t.data_to_pixel(x.1, t.y.min).x;
                 Rect::from_x_y_ranges(px0.min(px1)..=px0.max(px1), area.top()..=area.bottom())
             }
+            Roi::Point { x, y } => {
+                let p = t.data_to_pixel(*x, *y);
+                Rect::from_center_size(p, egui::vec2(1.0, 1.0))
+            }
+            Roi::Line { start, end } => {
+                let a = t.data_to_pixel(start.0, start.1);
+                let b = t.data_to_pixel(end.0, end.1);
+                Rect::from_two_pos(a, b)
+            }
+            Roi::Polygon { vertices } => {
+                let mut rect = Rect::NOTHING;
+                for &(x, y) in vertices {
+                    let p = t.data_to_pixel(x, y);
+                    if rect.is_negative() {
+                        rect = Rect::from_center_size(p, egui::vec2(1.0, 1.0));
+                    } else {
+                        rect = rect.union(Rect::from_center_size(p, egui::vec2(1.0, 1.0)));
+                    }
+                }
+                if rect.is_negative() { area } else { rect }
+            }
         }
     }
 
     /// The draggable edges this ROI exposes.
-    fn edges(&self) -> &'static [RoiEdge] {
+    fn edges(&self) -> Vec<RoiEdge> {
         match self {
-            Roi::Rect { .. } => &[RoiEdge::Left, RoiEdge::Right, RoiEdge::Bottom, RoiEdge::Top],
-            Roi::HRange { .. } => &[RoiEdge::Bottom, RoiEdge::Top],
-            Roi::VRange { .. } => &[RoiEdge::Left, RoiEdge::Right],
+            Roi::Rect { .. } => vec![RoiEdge::Left, RoiEdge::Right, RoiEdge::Bottom, RoiEdge::Top],
+            Roi::HRange { .. } => vec![RoiEdge::Bottom, RoiEdge::Top],
+            Roi::VRange { .. } => vec![RoiEdge::Left, RoiEdge::Right],
+            Roi::Point { .. } => vec![RoiEdge::Vertex(0)],
+            Roi::Line { .. } => vec![RoiEdge::Vertex(0), RoiEdge::Vertex(1)],
+            Roi::Polygon { vertices } => (0..vertices.len()).map(RoiEdge::Vertex).collect(),
         }
+    }
+
+    /// Screen-space position of vertex `index` for Point/Line/Polygon ROIs.
+    fn vertex_pixel(&self, t: &Transform, index: usize) -> Option<Pos2> {
+        let (x, y) = match self {
+            Roi::Point { x, y } if index == 0 => (*x, *y),
+            Roi::Line { start, end } => match index {
+                0 => *start,
+                1 => *end,
+                _ => return None,
+            },
+            Roi::Polygon { vertices } => vertices.get(index).copied()?,
+            _ => return None,
+        };
+        Some(t.data_to_pixel(x, y))
     }
 
     /// Screen-space midpoints of this ROI's draggable edges, for drawing handle
@@ -79,6 +127,7 @@ impl Roi {
                 RoiEdge::Right => egui::pos2(r.right(), r.center().y),
                 RoiEdge::Top => egui::pos2(r.center().x, r.top()),
                 RoiEdge::Bottom => egui::pos2(r.center().x, r.bottom()),
+                RoiEdge::Vertex(n) => self.vertex_pixel(t, *n).unwrap_or(r.center()),
             })
             .collect()
     }
@@ -86,41 +135,61 @@ impl Roi {
     /// The edge under `cursor` (screen pixels) within `grab_px`, or `None`.
     /// When several edges are in range, the perpendicularly-closest one wins.
     pub fn edge_at(&self, t: &Transform, cursor: Pos2, grab_px: f32) -> Option<RoiEdge> {
-        let r = self.screen_rect(t);
-        let mut best: Option<(RoiEdge, f32)> = None;
-        for &edge in self.edges() {
-            let dist = match edge {
-                // Vertical edges: cursor must be within the rect's y span.
-                RoiEdge::Left | RoiEdge::Right => {
-                    if cursor.y < r.top() - grab_px || cursor.y > r.bottom() + grab_px {
-                        continue;
+        match self {
+            Roi::Point { .. } | Roi::Line { .. } | Roi::Polygon { .. } => {
+                let mut best: Option<(RoiEdge, f32)> = None;
+                for edge in self.edges() {
+                    if let RoiEdge::Vertex(n) = edge
+                        && let Some(p) = self.vertex_pixel(t, n)
+                    {
+                        let dist = cursor.distance(p);
+                        if dist <= grab_px && best.is_none_or(|(_, d)| dist < d) {
+                            best = Some((edge, dist));
+                        }
                     }
-                    let ex = if edge == RoiEdge::Left {
-                        r.left()
-                    } else {
-                        r.right()
-                    };
-                    (cursor.x - ex).abs()
                 }
-                // Horizontal edges: cursor must be within the rect's x span.
-                RoiEdge::Bottom | RoiEdge::Top => {
-                    if cursor.x < r.left() - grab_px || cursor.x > r.right() + grab_px {
-                        continue;
+                best.map(|(e, _)| e)
+            }
+            _ => {
+                // Rect, HRange, VRange: existing rect-based edge detection.
+                let r = self.screen_rect(t);
+                let mut best: Option<(RoiEdge, f32)> = None;
+                for edge in self.edges() {
+                    let dist = match edge {
+                        // Vertical edges: cursor must be within the rect's y span.
+                        RoiEdge::Left | RoiEdge::Right => {
+                            if cursor.y < r.top() - grab_px || cursor.y > r.bottom() + grab_px {
+                                continue;
+                            }
+                            let ex = if edge == RoiEdge::Left {
+                                r.left()
+                            } else {
+                                r.right()
+                            };
+                            (cursor.x - ex).abs()
+                        }
+                        // Horizontal edges: cursor must be within the rect's x span.
+                        RoiEdge::Bottom | RoiEdge::Top => {
+                            if cursor.x < r.left() - grab_px || cursor.x > r.right() + grab_px {
+                                continue;
+                            }
+                            // Top edge = data y.max = screen top (smaller y).
+                            let ey = if edge == RoiEdge::Top {
+                                r.top()
+                            } else {
+                                r.bottom()
+                            };
+                            (cursor.y - ey).abs()
+                        }
+                        RoiEdge::Vertex(_) => continue,
+                    };
+                    if dist <= grab_px && best.is_none_or(|(_, d)| dist < d) {
+                        best = Some((edge, dist));
                     }
-                    // Top edge = data y.max = screen top (smaller y).
-                    let ey = if edge == RoiEdge::Top {
-                        r.top()
-                    } else {
-                        r.bottom()
-                    };
-                    (cursor.y - ey).abs()
                 }
-            };
-            if dist <= grab_px && best.is_none_or(|(_, d)| dist < d) {
-                best = Some((edge, dist));
+                best.map(|(edge, _)| edge)
             }
         }
-        best.map(|(edge, _)| edge)
     }
 
     /// Move `edge` to the data point `data = (x, y)`, clamping so the ROI stays
@@ -134,6 +203,7 @@ impl Roi {
                 RoiEdge::Right => x.1 = dx.max(x.0),
                 RoiEdge::Bottom => y.0 = dy.min(y.1),
                 RoiEdge::Top => y.1 = dy.max(y.0),
+                RoiEdge::Vertex(_) => {}
             },
             Roi::HRange { y } => match edge {
                 RoiEdge::Bottom => y.0 = dy.min(y.1),
@@ -145,6 +215,24 @@ impl Roi {
                 RoiEdge::Right => x.1 = dx.max(x.0),
                 _ => {}
             },
+            Roi::Point { x, y } => {
+                if let RoiEdge::Vertex(0) = edge {
+                    *x = dx;
+                    *y = dy;
+                }
+            }
+            Roi::Line { start, end } => match edge {
+                RoiEdge::Vertex(0) => *start = (dx, dy),
+                RoiEdge::Vertex(1) => *end = (dx, dy),
+                _ => {}
+            },
+            Roi::Polygon { vertices } => {
+                if let RoiEdge::Vertex(n) = edge
+                    && let Some(v) = vertices.get_mut(n)
+                {
+                    *v = (dx, dy);
+                }
+            }
         }
     }
 }
@@ -230,5 +318,61 @@ mod tests {
                 y: (3.0, 7.0)
             }
         );
+    }
+
+    #[test]
+    fn point_roi_vertex_handle_moves_it() {
+        let mut roi = Roi::Point { x: 5.0, y: 5.0 };
+        roi.move_edge(RoiEdge::Vertex(0), (3.0, 4.0));
+        assert_eq!(roi, Roi::Point { x: 3.0, y: 4.0 });
+    }
+
+    #[test]
+    fn line_roi_endpoints_move_independently() {
+        let mut roi = Roi::Line {
+            start: (0.0, 0.0),
+            end: (10.0, 10.0),
+        };
+        roi.move_edge(RoiEdge::Vertex(0), (1.0, 2.0));
+        roi.move_edge(RoiEdge::Vertex(1), (9.0, 8.0));
+        assert_eq!(
+            roi,
+            Roi::Line {
+                start: (1.0, 2.0),
+                end: (9.0, 8.0)
+            }
+        );
+    }
+
+    #[test]
+    fn polygon_vertex_move_updates_specific_vertex() {
+        let mut roi = Roi::Polygon {
+            vertices: vec![(0.0, 0.0), (5.0, 0.0), (5.0, 5.0)],
+        };
+        roi.move_edge(RoiEdge::Vertex(1), (6.0, 1.0));
+        assert_eq!(
+            roi,
+            Roi::Polygon {
+                vertices: vec![(0.0, 0.0), (6.0, 1.0), (5.0, 5.0)]
+            }
+        );
+    }
+
+    #[test]
+    fn edge_at_finds_line_endpoint() {
+        let roi = Roi::Line {
+            start: (2.0, 5.0),
+            end: (8.0, 5.0),
+        };
+        // start is at data (2,5) → pixel (20, 50); end at (8,5) → pixel (80, 50)
+        assert_eq!(
+            roi.edge_at(&t(), pos2(21.0, 50.0), 4.0),
+            Some(RoiEdge::Vertex(0))
+        );
+        assert_eq!(
+            roi.edge_at(&t(), pos2(79.0, 50.0), 4.0),
+            Some(RoiEdge::Vertex(1))
+        );
+        assert_eq!(roi.edge_at(&t(), pos2(50.0, 50.0), 4.0), None); // mid-line, no handle
     }
 }

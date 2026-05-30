@@ -53,7 +53,7 @@ impl eframe::App for RoiStatsApp {
                 ui.heading("ROI stats");
                 for (index, roi) in self.plot.rois().iter().enumerate() {
                     ui.label(format!("ROI {index}: {roi:?}"));
-                    show_stats(ui, roi_stats(&self.image, *roi));
+                    show_stats(ui, roi_stats(&self.image, roi.clone()));
                     ui.separator();
                 }
             });
@@ -98,6 +98,7 @@ fn roi_stats(image: &[f32], roi: Roi) -> ValueStats {
         Roi::Rect { x, y } => (x, y),
         Roi::HRange { y } => ((0.0, WIDTH as f64), y),
         Roi::VRange { x } => (x, (0.0, HEIGHT as f64)),
+        _ => return ValueStats::default(),
     };
 
     let col0 = x.0.min(x.1).floor().clamp(0.0, WIDTH as f64) as u32;
