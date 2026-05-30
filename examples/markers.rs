@@ -50,7 +50,7 @@ impl MarkersApp {
                 egui::Color32::from_rgb(255, 120, 120),
             ),
         ];
-        set_curves(render_state, &curves);
+        set_curves(render_state, 0, &curves);
 
         let mut plot = Plot::new(0);
         plot.limits = (-0.5, 10.5, 0.0, 6.0);

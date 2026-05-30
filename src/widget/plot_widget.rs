@@ -148,13 +148,17 @@ impl PlotView {
         // Data layer (wgpu), clipped to the data area: clear, image, then curve.
         painter.add(egui_wgpu::Callback::new_paint_callback(
             area,
-            ClearCallback { color: bg },
+            ClearCallback {
+                color: bg,
+                plot_id: plot.id,
+            },
         ));
         painter.add(egui_wgpu::Callback::new_paint_callback(
             area,
             ImageCallback {
                 ortho: ortho_left,
                 axis_log: axis_log_left,
+                plot_id: plot.id,
             },
         ));
         // Decimate to per-pixel-column min/max only when the x-axis is linear
@@ -175,6 +179,7 @@ impl PlotView {
                 viewport_px,
                 x_window: (transform.x.min, transform.x.max),
                 decimate_columns,
+                plot_id: plot.id,
             },
         ));
 

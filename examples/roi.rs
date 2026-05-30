@@ -38,7 +38,7 @@ impl RoiApp {
 
         let (x, y) = build_points();
         let curve = CurveData::new(x, y, Color32::from_rgb(120, 180, 255)).with_width(1.5);
-        set_curve(render_state, &curve);
+        set_curve(render_state, 0, &curve);
 
         let mut plot = Plot::new(0);
         plot.limits = (-0.5, 10.5, 0.0, 9.0);

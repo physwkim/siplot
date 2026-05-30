@@ -41,7 +41,7 @@ impl ThickLinesApp {
             sine_at(6.0, 6.0, egui::Color32::from_rgb(255, 220, 120)),
             sine_at(9.0, 10.0, egui::Color32::from_rgb(255, 120, 120)),
         ];
-        set_curves(render_state, &curves);
+        set_curves(render_state, 0, &curves);
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, 10.0, -1.5, 10.5);

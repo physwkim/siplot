@@ -169,6 +169,7 @@ pub fn save_graph(
             &render_state.device,
             &render_state.queue,
             render_state.target_format,
+            plot.id,
             size,
             bg,
             ortho_left,

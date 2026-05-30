@@ -57,7 +57,7 @@ impl ErrorBarsApp {
             .as_ref()
             .expect("eframe must use the wgpu renderer (NativeOptions.renderer = Wgpu)");
         install(render_state);
-        set_curves(render_state, &build());
+        set_curves(render_state, 0, &build());
 
         let mut plot = Plot::new(0);
         plot.limits = (-1.0, 9.0, -1.0, 9.0);

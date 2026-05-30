@@ -43,7 +43,7 @@ impl DecimationApp {
 
         let (x, y) = build_points();
         let curve = CurveData::new(x, y, Color32::from_rgb(120, 200, 160)).with_width(1.0);
-        set_curve(render_state, &curve);
+        set_curve(render_state, 0, &curve);
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, 100.0, -5.0, 5.0);

@@ -26,26 +26,32 @@ use crate::render::gpu_image::{GpuImage, ImageData, ImagePipeline, ImagePixels};
 
 const OVERLAY_PICK_TOLERANCE_PX: f32 = 5.0;
 
-/// GPU resources that persist across frames. Stored as a single type in
-/// `egui_wgpu`'s `callback_resources` (a type map).
-///
-/// Note: this step assumes a single plot with a single image. Multi-plot /
-/// multi-image extends this with a `HashMap<PlotId, _>` of per-plot state and a
-/// map of images per plot (`doc/design.md` §3.1·§12).
-pub struct WgpuResources {
-    clear_pipeline: wgpu::RenderPipeline,
+/// Per-plot GPU data: the color uniform + bind group for the clear pass, and
+/// the image/curve GPU buffers. Keyed by [`PlotId`] in [`WgpuResources`].
+pub(crate) struct PlotGpuData {
     color_uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    image_pipeline: ImagePipeline,
     images: Vec<GpuImage>,
-    curve_pipeline: CurvePipeline,
-    /// All curves on the plot, drawn in order. Each carries its own Y-axis
-    /// binding (left or y2), selected per frame in [`CurveCallback`].
     curves: Vec<GpuCurve>,
 }
 
+/// GPU resources that persist across frames. Stored as a single type in
+/// `egui_wgpu`'s `callback_resources` (a type map).
+///
+/// Per-plot state is keyed by [`PlotId`] in `plots`, so multiple independent
+/// plots can coexist in the same egui app without sharing GPU buffers.
+pub struct WgpuResources {
+    clear_pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    image_pipeline: ImagePipeline,
+    curve_pipeline: CurvePipeline,
+    /// Per-plot GPU data, keyed by plot ID.
+    plots: HashMap<PlotId, PlotGpuData>,
+}
+
 impl WgpuResources {
-    /// Build the clear pipeline and the color uniform.
+    /// Build the clear pipeline and shared bind group layout. Per-plot state is
+    /// allocated lazily by [`WgpuResources::get_or_insert_plot`].
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("egui-silx clear"),
@@ -95,34 +101,51 @@ impl WgpuResources {
             cache: None,
         });
 
-        let color_uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx clear color"),
-            size: 16, // vec4<f32>
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("egui-silx clear bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: color_uniform.as_entire_binding(),
-            }],
-        });
-
         let image_pipeline = ImagePipeline::new(device, target_format);
         let curve_pipeline = CurvePipeline::new(device, target_format);
 
         Self {
             clear_pipeline,
-            color_uniform,
-            bind_group,
+            bind_group_layout,
             image_pipeline,
-            images: Vec::new(),
             curve_pipeline,
-            curves: Vec::new(),
+            plots: HashMap::new(),
         }
+    }
+
+    /// Return the [`PlotGpuData`] for `plot_id`, inserting a fresh entry if it
+    /// does not yet exist.
+    pub(crate) fn get_or_insert_plot(
+        &mut self,
+        device: &wgpu::Device,
+        plot_id: PlotId,
+    ) -> &mut PlotGpuData {
+        if !self.plots.contains_key(&plot_id) {
+            let color_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("egui-silx clear color"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("egui-silx clear bg"),
+                layout: &self.bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: color_uniform.as_entire_binding(),
+                }],
+            });
+            self.plots.insert(
+                plot_id,
+                PlotGpuData {
+                    color_uniform,
+                    bind_group,
+                    images: Vec::new(),
+                    curves: Vec::new(),
+                },
+            );
+        }
+        self.plots.get_mut(&plot_id).unwrap()
     }
 
     /// Render the data layer (background clear, image, curves) for the given
@@ -142,6 +165,7 @@ impl WgpuResources {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
+        plot_id: PlotId,
         size: (u32, u32),
         bg: [f32; 4],
         ortho_left: [[f32; 4]; 4],
@@ -151,6 +175,10 @@ impl WgpuResources {
     ) -> Result<Vec<u8>, crate::render::save::SaveError> {
         use crate::core::transform::YAxis;
         use crate::render::save::{padded_bytes_per_row, rows_to_rgba8};
+
+        let plot_data = self.plots.get(&plot_id).ok_or_else(|| {
+            crate::render::save::SaveError::Readback("no GPU data for plot_id".into())
+        })?;
 
         let (w, h) = size;
         let extent = wgpu::Extent3d {
@@ -172,10 +200,10 @@ impl WgpuResources {
 
         // Stamp the offscreen uniforms (line width uses the target pixel size).
         let viewport_px = [w as f32, h as f32];
-        for image in &self.images {
+        for image in &plot_data.images {
             image.write_uniforms(queue, ortho_left, axis_log_left);
         }
-        for curve in &self.curves {
+        for curve in &plot_data.curves {
             let (ortho, axis_log) = match curve.y_axis {
                 YAxis::Left => (ortho_left, axis_log_left),
                 YAxis::Right => (ortho_right, axis_log_right),
@@ -210,19 +238,19 @@ impl WgpuResources {
             // The render pass viewport defaults to the full target. Fills, then
             // error bars, then lines, then markers, mirroring the on-screen draw
             // order.
-            for image in &self.images {
+            for image in &plot_data.images {
                 image.draw(&mut rp, &self.image_pipeline);
             }
-            for curve in &self.curves {
+            for curve in &plot_data.curves {
                 curve.draw_fill(&mut rp, &self.curve_pipeline);
             }
-            for curve in &self.curves {
+            for curve in &plot_data.curves {
                 curve.draw_errorbars(&mut rp, &self.curve_pipeline);
             }
-            for curve in &self.curves {
+            for curve in &plot_data.curves {
                 curve.draw(&mut rp, &self.curve_pipeline);
             }
-            for curve in &self.curves {
+            for curve in &plot_data.curves {
                 curve.draw_markers(&mut rp, &self.curve_pipeline);
             }
         }
@@ -434,8 +462,8 @@ impl WgpuBackend {
                 _ => None,
             })
             .collect();
-        set_images(&self.render_state, &images);
-        set_curves(&self.render_state, &curves);
+        set_images(&self.render_state, self.plot.id, &images);
+        set_curves(&self.render_state, self.plot.id, &curves);
     }
 
     fn sync_plot_items(&mut self) {
@@ -449,7 +477,12 @@ impl WgpuBackend {
         let mut items_with_z: Vec<(f32, &BackendItem)> = self
             .items
             .iter()
-            .filter(|item| self.item_visible.get(&item.handle()).copied().unwrap_or(true))
+            .filter(|item| {
+                self.item_visible
+                    .get(&item.handle())
+                    .copied()
+                    .unwrap_or(true)
+            })
             .map(|item| {
                 let z = self.item_z.get(&item.handle()).copied().unwrap_or(0.0);
                 (z, item)
@@ -1033,33 +1066,34 @@ fn image_index(data: &ImageData, transform: &Transform, cursor: Pos2) -> Option<
     (col < data.width && row < data.height).then_some((col, row))
 }
 
-/// Install [`WgpuResources`] into eframe's `RenderState` once. Call this at app
-/// creation with the `RenderState` obtained from the `CreationContext`.
+/// Install [`WgpuResources`] into eframe's `RenderState`. A no-op if already
+/// installed (idempotent). Call this at app creation with the `RenderState`
+/// obtained from the `CreationContext`.
 pub fn install(render_state: &RenderState) {
+    let mut renderer = render_state.renderer.write();
+    if renderer.callback_resources.get::<WgpuResources>().is_some() {
+        return;
+    }
     let resources = WgpuResources::new(&render_state.device, render_state.target_format);
-    render_state
-        .renderer
-        .write()
-        .callback_resources
-        .insert(resources);
+    renderer.callback_resources.insert(resources);
 }
 
 /// Upload `image` to the GPU and make it the plot's current image. Requires
 /// [`install`] to have run first. The image is uploaded once here; the per-frame
 /// transform is applied by [`ImageCallback`].
-pub fn set_image(render_state: &RenderState, image: &ImageData) {
-    set_images(render_state, std::slice::from_ref(image));
+pub fn set_image(render_state: &RenderState, plot_id: PlotId, image: &ImageData) {
+    set_images(render_state, plot_id, std::slice::from_ref(image));
 }
 
 /// Upload `images` to the GPU as the plot's full image set (replacing any
 /// existing images), preserving order. Requires [`install`] to have run first.
-pub fn set_images(render_state: &RenderState, images: &[ImageData]) {
+pub fn set_images(render_state: &RenderState, plot_id: PlotId, images: &[ImageData]) {
     let mut renderer = render_state.renderer.write();
     let res: &mut WgpuResources = renderer
         .callback_resources
         .get_mut()
         .expect("WgpuResources not installed — call egui_silx::install() first");
-    res.images = images
+    let gpu_images: Vec<GpuImage> = images
         .iter()
         .map(|image| {
             GpuImage::new(
@@ -1070,25 +1104,27 @@ pub fn set_images(render_state: &RenderState, images: &[ImageData]) {
             )
         })
         .collect();
+    let plot_data = res.get_or_insert_plot(&render_state.device, plot_id);
+    plot_data.images = gpu_images;
 }
 
 /// Upload `curve` to the GPU as the plot's sole curve (replacing any existing
 /// curves). Requires [`install`] to have run first. The vertices are uploaded
 /// once here; the per-frame transform is applied by [`CurveCallback`].
-pub fn set_curve(render_state: &RenderState, curve: &CurveData) {
-    set_curves(render_state, std::slice::from_ref(curve));
+pub fn set_curve(render_state: &RenderState, plot_id: PlotId, curve: &CurveData) {
+    set_curves(render_state, plot_id, std::slice::from_ref(curve));
 }
 
 /// Upload `curves` to the GPU as the plot's full curve set (replacing any
 /// existing curves), preserving order. Each curve keeps its own Y-axis binding
 /// ([`CurveData::y_axis`]). Requires [`install`] to have run first.
-pub fn set_curves(render_state: &RenderState, curves: &[CurveData]) {
+pub fn set_curves(render_state: &RenderState, plot_id: PlotId, curves: &[CurveData]) {
     let mut renderer = render_state.renderer.write();
     let res: &mut WgpuResources = renderer
         .callback_resources
         .get_mut()
         .expect("WgpuResources not installed — call egui_silx::install() first");
-    res.curves = curves
+    let gpu_curves: Vec<GpuCurve> = curves
         .iter()
         .map(|curve| {
             GpuCurve::new(
@@ -1099,14 +1135,17 @@ pub fn set_curves(render_state: &RenderState, curves: &[CurveData]) {
             )
         })
         .collect();
+    let plot_data = res.get_or_insert_plot(&render_state.device, plot_id);
+    plot_data.curves = gpu_curves;
 }
 
 /// Re-upload a `w × h` sub-region of the current image at `(x0, y0)` in place
 /// (dirty update), reusing the existing texture. `data` is row-major, length
-/// `w * h`. A no-op if no image has been set. This is the partial-write path
-/// for live updates (`doc/design.md` §11.7).
+/// `w * h`. A no-op if no image has been set for `plot_id`. This is the
+/// partial-write path for live updates (`doc/design.md` §11.7).
 pub fn update_image_region(
     render_state: &RenderState,
+    plot_id: PlotId,
     x0: u32,
     y0: u32,
     w: u32,
@@ -1118,15 +1157,17 @@ pub fn update_image_region(
         .callback_resources
         .get()
         .expect("WgpuResources not installed — call egui_silx::install() first");
-    if let Some(image) = res.images.first() {
+    if let Some(plot_data) = res.plots.get(&plot_id)
+        && let Some(image) = plot_data.images.first()
+    {
         image.update_region(&render_state.queue, x0, y0, w, h, data);
     }
 }
 
 /// Re-upload the first curve's vertices in place (dirty update). Convenience
 /// for single-curve plots; see [`update_curve_at`] for a specific index.
-pub fn update_curve(render_state: &RenderState, curve: &CurveData) {
-    update_curve_at(render_state, 0, curve);
+pub fn update_curve(render_state: &RenderState, plot_id: PlotId, curve: &CurveData) {
+    update_curve_at(render_state, plot_id, 0, curve);
 }
 
 /// Re-upload curve `index`'s vertices in place (dirty update), reusing the
@@ -1134,16 +1175,24 @@ pub fn update_curve(render_state: &RenderState, curve: &CurveData) {
 /// beyond the allocated capacity. If `index` is past the end (or no such curve
 /// exists yet), the curve set is extended so `index` becomes the last curve
 /// (`doc/design.md` §11.7).
-pub fn update_curve_at(render_state: &RenderState, index: usize, curve: &CurveData) {
+pub fn update_curve_at(
+    render_state: &RenderState,
+    plot_id: PlotId,
+    index: usize,
+    curve: &CurveData,
+) {
     let mut renderer = render_state.renderer.write();
     let res: &mut WgpuResources = renderer
         .callback_resources
         .get_mut()
         .expect("WgpuResources not installed — call egui_silx::install() first");
-    let fits = match res.curves.get_mut(index) {
-        Some(existing) => existing.update(&render_state.queue, curve),
-        None => false,
-    };
+    // Try in-place update first (needs mutable access to the existing curve).
+    let fits = res
+        .plots
+        .get_mut(&plot_id)
+        .and_then(|d| d.curves.get_mut(index))
+        .map(|existing| existing.update(&render_state.queue, curve))
+        .unwrap_or(false);
     if !fits {
         let gpu = GpuCurve::new(
             &render_state.device,
@@ -1151,9 +1200,10 @@ pub fn update_curve_at(render_state: &RenderState, index: usize, curve: &CurveDa
             &res.curve_pipeline,
             curve,
         );
-        match res.curves.get_mut(index) {
+        let plot_data = res.get_or_insert_plot(&render_state.device, plot_id);
+        match plot_data.curves.get_mut(index) {
             Some(slot) => *slot = gpu,
-            None => res.curves.push(gpu),
+            None => plot_data.curves.push(gpu),
         }
     }
 }
@@ -1164,21 +1214,24 @@ pub fn update_curve_at(render_state: &RenderState, index: usize, curve: &CurveDa
 pub(crate) struct ClearCallback {
     /// Linear color space, premultiplied RGBA.
     pub color: [f32; 4],
+    /// Which plot's GPU data to use.
+    pub plot_id: PlotId,
 }
 
 impl egui_wgpu::CallbackTrait for ClearCallback {
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen_descriptor: &egui_wgpu::ScreenDescriptor,
         _egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let res: &WgpuResources = resources
-            .get()
+        let res: &mut WgpuResources = resources
+            .get_mut()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
-        queue.write_buffer(&res.color_uniform, 0, bytemuck::bytes_of(&self.color));
+        let plot_data = res.get_or_insert_plot(device, self.plot_id);
+        queue.write_buffer(&plot_data.color_uniform, 0, bytemuck::bytes_of(&self.color));
         Vec::new()
     }
 
@@ -1191,9 +1244,11 @@ impl egui_wgpu::CallbackTrait for ClearCallback {
         let res: &WgpuResources = resources
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
-        render_pass.set_pipeline(&res.clear_pipeline);
-        render_pass.set_bind_group(0, &res.bind_group, &[]);
-        render_pass.draw(0..3, 0..1);
+        if let Some(plot_data) = res.plots.get(&self.plot_id) {
+            render_pass.set_pipeline(&res.clear_pipeline);
+            render_pass.set_bind_group(0, &plot_data.bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
     }
 }
 
@@ -1204,6 +1259,8 @@ pub(crate) struct ImageCallback {
     pub ortho: [[f32; 4]; 4],
     /// Per-axis log flag `[x, y]` (1.0 = log10), matching the transform.
     pub axis_log: [f32; 2],
+    /// Which plot's GPU data to use.
+    pub plot_id: PlotId,
 }
 
 impl egui_wgpu::CallbackTrait for ImageCallback {
@@ -1218,8 +1275,10 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
         let res: &WgpuResources = resources
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
-        for image in &res.images {
-            image.write_uniforms(queue, self.ortho, self.axis_log);
+        if let Some(plot_data) = res.plots.get(&self.plot_id) {
+            for image in &plot_data.images {
+                image.write_uniforms(queue, self.ortho, self.axis_log);
+            }
         }
         Vec::new()
     }
@@ -1233,8 +1292,10 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
         let res: &WgpuResources = resources
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
-        for image in &res.images {
-            image.draw(render_pass, &res.image_pipeline);
+        if let Some(plot_data) = res.plots.get(&self.plot_id) {
+            for image in &plot_data.images {
+                image.draw(render_pass, &res.image_pipeline);
+            }
         }
     }
 }
@@ -1260,6 +1321,8 @@ pub(crate) struct CurveCallback {
     /// `0` to disable decimation (e.g. a log x-axis, where equal data-x bins are
     /// not equal pixel columns).
     pub decimate_columns: u32,
+    /// Which plot's GPU data to use.
+    pub plot_id: PlotId,
 }
 
 impl CurveCallback {
@@ -1285,14 +1348,16 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
             .get_mut()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
         let (x_min, x_max) = self.x_window;
-        for curve in &mut res.curves {
-            // Re-decimate to the current view first (a no-op once the view is
-            // steady), recompute the dash arc length for the view (a no-op for
-            // solid lines / a steady view), then stamp the per-frame uniforms.
-            curve.ensure_decimated(queue, x_min, x_max, self.decimate_columns);
-            let (ortho, axis_log) = self.matrices_for(curve.y_axis);
-            curve.ensure_arclen(queue, ortho, axis_log, self.viewport_px);
-            curve.write_uniforms(queue, ortho, axis_log, self.viewport_px);
+        if let Some(plot_data) = res.plots.get_mut(&self.plot_id) {
+            for curve in &mut plot_data.curves {
+                // Re-decimate to the current view first (a no-op once the view is
+                // steady), recompute the dash arc length for the view (a no-op for
+                // solid lines / a steady view), then stamp the per-frame uniforms.
+                curve.ensure_decimated(queue, x_min, x_max, self.decimate_columns);
+                let (ortho, axis_log) = self.matrices_for(curve.y_axis);
+                curve.ensure_arclen(queue, ortho, axis_log, self.viewport_px);
+                curve.write_uniforms(queue, ortho, axis_log, self.viewport_px);
+            }
         }
         Vec::new()
     }
@@ -1309,17 +1374,19 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
         // Fills first (behind), then error bars, then lines, then markers, so
         // each stroke sits on top of its own fill, the line sits on top of its
         // error bars, and markers sit on top of every line.
-        for curve in &res.curves {
-            curve.draw_fill(render_pass, &res.curve_pipeline);
-        }
-        for curve in &res.curves {
-            curve.draw_errorbars(render_pass, &res.curve_pipeline);
-        }
-        for curve in &res.curves {
-            curve.draw(render_pass, &res.curve_pipeline);
-        }
-        for curve in &res.curves {
-            curve.draw_markers(render_pass, &res.curve_pipeline);
+        if let Some(plot_data) = res.plots.get(&self.plot_id) {
+            for curve in &plot_data.curves {
+                curve.draw_fill(render_pass, &res.curve_pipeline);
+            }
+            for curve in &plot_data.curves {
+                curve.draw_errorbars(render_pass, &res.curve_pipeline);
+            }
+            for curve in &plot_data.curves {
+                curve.draw(render_pass, &res.curve_pipeline);
+            }
+            for curve in &plot_data.curves {
+                curve.draw_markers(render_pass, &res.curve_pipeline);
+            }
         }
     }
 }

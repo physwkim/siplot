@@ -41,7 +41,7 @@ impl ImageApp {
         install(render_state);
 
         let image = build_image();
-        set_image(render_state, &image);
+        set_image(render_state, 0, &image);
 
         let mut plot = Plot::new(0);
         // Limits == image extent so the image fills the data area.

@@ -43,7 +43,7 @@ impl PerVertexColorApp {
             .expect("eframe must use the wgpu renderer (NativeOptions.renderer = Wgpu)");
         install(render_state);
 
-        set_curve(render_state, &build_curve());
+        set_curve(render_state, 0, &build_curve());
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, T_MAX, -1.2, 1.2);

@@ -35,7 +35,7 @@ impl LabelsApp {
 
         let (x, y) = build_points();
         let curve = CurveData::new(x, y, Color32::from_rgb(255, 170, 90)).with_width(2.0);
-        set_curve(render_state, &curve);
+        set_curve(render_state, 0, &curve);
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, T_MAX, -0.6, 0.6);

@@ -37,7 +37,7 @@ impl LogAxisApp {
             .expect("eframe must use the wgpu renderer (NativeOptions.renderer = Wgpu)");
         install(render_state);
 
-        set_curve(render_state, &build_curve());
+        set_curve(render_state, 0, &build_curve());
 
         let mut plot = Plot::new(0);
         // Y limits must be strictly positive for a log axis; span the full four

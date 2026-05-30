@@ -48,7 +48,7 @@ impl Y2App {
             egui::Color32::from_rgb(255, 160, 80),
         )
         .with_y_axis(YAxis::Right);
-        set_curves(render_state, &[left, right]);
+        set_curves(render_state, 0, &[left, right]);
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, 10.0, 0.0, 100.0);

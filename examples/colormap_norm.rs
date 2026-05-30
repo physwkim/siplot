@@ -64,7 +64,7 @@ impl NormApp {
         let data = build_field();
         let norm = Normalization::Linear;
         let image = ImageData::new(WIDTH, HEIGHT, data.clone(), colormap_for(norm));
-        set_image(render_state, &image);
+        set_image(render_state, 0, &image);
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, WIDTH as f64, 0.0, HEIGHT as f64);
@@ -84,7 +84,7 @@ impl NormApp {
         }
         self.norm = norm;
         let image = ImageData::new(WIDTH, HEIGHT, self.data.clone(), colormap_for(norm));
-        set_image(render_state, &image);
+        set_image(render_state, 0, &image);
         self.plot.colormap = image.colormap().cloned();
         self.plot.title = Some(format!(
             "colormap normalization · {} (1·2·3·4)",

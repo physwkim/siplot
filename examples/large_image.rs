@@ -51,7 +51,7 @@ impl LargeImageApp {
         let width = max_dim + 64;
 
         let image = build_image(width);
-        set_image(render_state, &image);
+        set_image(render_state, 0, &image);
 
         let mut plot = Plot::new(0);
         plot.limits = (0.0, image.width as f64, 0.0, image.height as f64);

@@ -76,12 +76,13 @@ impl LiveApp {
             base.clone(),
             Colormap::viridis(0.0, CLIM_MAX as f64),
         );
-        set_image(render_state, &image);
+        set_image(render_state, 0, &image);
 
         let x = curve_x();
         let red = egui::Color32::from_rgb(255, 96, 96);
         set_curve(
             render_state,
+            0,
             &CurveData::new(x.clone(), curve_y(&x, 0.0), red),
         );
 
@@ -117,6 +118,7 @@ impl eframe::App for LiveApp {
         let red = egui::Color32::from_rgb(255, 96, 96);
         update_curve(
             &render_state,
+            0,
             &CurveData::new(self.x.clone(), curve_y(&self.x, time * 2.0), red),
         );
 
@@ -125,10 +127,10 @@ impl eframe::App for LiveApp {
         let row = ((time * 40.0) as i64).rem_euclid(span as i64) as u32;
         if let Some(prev) = self.last_row {
             let restore = self.base_rows(prev).to_vec();
-            update_image_region(&render_state, 0, prev, WIDTH, BAR_H, &restore);
+            update_image_region(&render_state, 0, 0, prev, WIDTH, BAR_H, &restore);
         }
         let bright = vec![CLIM_MAX; (WIDTH * BAR_H) as usize];
-        update_image_region(&render_state, 0, row, WIDTH, BAR_H, &bright);
+        update_image_region(&render_state, 0, 0, row, WIDTH, BAR_H, &bright);
         self.last_row = Some(row);
 
         egui::CentralPanel::default().show_inside(ui, |ui| {

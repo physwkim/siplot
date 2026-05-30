@@ -36,7 +36,7 @@ impl AspectApp {
             .expect("eframe must use the wgpu renderer (NativeOptions.renderer = Wgpu)");
         install(render_state);
 
-        set_curve(render_state, &build_circle());
+        set_curve(render_state, 0, &build_circle());
 
         let mut plot = Plot::new(0);
         // Equal data limits on both axes; the aspect lock keeps pixels square.
