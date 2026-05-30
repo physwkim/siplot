@@ -7,8 +7,10 @@
 // 6 * (segment count) vertices builds two triangles per segment. Offsetting in
 // pixel space (using the data-area viewport size) keeps the width uniform
 // regardless of the data aspect ratio. Butt caps, no joins — for finely sampled
-// curves the per-segment gap at a turn is sub-pixel; round joins/caps and
-// anti-aliasing are later steps (doc/design.md §7·§13 B1).
+// curves the per-segment gap at a turn is sub-pixel; round joins/caps are a
+// later step (doc/design.md §7·§13 B1). Each quad is expanded by 1 px beyond
+// the nominal half-width; the fragment shader fades alpha smoothly to zero over
+// that outermost pixel, giving analytical sub-pixel AA without MSAA.
 //
 // When `use_vertex_color` is set, each quad vertex takes the color of its own
 // endpoint (point `seg` or `seg+1`), so the rasterizer interpolates a gradient
@@ -67,6 +69,11 @@ struct VsOut {
     @location(0) color: vec4<f32>,
     // Cumulative pixel arc length, interpolated along the segment for dashing.
     @location(1) arc: f32,
+    // Signed perpendicular distance from the segment centre, in pixels.
+    // The quad is expanded by 1 px on each side beyond half_width_px to
+    // accommodate the AA feather zone; |dist| == half_width_px + 1 at the
+    // outer edge, 0 at the centre.
+    @location(2) dist: f32,
 };
 
 @vertex
@@ -98,7 +105,11 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 
     let ep = endpoint[corner];
     let base = select(px0, px1, ep == 1u);
-    let pos_px = base + normal * (params.half_width_px * side[corner]);
+    // Expand the quad by 1 px beyond half_width_px to give the AA feather zone
+    // a full pixel of coverage without clipping.
+    let expanded_half_w = params.half_width_px + 1.0;
+    let side_f = side[corner];
+    let pos_px = base + normal * (expanded_half_w * side_f);
 
     // This vertex's endpoint color and arc length. `select` evaluates both arms,
     // so clamp the index to the bound array length to stay in-bounds for the
@@ -112,14 +123,21 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     out.pos = vec4<f32>(pos_px / half_vp, 0.0, 1.0);
     out.color = color;
     out.arc = arclen[ai];
+    out.dist = expanded_half_w * side_f;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // Analytical AA: fade linearly from fully opaque at the nominal edge
+    // (|dist| == half_width_px) to fully transparent 1 px further out.
+    // The quad was expanded by 1 px (see vs_main), so the feather zone is
+    // entirely within the rasterised area.
+    let aa = 1.0 - smoothstep(params.half_width_px, params.half_width_px + 1.0, abs(in.dist));
+
     let period = params.dash_cum.w;
     if (period <= 0.0) {
-        return in.color; // solid line
+        return in.color * aa; // solid line
     }
     // Phase within one dash period (in physical pixels).
     let s = in.arc + params.dash_offset;
@@ -127,10 +145,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // "On" spans: [0, cum.x) and [cum.y, cum.z). Everything else is a gap.
     let on = (p < params.dash_cum.x) || (p >= params.dash_cum.y && p < params.dash_cum.z);
     if (on) {
-        return in.color;
+        return in.color * aa;
     }
     if (params.use_gap_color > 0.5) {
-        return params.gap_color;
+        return params.gap_color * aa;
     }
     discard;
 }

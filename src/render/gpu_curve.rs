@@ -10,8 +10,10 @@
 //! a uniform thickness regardless of the data aspect ratio. The points are read
 //! from a read-only storage buffer; the draw is `6 × segment count` vertices,
 //! no vertex buffer. In-place re-upload ([`GpuCurve::update`]) reuses the buffer
-//! for live updates. Optional markers and per-vertex color are supported; round
-//! joins/caps and anti-aliasing are later steps (`doc/design.md` §7·§13 B1).
+//! for live updates. Optional markers and per-vertex color are supported.
+//! Analytical AA is applied in the fragment shader via a 1-px feather zone
+//! (each quad is expanded 1 px and alpha fades to zero at the outer edge).
+//! Round joins/caps remain a later step (`doc/design.md` §7·§13 B1).
 
 use std::num::NonZeroU64;
 
