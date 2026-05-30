@@ -36,6 +36,18 @@ name = "image_and_curve"
 path = "examples/image_and_curve.rs"
 
 [[example]]
+name = "high_level_plot_widget"
+path = "examples/high_level_plot_widget.rs"
+
+[[example]]
+name = "high_level_plot1d"
+path = "examples/high_level_plot1d.rs"
+
+[[example]]
+name = "high_level_plot2d"
+path = "examples/high_level_plot2d.rs"
+
+[[example]]
 name = "live_update"
 path = "examples/live_update.rs"
 
