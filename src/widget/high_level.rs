@@ -2986,6 +2986,84 @@ impl PlotWidget {
         self.events.push(PlotEvent::RoisCleared);
     }
 
+    /// Show a compact ROI manager panel: a table listing all current ROIs with
+    /// per-row remove buttons, buttons to add each ROI kind, and a clear-all
+    /// button. Mirrors silx `RegionOfInterestTableWidget` / `RegionOfInterestManager`.
+    ///
+    /// New ROIs are centered on the current plot view. Returns the index of any
+    /// newly added ROI, or `None` when none was added this frame.
+    pub fn show_roi_manager(&mut self, ui: &mut egui::Ui) -> Option<usize> {
+        let mut added: Option<usize> = None;
+        let mut remove_idx: Option<usize> = None;
+
+        // --- existing ROI table ---
+        egui::ScrollArea::vertical()
+            .max_height(200.0)
+            .show(ui, |ui| {
+                for (i, roi) in self.backend.plot().rois.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let desc = roi_description(roi);
+                        ui.label(desc);
+                        if ui.small_button("×").on_hover_text("Remove").clicked() {
+                            remove_idx = Some(i);
+                        }
+                    });
+                }
+            });
+
+        if let Some(idx) = remove_idx {
+            self.backend.plot_mut().rois.remove(idx);
+            self.events.push(PlotEvent::RoisCleared);
+        }
+
+        // --- add buttons ---
+        let (x0, x1, y0, y1) = self.backend.plot().limits;
+        let cx = (x0 + x1) * 0.5;
+        let cy = (y0 + y1) * 0.5;
+        let dx = (x1 - x0) * 0.2;
+        let dy = (y1 - y0) * 0.2;
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("+ Rect").clicked() {
+                let idx = self.add_roi(Roi::Rect {
+                    x: (cx - dx, cx + dx),
+                    y: (cy - dy, cy + dy),
+                });
+                added = Some(idx);
+            }
+            if ui.button("+ HRange").clicked() {
+                let idx = self.add_roi(Roi::HRange {
+                    y: (cy - dy, cy + dy),
+                });
+                added = Some(idx);
+            }
+            if ui.button("+ VRange").clicked() {
+                let idx = self.add_roi(Roi::VRange {
+                    x: (cx - dx, cx + dx),
+                });
+                added = Some(idx);
+            }
+            if ui.button("+ Point").clicked() {
+                let idx = self.add_roi(Roi::Point { x: cx, y: cy });
+                added = Some(idx);
+            }
+            if ui.button("+ Line").clicked() {
+                let idx = self.add_roi(Roi::Line {
+                    start: (cx - dx, cy),
+                    end: (cx + dx, cy),
+                });
+                added = Some(idx);
+            }
+        });
+
+        // --- clear all ---
+        if !self.backend.plot().rois.is_empty() && ui.button("Clear all").clicked() {
+            self.clear_rois();
+        }
+
+        added
+    }
+
     pub fn pick_item(&self, p: egui::Pos2, item: ItemHandle) -> Option<PickResult> {
         self.backend.pick_item(p, item)
     }
@@ -3195,6 +3273,24 @@ impl Deref for Plot2D {
 impl DerefMut for Plot2D {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
+    }
+}
+
+/// Short human-readable description of a single ROI for the ROI manager table.
+fn roi_description(roi: &Roi) -> String {
+    match roi {
+        Roi::Rect { x, y } => format!(
+            "Rect  x=[{:.3}, {:.3}]  y=[{:.3}, {:.3}]",
+            x.0, x.1, y.0, y.1
+        ),
+        Roi::HRange { y } => format!("HRange  y=[{:.3}, {:.3}]", y.0, y.1),
+        Roi::VRange { x } => format!("VRange  x=[{:.3}, {:.3}]", x.0, x.1),
+        Roi::Point { x, y } => format!("Point  ({x:.3}, {y:.3})"),
+        Roi::Line { start, end } => format!(
+            "Line  ({:.3},{:.3}) → ({:.3},{:.3})",
+            start.0, start.1, end.0, end.1
+        ),
+        Roi::Polygon { vertices } => format!("Polygon  {} vertices", vertices.len()),
     }
 }
 
