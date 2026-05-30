@@ -2965,14 +2965,43 @@ impl PlotWidget {
         self.backend.plot().y_constraints
     }
 
+    /// Invert the Y axis direction (top-to-bottom, as in image coordinates).
     pub fn set_y_inverted(&mut self, on: bool) {
         self.backend.set_y_inverted(on);
     }
 
+    /// Return `true` if the Y axis is inverted.
     pub fn is_y_inverted(&self) -> bool {
         self.backend.plot().y_inverted
     }
 
+    /// Set the maximum number of major ticks on the X axis.
+    ///
+    /// The chrome calls [`nice_ticks`](crate::widget::chrome::nice_ticks) with this
+    /// cap, so the actual count may be lower to keep round step sizes.
+    /// Pass `None` to restore the default (8 ticks).
+    pub fn set_x_tick_count(&mut self, n: Option<usize>) {
+        self.backend.plot_mut().x_max_ticks = n;
+    }
+
+    /// Return the current X tick-count cap, or `None` for the default (8).
+    pub fn x_tick_count(&self) -> Option<usize> {
+        self.backend.plot().x_max_ticks
+    }
+
+    /// Set the maximum number of major ticks on the Y axis.
+    ///
+    /// Pass `None` to restore the default (6 ticks).
+    pub fn set_y_tick_count(&mut self, n: Option<usize>) {
+        self.backend.plot_mut().y_max_ticks = n;
+    }
+
+    /// Return the current Y tick-count cap, or `None` for the default (6).
+    pub fn y_tick_count(&self) -> Option<usize> {
+        self.backend.plot().y_max_ticks
+    }
+
+    /// Keep data square on screen by expanding the tighter axis' display range.
     pub fn set_keep_data_aspect_ratio(&mut self, on: bool) {
         self.backend.set_keep_data_aspect_ratio(on);
     }

@@ -190,7 +190,14 @@ impl PlotView {
         }
 
         // Chrome (egui), drawn on top of / in the gutters around the data layer.
-        chrome::draw_axes(painter, &transform, &style, plot.grid);
+        chrome::draw_axes(
+            painter,
+            &transform,
+            &style,
+            plot.grid,
+            plot.x_max_ticks,
+            plot.y_max_ticks,
+        );
         if let Some(t_right) = &transform_right {
             chrome::draw_y2_ticks(painter, t_right, &style);
         }

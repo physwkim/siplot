@@ -196,6 +196,13 @@ pub struct Plot {
     pub x_constraints: AxisConstraints,
     /// Pan/zoom constraints for the left Y axis (silx `getYAxis().setRangeConstraints`).
     pub y_constraints: AxisConstraints,
+    /// Maximum number of major ticks on the X axis.  `None` uses the default
+    /// (8).  The chrome calls `nice_ticks` with this value, so the actual count
+    /// may be slightly lower to keep round step sizes.
+    pub x_max_ticks: Option<usize>,
+    /// Maximum number of major ticks on the left Y axis.  `None` uses the
+    /// default (6).
+    pub y_max_ticks: Option<usize>,
 }
 
 impl Plot {
@@ -229,6 +236,8 @@ impl Plot {
             grid: GraphGrid::Major,
             x_constraints: AxisConstraints::default(),
             y_constraints: AxisConstraints::default(),
+            x_max_ticks: None,
+            y_max_ticks: None,
         }
     }
 

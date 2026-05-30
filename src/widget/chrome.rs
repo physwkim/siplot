@@ -293,7 +293,17 @@ fn minor_ticks(axis: &Axis, major: &[(f64, String)]) -> Vec<f64> {
 }
 
 /// Draw the frame, optional grid, ticks, and tick labels around the data area.
-pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style, grid_mode: GraphGrid) {
+///
+/// `x_max_ticks` / `y_max_ticks` cap the number of major ticks on each axis.
+/// `None` falls back to the defaults (8 for X, 6 for Y).
+pub fn draw_axes(
+    painter: &Painter,
+    t: &Transform,
+    style: &Style,
+    grid_mode: GraphGrid,
+    x_max_ticks: Option<usize>,
+    y_max_ticks: Option<usize>,
+) {
     let area = t.area;
     let axis = Stroke::new(1.0, style.axis);
     let grid = Stroke::new(1.0, style.grid);
@@ -309,8 +319,8 @@ pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style, grid_mode: Gra
     let font = FontId::proportional(11.0);
     let tick_len = 4.0;
 
-    let xticks = axis_ticks(&t.x, 8);
-    let yticks = axis_ticks(&t.y, 6);
+    let xticks = axis_ticks(&t.x, x_max_ticks.unwrap_or(8));
+    let yticks = axis_ticks(&t.y, y_max_ticks.unwrap_or(6));
 
     if grid_mode.minor() {
         for xv in minor_ticks(&t.x, &xticks) {
