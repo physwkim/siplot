@@ -80,6 +80,16 @@ assert_eq!(plot.curve_by_legend("reference"), Some(handle));
 plot.set_active_item(Some(handle));
 ```
 
+For multiple curves, pass a different color and legend label per curve. The
+legend row uses that label and draws the curve swatch with the retained color:
+
+```rust
+plot.add_curve_with_legend(&x, &temperature, egui::Color32::YELLOW, "temperature");
+plot.add_curve_with_legend(&x, &pressure, egui::Color32::LIGHT_BLUE, "pressure");
+plot.add_curve_with_legend(&x, &reference, egui::Color32::LIGHT_RED, "reference");
+plot.show_legend(ui);
+```
+
 The active item drives `show_active_stats` and emits an event:
 
 ```rust

@@ -1,7 +1,7 @@
 //! High-level legend example.
 //!
-//! Shows the retained legend list with representative 1D, 2D, overlay, and
-//! annotation item kinds.
+//! Shows the retained legend list with multiple named curves, representative
+//! 2D items, overlay items, and annotation item kinds.
 //!
 //! Run with: `cargo run --example high_level_legend`
 
@@ -67,8 +67,32 @@ impl LegendDemoApp {
         plot.set_item_legend(mask_handle, "threshold mask");
 
         let x = x_values();
-        let y: Vec<f64> = x.iter().map(|x| 1.8 + (x * 1.8).sin()).collect();
-        plot.add_curve_with_legend(&x, &y, egui::Color32::from_rgb(245, 220, 72), "curve");
+        let temperature: Vec<f64> = x.iter().map(|x| 1.8 + (x * 1.8).sin()).collect();
+        plot.add_curve_with_legend(
+            &x,
+            &temperature,
+            egui::Color32::from_rgb(245, 220, 72),
+            "temperature",
+        );
+
+        let pressure: Vec<f64> = x
+            .iter()
+            .map(|x| 2.25 + (x * 1.15 + 0.8).cos() * 0.75)
+            .collect();
+        plot.add_curve_with_legend(
+            &x,
+            &pressure,
+            egui::Color32::from_rgb(80, 170, 255),
+            "pressure",
+        );
+
+        let reference: Vec<f64> = x.iter().map(|x| 0.65 + 0.22 * x).collect();
+        plot.add_curve_with_legend(
+            &x,
+            &reference,
+            egui::Color32::from_rgb(255, 120, 95),
+            "reference",
+        );
 
         let scatter_x: Vec<f64> = (0..18).map(|i| i as f64 * 0.65).collect();
         let scatter_y: Vec<f64> = scatter_x
