@@ -8,7 +8,7 @@
 //! Run with: `cargo run --example image`
 
 use eframe::egui;
-use egui_silx::{Colormap, ImageData, Plot, PlotWidget, install, set_image};
+use egui_silx::{Colormap, ImageData, Plot, PlotView, install, set_image};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
@@ -56,7 +56,7 @@ impl ImageApp {
 impl eframe::App for ImageApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

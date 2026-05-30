@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example aspect_ratio`
 
 use eframe::egui;
-use egui_silx::{CurveData, Plot, PlotWidget, install, set_curve};
+use egui_silx::{CurveData, Plot, PlotView, install, set_curve};
 
 fn build_circle() -> CurveData {
     let n = 256usize;
@@ -50,7 +50,7 @@ impl AspectApp {
 impl eframe::App for AspectApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

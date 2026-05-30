@@ -10,7 +10,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use egui_silx::{Baseline, CurveData, Plot, PlotWidget, install, set_curves};
+use egui_silx::{Baseline, CurveData, Plot, PlotView, install, set_curves};
 
 const T_MAX: f64 = std::f64::consts::TAU;
 
@@ -79,7 +79,7 @@ impl FillApp {
 impl eframe::App for FillApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

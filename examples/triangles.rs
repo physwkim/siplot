@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example triangles`
 
 use eframe::egui;
-use egui_silx::{Plot, PlotWidget, Triangles, install};
+use egui_silx::{Plot, PlotView, Triangles, install};
 
 const NX: usize = 8;
 const NY: usize = 6;
@@ -67,7 +67,7 @@ impl TriApp {
 impl eframe::App for TriApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

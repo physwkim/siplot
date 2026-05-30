@@ -8,8 +8,18 @@
 
 use std::num::NonZeroU64;
 
+use egui::{Color32, Pos2, Rect};
 use egui_wgpu::{RenderState, wgpu};
 
+use crate::core::backend::{
+    Backend, CurveColor, CurveSpec, ImagePixelsSpec, ImageSpec, ItemHandle, MarkerSpec, PickResult,
+    ShapeSpec, TriangleSpec,
+};
+use crate::core::marker::Marker;
+use crate::core::plot::{Plot, PlotId};
+use crate::core::shape::{Shape, ShapeKind};
+use crate::core::transform::{Margins, Scale, Transform, YAxis};
+use crate::core::triangles::Triangles;
 use crate::render::gpu_curve::{CurveData, CurvePipeline, GpuCurve};
 use crate::render::gpu_image::{GpuImage, ImageData, ImagePipeline};
 
@@ -24,7 +34,7 @@ pub struct WgpuResources {
     color_uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     image_pipeline: ImagePipeline,
-    image: Option<GpuImage>,
+    images: Vec<GpuImage>,
     curve_pipeline: CurvePipeline,
     /// All curves on the plot, drawn in order. Each carries its own Y-axis
     /// binding (left or y2), selected per frame in [`CurveCallback`].
@@ -106,7 +116,7 @@ impl WgpuResources {
             color_uniform,
             bind_group,
             image_pipeline,
-            image: None,
+            images: Vec::new(),
             curve_pipeline,
             curves: Vec::new(),
         }
@@ -159,7 +169,7 @@ impl WgpuResources {
 
         // Stamp the offscreen uniforms (line width uses the target pixel size).
         let viewport_px = [w as f32, h as f32];
-        if let Some(image) = &self.image {
+        for image in &self.images {
             image.write_uniforms(queue, ortho_left, axis_log_left);
         }
         for curve in &self.curves {
@@ -197,7 +207,7 @@ impl WgpuResources {
             // The render pass viewport defaults to the full target. Fills, then
             // error bars, then lines, then markers, mirroring the on-screen draw
             // order.
-            if let Some(image) = &self.image {
+            for image in &self.images {
                 image.draw(&mut rp, &self.image_pipeline);
             }
             for curve in &self.curves {
@@ -262,6 +272,533 @@ impl WgpuResources {
     }
 }
 
+#[derive(Clone, Debug)]
+enum BackendItem {
+    Curve { handle: ItemHandle, data: CurveData },
+    Image { handle: ItemHandle, data: ImageData },
+    Triangles { handle: ItemHandle, data: Triangles },
+    Shape { handle: ItemHandle, data: Shape },
+    Marker { handle: ItemHandle, data: Marker },
+}
+
+impl BackendItem {
+    fn handle(&self) -> ItemHandle {
+        match self {
+            BackendItem::Curve { handle, .. }
+            | BackendItem::Image { handle, .. }
+            | BackendItem::Triangles { handle, .. }
+            | BackendItem::Shape { handle, .. }
+            | BackendItem::Marker { handle, .. } => *handle,
+        }
+    }
+}
+
+/// Retained wgpu implementation of the backend-facing API.
+///
+/// The struct owns the plot model plus the backend item registry. GPU data
+/// items (`add_curve`/`add_image`) are synchronized into [`WgpuResources`];
+/// overlay items (`add_triangles`/`add_shape`/`add_marker`) are mirrored onto
+/// [`Plot`] so [`crate::PlotView`] draws them each frame.
+pub struct WgpuBackend {
+    render_state: RenderState,
+    plot: Plot,
+    next_handle: ItemHandle,
+    items: Vec<BackendItem>,
+    last_data_area: Option<Rect>,
+}
+
+impl WgpuBackend {
+    /// Install wgpu resources and create an empty backend for `plot_id`.
+    pub fn new(render_state: &RenderState, plot_id: PlotId) -> Self {
+        Self::from_plot(render_state, Plot::new(plot_id))
+    }
+
+    /// Install wgpu resources and attach an existing plot model.
+    pub fn from_plot(render_state: &RenderState, plot: Plot) -> Self {
+        install(render_state);
+        Self {
+            render_state: render_state.clone(),
+            plot,
+            next_handle: 1,
+            items: Vec::new(),
+            last_data_area: None,
+        }
+    }
+
+    /// The plot model to pass to [`crate::PlotView`].
+    pub fn plot(&self) -> &Plot {
+        &self.plot
+    }
+
+    /// Mutable plot model to pass to [`crate::PlotView`].
+    pub fn plot_mut(&mut self) -> &mut Plot {
+        &mut self.plot
+    }
+
+    /// Record the data-area rect returned by the widget's transform. This
+    /// enables [`Backend::data_to_pixel`], [`Backend::pixel_to_data`], and
+    /// [`Backend::plot_bounds_in_pixels`] between frames.
+    pub fn set_plot_bounds_in_pixels(&mut self, data_area: Rect) {
+        self.last_data_area = Some(data_area);
+    }
+
+    fn alloc_handle(&mut self) -> ItemHandle {
+        let handle = self.next_handle;
+        self.next_handle = self
+            .next_handle
+            .checked_add(1)
+            .expect("backend item handle overflow");
+        handle
+    }
+
+    fn sync_gpu_items(&self) {
+        let images: Vec<ImageData> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                BackendItem::Image { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        let curves: Vec<CurveData> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                BackendItem::Curve { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        set_images(&self.render_state, &images);
+        set_curves(&self.render_state, &curves);
+    }
+
+    fn sync_plot_items(&mut self) {
+        self.plot.triangles = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                BackendItem::Triangles { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        self.plot.shapes = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                BackendItem::Shape { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        self.plot.markers = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                BackendItem::Marker { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        self.plot.colormap = self.items.iter().rev().find_map(|item| match item {
+            BackendItem::Image { data, .. } => data.colormap().cloned(),
+            _ => None,
+        });
+    }
+
+    fn transform_for(&self, axis: YAxis) -> Option<Transform> {
+        let area = self.last_data_area?;
+        match axis {
+            YAxis::Left => Some(self.plot.transform(area)),
+            YAxis::Right => self.plot.transform_y2(area),
+        }
+    }
+
+    fn find_item(&self, handle: ItemHandle) -> Option<&BackendItem> {
+        self.items.iter().find(|item| item.handle() == handle)
+    }
+
+    /// Replace the data/style for an existing curve handle.
+    pub fn update_curve(&mut self, handle: ItemHandle, curve: CurveSpec<'_>) -> bool {
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| matches!(item, BackendItem::Curve { handle: h, .. } if *h == handle))
+        else {
+            return false;
+        };
+        *item = BackendItem::Curve {
+            handle,
+            data: curve_data_from_spec(curve),
+        };
+        self.sync_gpu_items();
+        true
+    }
+
+    /// Replace the data/style for an existing image handle.
+    pub fn update_image(&mut self, handle: ItemHandle, image: ImageSpec<'_>) -> bool {
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| matches!(item, BackendItem::Image { handle: h, .. } if *h == handle))
+        else {
+            return false;
+        };
+        *item = BackendItem::Image {
+            handle,
+            data: image_data_from_spec(image),
+        };
+        self.sync_plot_items();
+        self.sync_gpu_items();
+        true
+    }
+
+    /// Remove every backend item and synchronize GPU/plot state.
+    pub fn clear_items(&mut self) {
+        self.items.clear();
+        self.sync_plot_items();
+        self.sync_gpu_items();
+    }
+}
+
+impl Backend for WgpuBackend {
+    type SaveError = crate::render::save::SaveError;
+
+    fn add_curve(&mut self, curve: CurveSpec<'_>) -> ItemHandle {
+        let handle = self.alloc_handle();
+        self.items.push(BackendItem::Curve {
+            handle,
+            data: curve_data_from_spec(curve),
+        });
+        self.sync_gpu_items();
+        handle
+    }
+
+    fn add_image(&mut self, image: ImageSpec<'_>) -> ItemHandle {
+        let handle = self.alloc_handle();
+        self.items.push(BackendItem::Image {
+            handle,
+            data: image_data_from_spec(image),
+        });
+        self.sync_plot_items();
+        self.sync_gpu_items();
+        handle
+    }
+
+    fn add_triangles(&mut self, tris: TriangleSpec<'_>) -> ItemHandle {
+        let handle = self.alloc_handle();
+        self.items.push(BackendItem::Triangles {
+            handle,
+            data: triangles_from_spec(tris),
+        });
+        self.sync_plot_items();
+        handle
+    }
+
+    fn add_shape(&mut self, shape: ShapeSpec<'_>) -> ItemHandle {
+        let handle = self.alloc_handle();
+        self.items.push(BackendItem::Shape {
+            handle,
+            data: shape_from_spec(shape),
+        });
+        self.sync_plot_items();
+        handle
+    }
+
+    fn add_marker(&mut self, marker: MarkerSpec<'_>) -> ItemHandle {
+        let handle = self.alloc_handle();
+        self.items.push(BackendItem::Marker {
+            handle,
+            data: marker_from_spec(marker),
+        });
+        self.sync_plot_items();
+        handle
+    }
+
+    fn remove(&mut self, item: ItemHandle) -> bool {
+        let before = self.items.len();
+        self.items.retain(|existing| existing.handle() != item);
+        let removed = self.items.len() != before;
+        if removed {
+            self.sync_plot_items();
+            self.sync_gpu_items();
+        }
+        removed
+    }
+
+    fn set_limits(&mut self, xmin: f64, xmax: f64, ymin: f64, ymax: f64, y2: Option<(f64, f64)>) {
+        self.plot.limits = (xmin, xmax, ymin, ymax);
+        self.plot.y2 = y2;
+    }
+
+    fn x_limits(&self) -> (f64, f64) {
+        (self.plot.limits.0, self.plot.limits.1)
+    }
+
+    fn y_limits(&self, axis: YAxis) -> Option<(f64, f64)> {
+        match axis {
+            YAxis::Left => Some((self.plot.limits.2, self.plot.limits.3)),
+            YAxis::Right => self.plot.y2,
+        }
+    }
+
+    fn set_x_log(&mut self, on: bool) {
+        self.plot.x_scale = if on { Scale::Log10 } else { Scale::Linear };
+    }
+
+    fn set_y_log(&mut self, on: bool) {
+        self.plot.y_scale = if on { Scale::Log10 } else { Scale::Linear };
+    }
+
+    fn set_x_inverted(&mut self, on: bool) {
+        self.plot.x_inverted = on;
+    }
+
+    fn set_y_inverted(&mut self, on: bool) {
+        self.plot.y_inverted = on;
+    }
+
+    fn set_keep_data_aspect_ratio(&mut self, on: bool) {
+        self.plot.keep_aspect = on;
+    }
+
+    fn data_to_pixel(&self, x: f64, y: f64, axis: YAxis) -> Option<Pos2> {
+        self.transform_for(axis).map(|t| t.data_to_pixel(x, y))
+    }
+
+    fn pixel_to_data(&self, p: Pos2, axis: YAxis) -> Option<(f64, f64)> {
+        self.transform_for(axis).map(|t| t.pixel_to_data(p))
+    }
+
+    fn plot_bounds_in_pixels(&self) -> Option<Rect> {
+        self.last_data_area
+    }
+
+    fn set_axes_margins(&mut self, margins: Margins) {
+        self.plot.margins = margins;
+    }
+
+    fn set_title(&mut self, title: Option<&str>) {
+        self.plot.title = title.map(ToOwned::to_owned);
+    }
+
+    fn set_x_label(&mut self, label: Option<&str>) {
+        self.plot.x_label = label.map(ToOwned::to_owned);
+    }
+
+    fn set_y_label(&mut self, label: Option<&str>, axis: YAxis) {
+        match axis {
+            YAxis::Left => self.plot.y_label = label.map(ToOwned::to_owned),
+            YAxis::Right => self.plot.y2_label = label.map(ToOwned::to_owned),
+        }
+    }
+
+    fn set_foreground_colors(&mut self, foreground: Color32, grid: Color32) {
+        self.plot.foreground = Some(foreground);
+        self.plot.grid_color = Some(grid);
+    }
+
+    fn set_background_colors(&mut self, _background: Color32, data_background: Color32) {
+        self.plot.data_background = data_background;
+    }
+
+    fn pick_item(&self, p: Pos2, item: ItemHandle) -> Option<PickResult> {
+        match self.find_item(item)? {
+            BackendItem::Curve { data, .. } => {
+                let transform = self
+                    .transform_for(data.y_axis)
+                    .or_else(|| self.transform_for(YAxis::Left))?;
+                nearest_curve_point(data, &transform, p, 3.0)
+            }
+            BackendItem::Image { data, .. } => {
+                let transform = self.transform_for(YAxis::Left)?;
+                image_index(data, &transform, p)
+                    .map(|(col, row)| PickResult::ImagePixel { col, row })
+            }
+            BackendItem::Triangles { .. }
+            | BackendItem::Shape { .. }
+            | BackendItem::Marker { .. } => None,
+        }
+    }
+
+    fn items_back_to_front(&self) -> Vec<ItemHandle> {
+        self.items.iter().map(BackendItem::handle).collect()
+    }
+
+    fn replot(&mut self) {
+        self.sync_plot_items();
+        self.sync_gpu_items();
+    }
+
+    fn save_graph(&self, path: &std::path::Path, size: (u32, u32)) -> Result<(), Self::SaveError> {
+        crate::render::save::save_graph(&self.render_state, &self.plot, size, path)
+    }
+}
+
+fn apply_alpha(color: Color32, alpha: f32) -> Color32 {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let a = ((color.a() as f32) * alpha).round() as u8;
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
+}
+
+fn curve_data_from_spec(spec: CurveSpec<'_>) -> CurveData {
+    let color = match spec.color {
+        CurveColor::Uniform(color) => apply_alpha(color, spec.alpha),
+        CurveColor::PerVertex(colors) => colors
+            .first()
+            .copied()
+            .map(|color| apply_alpha(color, spec.alpha))
+            .unwrap_or(Color32::WHITE),
+    };
+    let mut curve = CurveData::new(spec.x.to_vec(), spec.y.to_vec(), color)
+        .with_width(spec.line_width)
+        .with_line_style(spec.line_style)
+        .with_marker_size(spec.symbol_size)
+        .with_y_axis(spec.y_axis);
+    if let CurveColor::PerVertex(colors) = spec.color {
+        curve = curve.with_colors(
+            colors
+                .iter()
+                .copied()
+                .map(|color| apply_alpha(color, spec.alpha))
+                .collect(),
+        );
+    }
+    if let Some(gap_color) = spec.gap_color {
+        curve = curve.with_gap_color(apply_alpha(gap_color, spec.alpha));
+    }
+    if let Some(symbol) = spec.symbol {
+        curve = curve.with_symbol(symbol);
+    }
+    if let Some(error) = spec.x_error {
+        curve = curve.with_x_error(error);
+    }
+    if let Some(error) = spec.y_error {
+        curve = curve.with_y_error(error);
+    }
+    if spec.fill {
+        curve = curve.with_fill(spec.baseline);
+    }
+    curve
+}
+
+fn image_data_from_spec(spec: ImageSpec<'_>) -> ImageData {
+    let mut image = match spec.pixels {
+        ImagePixelsSpec::Scalar {
+            width,
+            height,
+            data,
+            colormap,
+        } => ImageData::new(width, height, data.to_vec(), *colormap),
+        ImagePixelsSpec::Rgba {
+            width,
+            height,
+            data,
+        } => ImageData::rgba(width, height, data.to_vec()),
+    };
+    image.origin = spec.origin;
+    image.scale = spec.scale;
+    image.alpha = spec.alpha.clamp(0.0, 1.0);
+    image
+}
+
+fn triangles_from_spec(spec: TriangleSpec<'_>) -> Triangles {
+    Triangles::new(
+        spec.x.to_vec(),
+        spec.y.to_vec(),
+        spec.triangles.to_vec(),
+        spec.colors.to_vec(),
+    )
+    .with_alpha(spec.alpha)
+}
+
+fn shape_from_spec(spec: ShapeSpec<'_>) -> Shape {
+    let _overlay = spec.overlay;
+    let shape = match spec.kind {
+        ShapeKind::Polygon => Shape::polygon(spec.x.to_vec(), spec.y.to_vec()),
+        ShapeKind::Rectangle => {
+            assert!(
+                spec.x.len() >= 2 && spec.y.len() >= 2,
+                "rectangle shape requires two x and two y coordinates"
+            );
+            Shape::rectangle(spec.x[0], spec.y[0], spec.x[1], spec.y[1])
+        }
+        ShapeKind::Polyline => Shape::polyline(spec.x.to_vec(), spec.y.to_vec()),
+        ShapeKind::HLine => Shape::hlines(spec.y.to_vec()),
+        ShapeKind::VLine => Shape::vlines(spec.x.to_vec()),
+    };
+    let mut shape = shape
+        .with_color(spec.color)
+        .with_fill(spec.fill)
+        .with_line_style(spec.line_style)
+        .with_line_width(spec.line_width);
+    if let Some(gap_color) = spec.gap_color {
+        shape = shape.with_gap_color(gap_color);
+    }
+    shape
+}
+
+fn marker_from_spec(spec: MarkerSpec<'_>) -> Marker {
+    let mut marker = match (spec.x, spec.y) {
+        (Some(x), Some(y)) => {
+            let mut marker = Marker::point(x, y).with_symbol_size(spec.symbol_size);
+            if let Some(symbol) = spec.symbol {
+                marker = marker.with_symbol(symbol);
+            }
+            marker
+        }
+        (Some(x), None) => Marker::vline(x),
+        (None, Some(y)) => Marker::hline(y),
+        (None, None) => panic!("marker requires at least one coordinate"),
+    }
+    .with_color(spec.color)
+    .with_line_style(spec.line_style)
+    .with_line_width(spec.line_width)
+    .with_y_axis(spec.y_axis);
+    if let Some(text) = spec.text {
+        marker = marker.with_text(text);
+    }
+    if let Some(bg_color) = spec.bg_color {
+        marker = marker.with_bgcolor(bg_color);
+    }
+    marker
+}
+
+fn nearest_curve_point(
+    data: &CurveData,
+    transform: &Transform,
+    cursor: Pos2,
+    threshold_px: f32,
+) -> Option<PickResult> {
+    let mut best: Option<(usize, f64, f64, f32)> = None;
+    for (index, (&x, &y)) in data.x.iter().zip(&data.y).enumerate() {
+        let dist_px = transform.data_to_pixel(x, y).distance(cursor);
+        if dist_px <= threshold_px && best.is_none_or(|(_, _, _, best_dist)| dist_px < best_dist) {
+            best = Some((index, x, y, dist_px));
+        }
+    }
+    best.map(|(index, x, y, distance_px)| PickResult::CurvePoint {
+        index,
+        x,
+        y,
+        distance_px,
+    })
+}
+
+fn image_index(data: &ImageData, transform: &Transform, cursor: Pos2) -> Option<(u32, u32)> {
+    if data.scale.0 <= 0.0 || data.scale.1 <= 0.0 {
+        return None;
+    }
+    let (x, y) = transform.pixel_to_data(cursor);
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let col = ((x - data.origin.0) / data.scale.0).floor();
+    let row = ((y - data.origin.1) / data.scale.1).floor();
+    if col < 0.0 || row < 0.0 {
+        return None;
+    }
+    let (col, row) = (col as u32, row as u32);
+    (col < data.width && row < data.height).then_some((col, row))
+}
+
 /// Install [`WgpuResources`] into eframe's `RenderState` once. Call this at app
 /// creation with the `RenderState` obtained from the `CreationContext`.
 pub fn install(render_state: &RenderState) {
@@ -277,18 +814,28 @@ pub fn install(render_state: &RenderState) {
 /// [`install`] to have run first. The image is uploaded once here; the per-frame
 /// transform is applied by [`ImageCallback`].
 pub fn set_image(render_state: &RenderState, image: &ImageData) {
+    set_images(render_state, std::slice::from_ref(image));
+}
+
+/// Upload `images` to the GPU as the plot's full image set (replacing any
+/// existing images), preserving order. Requires [`install`] to have run first.
+pub fn set_images(render_state: &RenderState, images: &[ImageData]) {
     let mut renderer = render_state.renderer.write();
     let res: &mut WgpuResources = renderer
         .callback_resources
         .get_mut()
         .expect("WgpuResources not installed — call egui_silx::install() first");
-    let gpu = GpuImage::new(
-        &render_state.device,
-        &render_state.queue,
-        &res.image_pipeline,
-        image,
-    );
-    res.image = Some(gpu);
+    res.images = images
+        .iter()
+        .map(|image| {
+            GpuImage::new(
+                &render_state.device,
+                &render_state.queue,
+                &res.image_pipeline,
+                image,
+            )
+        })
+        .collect();
 }
 
 /// Upload `curve` to the GPU as the plot's sole curve (replacing any existing
@@ -337,7 +884,7 @@ pub fn update_image_region(
         .callback_resources
         .get()
         .expect("WgpuResources not installed — call egui_silx::install() first");
-    if let Some(image) = &res.image {
+    if let Some(image) = res.images.first() {
         image.update_region(&render_state.queue, x0, y0, w, h, data);
     }
 }
@@ -437,7 +984,7 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
         let res: &WgpuResources = resources
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
-        if let Some(image) = &res.image {
+        for image in &res.images {
             image.write_uniforms(queue, self.ortho, self.axis_log);
         }
         Vec::new()
@@ -452,7 +999,7 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
         let res: &WgpuResources = resources
             .get()
             .expect("WgpuResources not installed — call egui_silx::install() at startup");
-        if let Some(image) = &res.image {
+        for image in &res.images {
             image.draw(render_pass, &res.image_pipeline);
         }
     }
@@ -540,5 +1087,151 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
         for curve in &res.curves {
             curve.draw_markers(render_pass, &res.curve_pipeline);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Color32, Rect, pos2};
+
+    use crate::core::colormap::Colormap;
+    use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
+    use crate::core::marker::{MarkerKind, MarkerSymbol};
+    use crate::render::gpu_image::ImagePixels;
+
+    #[test]
+    fn curve_spec_conversion_preserves_backend_fields() {
+        let x = [0.0, 1.0, 2.0];
+        let y = [3.0, 4.0, 5.0];
+        let colors = [
+            Color32::from_rgba_unmultiplied(10, 20, 30, 200),
+            Color32::from_rgba_unmultiplied(40, 50, 60, 200),
+            Color32::from_rgba_unmultiplied(70, 80, 90, 200),
+        ];
+        let spec = CurveSpec {
+            x: &x,
+            y: &y,
+            color: CurveColor::PerVertex(&colors),
+            gap_color: Some(Color32::from_rgba_unmultiplied(1, 2, 3, 200)),
+            symbol: Some(Symbol::Square),
+            line_width: 4.0,
+            line_style: LineStyle::Dashed,
+            y_axis: YAxis::Right,
+            x_error: Some(ErrorBars::Symmetric(0.5)),
+            y_error: Some(ErrorBars::PerPoint(vec![0.1, 0.2, 0.3])),
+            fill: true,
+            alpha: 0.5,
+            symbol_size: 9.0,
+            baseline: Baseline::PerPoint(vec![1.0, 1.5, 2.0]),
+        };
+
+        let curve = curve_data_from_spec(spec);
+        assert_eq!(curve.x, x);
+        assert_eq!(curve.y, y);
+        assert_eq!(curve.color, apply_alpha(colors[0], 0.5));
+        assert_eq!(
+            curve.colors,
+            Some(vec![
+                apply_alpha(colors[0], 0.5),
+                apply_alpha(colors[1], 0.5),
+                apply_alpha(colors[2], 0.5),
+            ])
+        );
+        assert_eq!(
+            curve.gap_color,
+            Some(apply_alpha(
+                Color32::from_rgba_unmultiplied(1, 2, 3, 200),
+                0.5
+            ))
+        );
+        assert_eq!(curve.symbol, Some(Symbol::Square));
+        assert_eq!(curve.width, 4.0);
+        assert_eq!(curve.line_style, LineStyle::Dashed);
+        assert_eq!(curve.y_axis, YAxis::Right);
+        assert_eq!(curve.x_error, Some(ErrorBars::Symmetric(0.5)));
+        assert_eq!(
+            curve.y_error,
+            Some(ErrorBars::PerPoint(vec![0.1, 0.2, 0.3]))
+        );
+        assert!(curve.fill);
+        assert_eq!(curve.baseline, Baseline::PerPoint(vec![1.0, 1.5, 2.0]));
+        assert_eq!(curve.marker_size, 9.0);
+    }
+
+    #[test]
+    fn image_spec_conversion_sets_geometry_and_alpha() {
+        let pixels = [0.0, 1.0, 2.0, 3.0];
+        let image = image_data_from_spec(ImageSpec {
+            pixels: ImagePixelsSpec::Scalar {
+                width: 2,
+                height: 2,
+                data: &pixels,
+                colormap: Box::new(Colormap::viridis(0.0, 3.0)),
+            },
+            origin: (10.0, 20.0),
+            scale: (0.5, 2.0),
+            alpha: 1.5,
+        });
+
+        assert_eq!(image.width, 2);
+        assert_eq!(image.height, 2);
+        assert_eq!(image.origin, (10.0, 20.0));
+        assert_eq!(image.scale, (0.5, 2.0));
+        assert_eq!(image.alpha, 1.0);
+        match image.pixels {
+            ImagePixels::Scalar { data, .. } => assert_eq!(data, pixels),
+            ImagePixels::Rgba { .. } => panic!("expected scalar image"),
+        }
+    }
+
+    #[test]
+    fn marker_spec_conversion_selects_kind_and_style() {
+        let marker = marker_from_spec(MarkerSpec {
+            x: Some(1.0),
+            y: Some(2.0),
+            text: Some("peak"),
+            color: Color32::RED,
+            symbol: Some(MarkerSymbol::Diamond),
+            symbol_size: 11.0,
+            line_style: LineStyle::Dotted,
+            line_width: 3.0,
+            y_axis: YAxis::Right,
+            bg_color: Some(Color32::BLACK),
+        });
+
+        assert_eq!(
+            marker.kind,
+            MarkerKind::Point {
+                x: 1.0,
+                y: 2.0,
+                symbol: MarkerSymbol::Diamond,
+                size: 11.0,
+            }
+        );
+        assert_eq!(marker.text.as_deref(), Some("peak"));
+        assert_eq!(marker.color, Color32::RED);
+        assert_eq!(marker.bgcolor, Some(Color32::BLACK));
+        assert_eq!(marker.line_style, LineStyle::Dotted);
+        assert_eq!(marker.line_width, 3.0);
+        assert_eq!(marker.y_axis, YAxis::Right);
+    }
+
+    #[test]
+    fn image_pick_uses_origin_scale_and_transform() {
+        let image = ImageData::new(4, 3, vec![0.0; 12], Colormap::viridis(0.0, 1.0));
+        let transform = Transform::new(
+            0.0,
+            4.0,
+            0.0,
+            3.0,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 300.0)),
+        );
+
+        assert_eq!(
+            image_index(&image, &transform, pos2(150.0, 150.0)),
+            Some((1, 1))
+        );
+        assert_eq!(image_index(&image, &transform, pos2(450.0, 150.0)), None);
     }
 }

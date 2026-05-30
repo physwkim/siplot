@@ -9,7 +9,7 @@
 //! Run with: `cargo run --example shapes`
 
 use eframe::egui;
-use egui_silx::{LineStyle, Plot, PlotWidget, Shape, install};
+use egui_silx::{LineStyle, Plot, PlotView, Shape, install};
 
 struct ShapeApp {
     plot: Plot,
@@ -71,7 +71,7 @@ impl ShapeApp {
 impl eframe::App for ShapeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

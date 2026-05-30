@@ -10,7 +10,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use egui_silx::{CurveData, ErrorBars, Plot, PlotWidget, Symbol, install, set_curves};
+use egui_silx::{CurveData, ErrorBars, Plot, PlotView, Symbol, install, set_curves};
 
 fn build() -> Vec<CurveData> {
     let x: Vec<f64> = (0..9).map(|i| i as f64).collect();
@@ -70,7 +70,7 @@ impl ErrorBarsApp {
 impl eframe::App for ErrorBarsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

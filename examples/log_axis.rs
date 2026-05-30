@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example log_axis`
 
 use eframe::egui;
-use egui_silx::{CurveData, Plot, PlotWidget, Scale, install, set_curve};
+use egui_silx::{CurveData, Plot, PlotView, Scale, install, set_curve};
 
 fn build_curve() -> CurveData {
     // Power law y = 10^(x/12): a straight line on a log10 Y axis.
@@ -52,7 +52,7 @@ impl LogAxisApp {
 impl eframe::App for LogAxisApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

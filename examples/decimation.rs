@@ -10,7 +10,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use egui_silx::{CurveData, Plot, PlotWidget, install, set_curve};
+use egui_silx::{CurveData, Plot, PlotView, install, set_curve};
 
 const N: usize = 500_000;
 
@@ -58,7 +58,7 @@ impl eframe::App for DecimationApp {
             ui.label(format!(
                 "{N} source points — left-drag to box-zoom, double-click to reset"
             ));
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

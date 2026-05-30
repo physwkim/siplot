@@ -1,7 +1,7 @@
 //! Picking example: highlight the curve vertex nearest the pointer.
 //!
 //! The app keeps a CPU copy of the curve points (the GPU upload is a render
-//! mirror). `PlotWidget::show` returns the display `Transform`; on hover the app
+//! mirror). `PlotView::show` returns the display `Transform`; on hover the app
 //! calls `nearest_point` to find the closest vertex within a pixel threshold and
 //! draws a highlight ring + an index/coordinate readout (`doc/design.md`
 //! §13 C2).
@@ -10,7 +10,7 @@
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Stroke, vec2};
-use egui_silx::{CurveData, Plot, PlotWidget, Symbol, install, nearest_point, set_curve};
+use egui_silx::{CurveData, Plot, PlotView, Symbol, install, nearest_point, set_curve};
 
 const N: usize = 24;
 
@@ -55,7 +55,7 @@ impl PickingApp {
 impl eframe::App for PickingApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            let out = PlotWidget::new().show(ui, &mut self.plot);
+            let out = PlotView::new().show(ui, &mut self.plot);
             // Highlight the nearest vertex within 14 px of the pointer.
             if let Some(cursor) = out.response.hover_pos()
                 && let Some(pick) = nearest_point(&self.points, &out.transform, cursor, 14.0)

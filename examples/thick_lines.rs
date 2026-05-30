@@ -8,7 +8,7 @@
 //! Run with: `cargo run --example thick_lines`
 
 use eframe::egui;
-use egui_silx::{CurveData, Plot, PlotWidget, install, set_curves};
+use egui_silx::{CurveData, Plot, PlotView, install, set_curves};
 
 const N: usize = 300;
 
@@ -53,7 +53,7 @@ impl ThickLinesApp {
 impl eframe::App for ThickLinesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

@@ -21,6 +21,30 @@ use crate::core::triangles::Triangles;
 /// current steps handle a single plot, so no separation map exists yet.
 pub type PlotId = u64;
 
+/// Grid lines drawn in the plot data area.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GraphGrid {
+    /// No grid lines.
+    None,
+    /// Major tick grid lines only.
+    #[default]
+    Major,
+    /// Major and minor tick grid lines.
+    MajorAndMinor,
+}
+
+impl GraphGrid {
+    /// Whether major grid lines are drawn.
+    pub fn major(self) -> bool {
+        matches!(self, Self::Major | Self::MajorAndMinor)
+    }
+
+    /// Whether minor grid lines are drawn.
+    pub fn minor(self) -> bool {
+        matches!(self, Self::MajorAndMinor)
+    }
+}
+
 /// One plot.
 pub struct Plot {
     /// Instance identifier.
@@ -88,6 +112,8 @@ pub struct Plot {
     /// Grid-line color override (silx `setGridColor`). `None` uses a faint tint
     /// of the foreground color.
     pub grid_color: Option<Color32>,
+    /// Grid lines drawn in the data area (`setGraphGrid`).
+    pub grid: GraphGrid,
 }
 
 impl Plot {
@@ -118,6 +144,7 @@ impl Plot {
             y2_label: None,
             foreground: None,
             grid_color: None,
+            grid: GraphGrid::Major,
         }
     }
 

@@ -10,7 +10,7 @@
 
 use eframe::egui;
 use egui::Key;
-use egui_silx::{Colormap, ImageData, Normalization, Plot, PlotWidget, install, set_image};
+use egui_silx::{Colormap, ImageData, Normalization, Plot, PlotView, install, set_image};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
@@ -116,7 +116,7 @@ impl eframe::App for NormApp {
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

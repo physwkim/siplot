@@ -1,9 +1,9 @@
 //! ROI example: a draggable rectangular region and a horizontal band over a
 //! curve.
 //!
-//! The plot owns a `Vec<Roi>`; `PlotWidget` draws each region with translucent
+//! The plot owns a `Vec<Roi>`; `PlotView` draws each region with translucent
 //! fill, a border, and square edge handles, and lets the pointer drag an edge.
-//! When an edge moves, `PlotWidget::show` reports the changed index via
+//! When an edge moves, `PlotView::show` reports the changed index via
 //! `PlotResponse::roi_changed`; this app prints the new bounds as a readout
 //! (`doc/design.md` §13 C3).
 //!
@@ -11,7 +11,7 @@
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, pos2};
-use egui_silx::{CurveData, Plot, PlotWidget, Roi, install, set_curve};
+use egui_silx::{CurveData, Plot, PlotView, Roi, install, set_curve};
 
 const N: usize = 200;
 
@@ -57,7 +57,7 @@ impl RoiApp {
 impl eframe::App for RoiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            let out = PlotWidget::new().show(ui, &mut self.plot);
+            let out = PlotView::new().show(ui, &mut self.plot);
             // Report the bounds of whichever region's edge is being dragged.
             if let Some(i) = out.roi_changed {
                 let text = match self.plot.rois[i] {

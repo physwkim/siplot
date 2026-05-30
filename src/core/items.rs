@@ -1,9 +1,11 @@
 //! Shared item vocabulary used by both the GPU data layer and the egui overlay
-//! layer: currently the line stroke style ([`LineStyle`]).
+//! layer: line stroke styles, curve symbols, filled-curve baselines, and error
+//! bars.
 //!
 //! These types live in `core` (not `render`) so the `core::Plot` model — which
-//! stores overlay items (markers, shapes) carrying a [`LineStyle`] — can name
-//! them without `core` depending on `render` (`doc/design.md` §9 `core/items.rs`).
+//! stores overlay items (markers, shapes) carrying a [`LineStyle`] — and the
+//! backend API can name curve styling without `core` depending on `render`
+//! (`doc/design.md` §9 `core/items.rs`).
 
 /// Line stroke style (silx `linestyle`). Dash lengths for the predefined styles
 /// scale with the line width (`max(width, 1)`) so they stay proportionate at any
@@ -62,6 +64,103 @@ impl LineStyle {
                 } else {
                     Some((dashes, gaps, *offset))
                 }
+            }
+        }
+    }
+}
+
+/// Marker symbol drawn at each curve vertex (silx `addCurve` `symbol`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Symbol {
+    /// Circle marker.
+    Circle,
+    /// Square marker.
+    Square,
+    /// Diagonal "x" marker.
+    Cross,
+    /// Upright "+" marker.
+    Plus,
+    /// Upward-pointing triangle marker.
+    Triangle,
+}
+
+impl Symbol {
+    /// Shader symbol code (must match the `switch` in `markers.wgsl`).
+    pub(crate) fn code(self) -> u32 {
+        match self {
+            Symbol::Circle => 0,
+            Symbol::Square => 1,
+            Symbol::Cross => 2,
+            Symbol::Plus => 3,
+            Symbol::Triangle => 4,
+        }
+    }
+}
+
+/// Where a filled curve's area extends to (silx `baseline`). The fill is the
+/// band between the curve and this baseline.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Baseline {
+    /// Fill down to a constant y value (silx scalar baseline; `0.0` by default).
+    Scalar(f64),
+    /// Fill to a per-vertex y value (silx array baseline), one entry per vertex.
+    PerPoint(Vec<f64>),
+}
+
+impl Baseline {
+    /// The baseline y values for an `n`-vertex curve, broadcasting a scalar.
+    pub(crate) fn values(&self, n: usize) -> Vec<f32> {
+        match self {
+            Baseline::Scalar(v) => vec![*v as f32; n],
+            Baseline::PerPoint(vs) => vs.iter().map(|&v| v as f32).collect(),
+        }
+    }
+}
+
+/// Per-point uncertainty drawn as error bars (silx `xerror` / `yerror`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ErrorBars {
+    /// The same `+/-` error for every point (silx scalar error).
+    Symmetric(f64),
+    /// A per-point symmetric `+/-` error (silx 1D error array).
+    PerPoint(Vec<f64>),
+    /// Per-point asymmetric error: `lower` extends below/left, `upper`
+    /// above/right (silx `(2, N)` error array).
+    Asymmetric { lower: Vec<f64>, upper: Vec<f64> },
+}
+
+impl ErrorBars {
+    /// The `(lower, upper)` error magnitudes at point `i`.
+    pub(crate) fn bounds(&self, i: usize) -> (f32, f32) {
+        match self {
+            ErrorBars::Symmetric(e) => (*e as f32, *e as f32),
+            ErrorBars::PerPoint(es) => (es[i] as f32, es[i] as f32),
+            ErrorBars::Asymmetric { lower, upper } => (lower[i] as f32, upper[i] as f32),
+        }
+    }
+
+    /// Panic if a per-point/asymmetric array does not match the vertex count.
+    pub(crate) fn check_len(&self, n: usize) {
+        match self {
+            ErrorBars::Symmetric(_) => {}
+            ErrorBars::PerPoint(es) => {
+                assert_eq!(
+                    es.len(),
+                    n,
+                    "per-point error must have one entry per vertex"
+                );
+            }
+            ErrorBars::Asymmetric { lower, upper } => {
+                assert_eq!(
+                    lower.len(),
+                    n,
+                    "asymmetric error `lower` must have one entry per vertex"
+                );
+                assert_eq!(
+                    upper.len(),
+                    n,
+                    "asymmetric error `upper` must have one entry per vertex"
+                );
             }
         }
     }

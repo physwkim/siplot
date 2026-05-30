@@ -9,7 +9,7 @@
 //! Run with: `cargo run --example rgba_image`
 
 use eframe::egui;
-use egui_silx::{ImageData, Plot, PlotWidget, install, set_image};
+use egui_silx::{ImageData, Plot, PlotView, install, set_image};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
@@ -62,7 +62,7 @@ impl RgbaApp {
 impl eframe::App for RgbaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

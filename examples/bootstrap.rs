@@ -1,11 +1,11 @@
 //! Bootstrap example: an eframe window whose central panel hosts an empty
-//! `PlotWidget`. Verifies that the wgpu render state is available, that
+//! `PlotView`. Verifies that the wgpu render state is available, that
 //! `WgpuResources` is installed, and that the data rect is cleared on the GPU.
 //!
 //! Run with: `cargo run --example bootstrap`
 
 use eframe::egui;
-use egui_silx::{Plot, PlotWidget, install};
+use egui_silx::{Plot, PlotView, install};
 
 struct BootstrapApp {
     plot: Plot,
@@ -28,7 +28,7 @@ impl eframe::App for BootstrapApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The root `ui` has no margin/background; wrap it in a CentralPanel.
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

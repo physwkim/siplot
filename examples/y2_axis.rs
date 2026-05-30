@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example y2_axis`
 
 use eframe::egui;
-use egui_silx::{CurveData, Plot, PlotWidget, YAxis, install, set_curves};
+use egui_silx::{CurveData, Plot, PlotView, YAxis, install, set_curves};
 
 const N: usize = 400;
 
@@ -61,7 +61,7 @@ impl Y2App {
 impl eframe::App for Y2App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

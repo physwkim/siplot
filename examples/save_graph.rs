@@ -9,7 +9,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use egui_silx::{CurveData, Plot, PlotWidget, install, save_graph, set_curve};
+use egui_silx::{CurveData, Plot, PlotView, install, save_graph, set_curve};
 
 const OUT_PATH: &str = "egui-silx-graph.png";
 const SAVE_SIZE: (u32, u32) = (800, 600);
@@ -65,7 +65,7 @@ impl eframe::App for SaveApp {
                 }
                 ui.label(&self.status);
             });
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

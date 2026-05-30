@@ -1,4 +1,4 @@
-//! The plot widget.
+//! The stateless egui plot view.
 //!
 //! Lays out the chrome gutters, applies pointer interaction to the plot limits,
 //! clears the data area, draws the image and curve via wgpu paint callbacks,
@@ -36,7 +36,7 @@ struct Interaction {
 use crate::render::backend_wgpu::{ClearCallback, CurveCallback, ImageCallback};
 use crate::widget::{chrome, interaction};
 
-/// What [`PlotWidget::show`] returns: the egui [`Response`](egui::Response) plus
+/// What [`PlotView::show`] returns: the egui [`Response`](egui::Response) plus
 /// the display [`Transform`] used this frame. The transform lets callers map
 /// pointer pixels to data coordinates and run picking
 /// ([`interaction::nearest_point`](crate::nearest_point) /
@@ -50,12 +50,12 @@ pub struct PlotResponse {
     pub roi_changed: Option<usize>,
 }
 
-/// Widget that renders a [`Plot`] into an egui `Ui`.
+/// Stateless view that renders a [`Plot`] into an egui `Ui`.
 #[derive(Default)]
-pub struct PlotWidget;
+pub struct PlotView;
 
-impl PlotWidget {
-    /// Create a new plot widget.
+impl PlotView {
+    /// Create a new plot view.
     pub fn new() -> Self {
         Self
     }
@@ -158,7 +158,7 @@ impl PlotWidget {
         }
 
         // Chrome (egui), drawn on top of / in the gutters around the data layer.
-        chrome::draw_axes(painter, &transform, &style);
+        chrome::draw_axes(painter, &transform, &style, plot.grid);
         if let Some(t_right) = &transform_right {
             chrome::draw_y2_ticks(painter, t_right, &style);
         }

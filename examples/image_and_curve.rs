@@ -9,12 +9,12 @@
 //! Run with: `cargo run --example image_and_curve`
 
 use eframe::egui;
-use egui_silx::{Colormap, CurveData, ImageData, Plot, PlotWidget, install, set_curve, set_image};
+use egui_silx::{Colormap, CurveData, PlotWidget};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
 
-fn build_image() -> ImageData {
+fn build_image() -> Vec<f32> {
     let mut data = vec![0.0f32; (WIDTH * HEIGHT) as usize];
     for row in 0..HEIGHT {
         for col in 0..WIDTH {
@@ -26,7 +26,7 @@ fn build_image() -> ImageData {
             data[(row * WIDTH + col) as usize] = ramp + bump;
         }
     }
-    ImageData::new(WIDTH, HEIGHT, data, Colormap::viridis(0.0, 2.5))
+    data
 }
 
 fn build_curve() -> CurveData {
@@ -46,7 +46,7 @@ fn build_curve() -> CurveData {
 }
 
 struct ImageCurveApp {
-    plot: Plot,
+    plot: PlotWidget,
 }
 
 impl ImageCurveApp {
@@ -55,19 +55,13 @@ impl ImageCurveApp {
             .wgpu_render_state
             .as_ref()
             .expect("eframe must use the wgpu renderer (NativeOptions.renderer = Wgpu)");
-        install(render_state);
-
+        let mut plot = PlotWidget::new(render_state, 0);
         let image = build_image();
-        set_image(render_state, &image);
-        set_curve(render_state, &build_curve());
-
-        let mut plot = Plot::new(0);
-        // Limits == image extent so the image fills the data area and the curve
-        // is expressed in the same coordinates.
-        plot.limits = (0.0, image.width as f64, 0.0, image.height as f64);
-        plot.colormap = image.colormap().cloned();
+        plot.add_image(WIDTH, HEIGHT, &image, Colormap::viridis(0.0, 2.5));
+        let curve = build_curve();
+        plot.add_curve(&curve.x, &curve.y, curve.color);
         // Show a crosshair + coordinate readout following the pointer.
-        plot.crosshair = true;
+        plot.set_graph_cursor(true);
 
         Self { plot }
     }
@@ -76,7 +70,7 @@ impl ImageCurveApp {
 impl eframe::App for ImageCurveApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            self.plot.show(ui);
         });
     }
 }

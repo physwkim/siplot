@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example plot_markers`
 
 use eframe::egui;
-use egui_silx::{LineStyle, Marker, MarkerSymbol, Plot, PlotWidget, install};
+use egui_silx::{LineStyle, Marker, MarkerSymbol, Plot, PlotView, install};
 
 struct MarkerApp {
     plot: Plot,
@@ -99,7 +99,7 @@ impl MarkerApp {
 impl eframe::App for MarkerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

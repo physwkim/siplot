@@ -14,7 +14,7 @@ use std::f64::consts::TAU;
 
 use eframe::egui;
 use egui_silx::{
-    Colormap, CurveData, ImageData, Plot, PlotWidget, install, set_curve, set_image, update_curve,
+    Colormap, CurveData, ImageData, Plot, PlotView, install, set_curve, set_image, update_curve,
     update_image_region,
 };
 
@@ -132,7 +132,7 @@ impl eframe::App for LiveApp {
         self.last_row = Some(row);
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
 
         // Keep animating.

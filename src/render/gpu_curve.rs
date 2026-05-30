@@ -18,7 +18,7 @@ use std::num::NonZeroU64;
 use egui::Color32;
 use egui_wgpu::wgpu;
 
-use crate::core::items::LineStyle;
+use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
 
 use crate::core::decimate::min_max_decimate;
 use crate::core::transform::YAxis;
@@ -69,32 +69,6 @@ struct CurveParams {
     use_gap_color: f32,
 }
 
-/// Marker symbol drawn at each curve vertex (silx `symbol`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Symbol {
-    Circle,
-    Square,
-    /// Diagonal "×".
-    Cross,
-    /// Upright "+".
-    Plus,
-    /// Upward-pointing triangle.
-    Triangle,
-}
-
-impl Symbol {
-    /// Shader symbol code (must match the `switch` in `markers.wgsl`).
-    fn code(self) -> u32 {
-        match self {
-            Symbol::Circle => 0,
-            Symbol::Square => 1,
-            Symbol::Cross => 2,
-            Symbol::Plus => 3,
-            Symbol::Triangle => 4,
-        }
-    }
-}
-
 impl LineStyle {
     /// The dash pattern for the given line width as `(cumulative boundaries,
     /// phase offset)`, or `None` for a solid (un-dashed) line. The boundaries
@@ -135,26 +109,6 @@ impl LineStyle {
     }
 }
 
-/// Where a filled curve's area extends to (silx `baseline`). The fill is the
-/// band between the curve and this baseline.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Baseline {
-    /// Fill down to a constant y value (silx scalar baseline; `0.0` by default).
-    Scalar(f64),
-    /// Fill to a per-vertex y value (silx array baseline), one entry per vertex.
-    PerPoint(Vec<f64>),
-}
-
-impl Baseline {
-    /// The baseline y values for an `n`-vertex curve, broadcasting a scalar.
-    fn values(&self, n: usize) -> Vec<f32> {
-        match self {
-            Baseline::Scalar(v) => vec![*v as f32; n],
-            Baseline::PerPoint(vs) => vs.iter().map(|&v| v as f32).collect(),
-        }
-    }
-}
-
 /// Uniform block for the fill shader. Field order keeps `repr(C)` offsets
 /// std140-aligned: mat4 @0, vec4 @64, vec2 @80, vec2 @88; total 96. Matches
 /// `Params` in `fill.wgsl`.
@@ -165,55 +119,6 @@ struct FillParams {
     color: [f32; 4],
     axis_log: [f32; 2],
     _pad: [f32; 2],
-}
-
-/// Per-point uncertainty drawn as error bars (silx `xerror` / `yerror`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum ErrorBars {
-    /// The same `+/-` error for every point (silx scalar error).
-    Symmetric(f64),
-    /// A per-point symmetric `+/-` error (silx 1D error array).
-    PerPoint(Vec<f64>),
-    /// Per-point asymmetric error: `lower` extends below/left, `upper`
-    /// above/right (silx `(2, N)` error array).
-    Asymmetric { lower: Vec<f64>, upper: Vec<f64> },
-}
-
-impl ErrorBars {
-    /// The `(lower, upper)` error magnitudes at point `i`.
-    fn bounds(&self, i: usize) -> (f32, f32) {
-        match self {
-            ErrorBars::Symmetric(e) => (*e as f32, *e as f32),
-            ErrorBars::PerPoint(es) => (es[i] as f32, es[i] as f32),
-            ErrorBars::Asymmetric { lower, upper } => (lower[i] as f32, upper[i] as f32),
-        }
-    }
-
-    /// Panic if a per-point/asymmetric array does not match the vertex count.
-    fn check_len(&self, n: usize) {
-        match self {
-            ErrorBars::Symmetric(_) => {}
-            ErrorBars::PerPoint(es) => {
-                assert_eq!(
-                    es.len(),
-                    n,
-                    "per-point error must have one entry per vertex"
-                );
-            }
-            ErrorBars::Asymmetric { lower, upper } => {
-                assert_eq!(
-                    lower.len(),
-                    n,
-                    "asymmetric error `lower` must have one entry per vertex"
-                );
-                assert_eq!(
-                    upper.len(),
-                    n,
-                    "asymmetric error `upper` must have one entry per vertex"
-                );
-            }
-        }
-    }
 }
 
 /// Uniform block for the error-bar shader. Same layout as the marker uniform up

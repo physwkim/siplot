@@ -12,6 +12,7 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Visuals, pos2, 
 use crate::core::colormap::{Colormap, Normalization};
 use crate::core::items::LineStyle;
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
+use crate::core::plot::GraphGrid;
 use crate::core::roi::Roi;
 use crate::core::shape::{Shape, ShapeKind};
 use crate::core::transform::{Axis, Scale, Transform, YAxis};
@@ -235,25 +236,103 @@ fn axis_ticks(axis: &Axis, max_ticks: usize) -> Vec<(f64, String)> {
     }
 }
 
-/// Draw the frame, grid, ticks, and tick labels around the data area.
-pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style) {
+fn linear_minor_ticks(axis: &Axis, major: &[(f64, String)]) -> Vec<f64> {
+    if major.len() < 2 {
+        return Vec::new();
+    }
+    let major_step = (major[1].0 - major[0].0).abs();
+    if !major_step.is_finite() || major_step <= 0.0 {
+        return Vec::new();
+    }
+    let minor_step = major_step / 5.0;
+    let start = (axis.min / minor_step).ceil() as i64 - 1;
+    let end = (axis.max / minor_step).floor() as i64 + 1;
+    let major_eps = minor_step * 1e-6;
+    let mut ticks = Vec::new();
+    for i in start..=end {
+        let v = i as f64 * minor_step;
+        if v <= axis.min || v >= axis.max {
+            continue;
+        }
+        let major_multiple = ((v - major[0].0) / major_step).round();
+        let nearest_major = major[0].0 + major_multiple * major_step;
+        if (v - nearest_major).abs() <= major_eps {
+            continue;
+        }
+        ticks.push(v);
+    }
+    ticks
+}
+
+fn log_minor_ticks(axis: &Axis) -> Vec<f64> {
+    let valid =
+        axis.min.is_finite() && axis.max.is_finite() && axis.min > 0.0 && axis.max > axis.min;
+    if !valid {
+        return Vec::new();
+    }
+    let k0 = axis.min.log10().floor() as i32;
+    let k1 = axis.max.log10().ceil() as i32;
+    let mut ticks = Vec::new();
+    for k in k0..=k1 {
+        let decade = 10f64.powi(k);
+        for m in 2..10 {
+            let v = m as f64 * decade;
+            if v > axis.min && v < axis.max {
+                ticks.push(v);
+            }
+        }
+    }
+    ticks
+}
+
+fn minor_ticks(axis: &Axis, major: &[(f64, String)]) -> Vec<f64> {
+    match axis.scale {
+        Scale::Linear => linear_minor_ticks(axis, major),
+        Scale::Log10 => log_minor_ticks(axis),
+    }
+}
+
+/// Draw the frame, optional grid, ticks, and tick labels around the data area.
+pub fn draw_axes(painter: &Painter, t: &Transform, style: &Style, grid_mode: GraphGrid) {
     let area = t.area;
     let axis = Stroke::new(1.0, style.axis);
     let grid = Stroke::new(1.0, style.grid);
+    let minor_grid = Stroke::new(
+        1.0,
+        Color32::from_rgba_unmultiplied(
+            style.grid.r(),
+            style.grid.g(),
+            style.grid.b(),
+            style.grid.a() / 2,
+        ),
+    );
     let font = FontId::proportional(11.0);
     let tick_len = 4.0;
 
     let xticks = axis_ticks(&t.x, 8);
     let yticks = axis_ticks(&t.y, 6);
 
-    // Grid lines first, so the frame and ticks sit on top of them.
-    for (xv, _) in &xticks {
-        let px = t.data_to_pixel(*xv, t.y.min).x;
-        painter.vline(px, area.y_range(), grid);
+    if grid_mode.minor() {
+        for xv in minor_ticks(&t.x, &xticks) {
+            let px = t.data_to_pixel(xv, t.y.min).x;
+            painter.vline(px, area.y_range(), minor_grid);
+        }
+        for yv in minor_ticks(&t.y, &yticks) {
+            let py = t.data_to_pixel(t.x.min, yv).y;
+            painter.hline(area.x_range(), py, minor_grid);
+        }
     }
-    for (yv, _) in &yticks {
-        let py = t.data_to_pixel(t.x.min, *yv).y;
-        painter.hline(area.x_range(), py, grid);
+
+    if grid_mode.major() {
+        // Grid lines first, so the frame and ticks sit on top of them.
+        for (xv, _) in &xticks {
+            let px = t.data_to_pixel(*xv, t.y.min).x;
+            painter.vline(px, area.y_range(), grid);
+        }
+        for (yv, _) in &yticks {
+            let py = t.data_to_pixel(t.x.min, *yv).y;
+            painter.hline(area.x_range(), py, grid);
+        }
     }
 
     painter.rect_stroke(

@@ -11,7 +11,7 @@
 //! Run with: `cargo run --release --example large_image`
 
 use eframe::egui;
-use egui_silx::{Colormap, ImageData, Plot, PlotWidget, install, set_image};
+use egui_silx::{Colormap, ImageData, Plot, PlotView, install, set_image};
 
 const HEIGHT: u32 = 256;
 
@@ -72,7 +72,7 @@ impl eframe::App for LargeImageApp {
                 "image width {} px > max_texture_dimension_2d {} → tiled; gradient must stay continuous",
                 self.width, self.max_dim
             ));
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }

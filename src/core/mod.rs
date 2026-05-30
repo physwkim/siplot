@@ -1,8 +1,6 @@
 //! The `Plot` model, backend abstraction, and shared types.
-//!
-//! Later milestones add a `backend` (trait Backend) module here
-//! (`doc/design.md` §2).
 
+pub mod backend;
 pub mod colormap;
 pub mod decimate;
 pub mod items;

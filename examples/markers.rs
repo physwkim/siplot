@@ -9,7 +9,7 @@
 //! Run with: `cargo run --example markers`
 
 use eframe::egui;
-use egui_silx::{CurveData, Plot, PlotWidget, Symbol, install, set_curves};
+use egui_silx::{CurveData, Plot, PlotView, Symbol, install, set_curves};
 
 const N: usize = 12;
 
@@ -62,7 +62,7 @@ impl MarkersApp {
 impl eframe::App for MarkersApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            PlotWidget::new().show(ui, &mut self.plot);
+            PlotView::new().show(ui, &mut self.plot);
         });
     }
 }
