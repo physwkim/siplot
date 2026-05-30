@@ -6,6 +6,7 @@
 //! per-plot/per-item GPU state maps are added to [`WgpuResources`] in later
 //! steps (`doc/design.md` §3.1·§11).
 
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use egui::{Color32, Pos2, Rect};
@@ -307,6 +308,12 @@ pub struct WgpuBackend {
     next_handle: ItemHandle,
     items: Vec<BackendItem>,
     last_data_area: Option<Rect>,
+    /// Visibility state per item. Default `true`. Invisible items are excluded
+    /// from every draw pass and from overlay lists, but their handles remain live.
+    item_visible: HashMap<ItemHandle, bool>,
+    /// Draw-order z-value per item. Default `0.0`. Within each GPU item type
+    /// (images, curves), items are sorted ascending by z before drawing.
+    item_z: HashMap<ItemHandle, f32>,
 }
 
 impl WgpuBackend {
@@ -324,6 +331,8 @@ impl WgpuBackend {
             next_handle: 1,
             items: Vec::new(),
             last_data_area: None,
+            item_visible: HashMap::new(),
+            item_z: HashMap::new(),
         }
     }
 
@@ -350,20 +359,75 @@ impl WgpuBackend {
             .next_handle
             .checked_add(1)
             .expect("backend item handle overflow");
+        self.item_visible.insert(handle, true);
+        self.item_z.insert(handle, 0.0);
         handle
     }
 
-    fn sync_gpu_items(&self) {
-        let images: Vec<ImageData> = self
+    /// Show or hide an item. Hidden items are excluded from all draw passes.
+    /// Returns `false` if the handle is unknown.
+    pub fn set_item_visible(&mut self, handle: ItemHandle, visible: bool) -> bool {
+        let Some(v) = self.item_visible.get_mut(&handle) else {
+            return false;
+        };
+        *v = visible;
+        self.sync_plot_items();
+        self.sync_gpu_items();
+        true
+    }
+
+    /// Whether an item is currently visible. Returns `true` for unknown handles
+    /// (conservative default so callers can always draw safely).
+    pub fn is_item_visible(&self, handle: ItemHandle) -> bool {
+        self.item_visible.get(&handle).copied().unwrap_or(true)
+    }
+
+    /// Set the draw-order z-value for an item. Items with a higher z are drawn
+    /// on top within their GPU layer (images above images, curves above curves).
+    /// Returns `false` if the handle is unknown.
+    pub fn set_item_z(&mut self, handle: ItemHandle, z: f32) -> bool {
+        let Some(v) = self.item_z.get_mut(&handle) else {
+            return false;
+        };
+        *v = z;
+        self.sync_gpu_items();
+        true
+    }
+
+    /// Current z-value for an item. Returns `0.0` for unknown handles.
+    pub fn item_z(&self, handle: ItemHandle) -> f32 {
+        self.item_z.get(&handle).copied().unwrap_or(0.0)
+    }
+
+    fn visible_items_sorted_by_z(&self) -> Vec<&BackendItem> {
+        let mut items: Vec<(f32, &BackendItem)> = self
             .items
+            .iter()
+            .filter(|item| {
+                self.item_visible
+                    .get(&item.handle())
+                    .copied()
+                    .unwrap_or(true)
+            })
+            .map(|item| {
+                let z = self.item_z.get(&item.handle()).copied().unwrap_or(0.0);
+                (z, item)
+            })
+            .collect();
+        items.sort_by(|a, b| a.0.total_cmp(&b.0));
+        items.into_iter().map(|(_, item)| item).collect()
+    }
+
+    fn sync_gpu_items(&self) {
+        let visible = self.visible_items_sorted_by_z();
+        let images: Vec<ImageData> = visible
             .iter()
             .filter_map(|item| match item {
                 BackendItem::Image { data, .. } => Some(data.clone()),
                 _ => None,
             })
             .collect();
-        let curves: Vec<CurveData> = self
-            .items
+        let curves: Vec<CurveData> = visible
             .iter()
             .filter_map(|item| match item {
                 BackendItem::Curve { data, .. } => Some(data.clone()),
@@ -375,34 +439,44 @@ impl WgpuBackend {
     }
 
     fn sync_plot_items(&mut self) {
-        self.plot.triangles = self
+        // Collect cloned overlay data first so there is no outstanding borrow on
+        // `self` when `self.plot.*` fields are assigned below.
+        let mut triangles: Vec<Triangles> = Vec::new();
+        let mut shapes: Vec<Shape> = Vec::new();
+        let mut markers: Vec<Marker> = Vec::new();
+        let mut colormap = None;
+
+        let mut items_with_z: Vec<(f32, &BackendItem)> = self
             .items
             .iter()
-            .filter_map(|item| match item {
-                BackendItem::Triangles { data, .. } => Some(data.clone()),
-                _ => None,
+            .filter(|item| self.item_visible.get(&item.handle()).copied().unwrap_or(true))
+            .map(|item| {
+                let z = self.item_z.get(&item.handle()).copied().unwrap_or(0.0);
+                (z, item)
             })
             .collect();
-        self.plot.shapes = self
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                BackendItem::Shape { data, .. } => Some(data.clone()),
-                _ => None,
-            })
-            .collect();
-        self.plot.markers = self
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                BackendItem::Marker { data, .. } => Some(data.clone()),
-                _ => None,
-            })
-            .collect();
-        self.plot.colormap = self.items.iter().rev().find_map(|item| match item {
-            BackendItem::Image { data, .. } => data.colormap().cloned(),
-            _ => None,
-        });
+        items_with_z.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, item) in &items_with_z {
+            match item {
+                BackendItem::Triangles { data, .. } => triangles.push(data.clone()),
+                BackendItem::Shape { data, .. } => shapes.push(data.clone()),
+                BackendItem::Marker { data, .. } => markers.push(data.clone()),
+                _ => {}
+            }
+        }
+        for (_, item) in items_with_z.iter().rev() {
+            if let BackendItem::Image { data, .. } = item
+                && let Some(cm) = data.colormap()
+            {
+                colormap = Some(cm.clone());
+                break;
+            }
+        }
+
+        self.plot.triangles = triangles;
+        self.plot.shapes = shapes;
+        self.plot.markers = markers;
+        self.plot.colormap = colormap;
     }
 
     fn transform_for(&self, axis: YAxis) -> Option<Transform> {
@@ -455,6 +529,8 @@ impl WgpuBackend {
     /// Remove every backend item and synchronize GPU/plot state.
     pub fn clear_items(&mut self) {
         self.items.clear();
+        self.item_visible.clear();
+        self.item_z.clear();
         self.sync_plot_items();
         self.sync_gpu_items();
     }
@@ -519,6 +595,8 @@ impl Backend for WgpuBackend {
         self.items.retain(|existing| existing.handle() != item);
         let removed = self.items.len() != before;
         if removed {
+            self.item_visible.remove(&item);
+            self.item_z.remove(&item);
             self.sync_plot_items();
             self.sync_gpu_items();
         }

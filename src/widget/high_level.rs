@@ -241,6 +241,8 @@ pub enum PlotEvent {
 pub struct LegendResponse {
     pub selected: Option<ItemHandle>,
     pub activated: Option<ItemHandle>,
+    /// Handle whose visibility was toggled this frame (eye icon click).
+    pub visibility_changed: Option<ItemHandle>,
 }
 
 /// Return value of [`PlotWidget::show_toolbar`].
@@ -1056,31 +1058,70 @@ fn legend_row_width(available_width: f32) -> f32 {
     available_width.max(LEGEND_ROW_MIN_WIDTH)
 }
 
+/// What a single legend-row interaction returned.
+struct LegendRowResult {
+    /// Click anywhere in the row body (not the eye icon).
+    row_clicked: bool,
+    /// Click on the visibility eye icon.
+    eye_clicked: bool,
+}
+
 fn legend_row_response(
     ui: &mut egui::Ui,
     width: f32,
     kind: PlotItemKind,
     label: &str,
     active: bool,
+    visible: bool,
     visual: LegendVisual,
-) -> egui::Response {
-    let (rect, response) =
+) -> LegendRowResult {
+    let (rect, row_response) =
         ui.allocate_exact_size(egui::vec2(width, LEGEND_ROW_HEIGHT), egui::Sense::click());
+    let eye_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - LEGEND_CHECK_WIDTH, rect.top()),
+        rect.right_bottom(),
+    );
+    let eye_response = ui.interact(eye_rect, row_response.id.with("eye"), egui::Sense::click());
     if ui.is_rect_visible(rect) {
-        draw_legend_row(ui, rect, &response, kind, label, active, visual);
+        draw_legend_row(
+            ui,
+            LegendRowDraw {
+                rect,
+                response: &row_response,
+                kind,
+                label,
+                active,
+                visible,
+                visual,
+            },
+        );
     }
-    response
+    LegendRowResult {
+        row_clicked: row_response.clicked() && !eye_response.clicked(),
+        eye_clicked: eye_response.clicked(),
+    }
 }
 
-fn draw_legend_row(
-    ui: &egui::Ui,
+struct LegendRowDraw<'a> {
     rect: egui::Rect,
-    response: &egui::Response,
+    response: &'a egui::Response,
     kind: PlotItemKind,
-    label: &str,
+    label: &'a str,
     active: bool,
+    visible: bool,
     visual: LegendVisual,
-) {
+}
+
+fn draw_legend_row(ui: &egui::Ui, p: LegendRowDraw<'_>) {
+    let LegendRowDraw {
+        rect,
+        response,
+        kind,
+        label,
+        active,
+        visible,
+        visual,
+    } = p;
     let visuals = ui.visuals();
     let row_rect = rect.shrink2(egui::vec2(1.0, 0.0));
     let row_clip = row_rect.intersect(ui.clip_rect());
@@ -1132,9 +1173,10 @@ fn draw_legend_row(
         );
     }
 
-    draw_legend_check(
+    draw_legend_eye(
         &painter,
         check_rect,
+        visible,
         active,
         visuals.widgets.inactive.fg_stroke.color,
     );
@@ -1257,25 +1299,34 @@ fn draw_legend_swatch(
     }
 }
 
-fn draw_legend_check(painter: &egui::Painter, rect: egui::Rect, active: bool, color: Color32) {
-    if !active {
-        return;
+/// Draw an eye icon in `rect` to indicate visibility. An open eye = visible;
+/// a closed eye (dash through center) = hidden. Active items get the accent color.
+fn draw_legend_eye(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    visible: bool,
+    active: bool,
+    color: Color32,
+) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let r = 3.5_f32;
+    let eye_color = if active {
+        color
+    } else {
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 180)
+    };
+    if visible {
+        painter.circle_stroke(egui::pos2(cx, cy), r, egui::Stroke::new(1.5, eye_color));
+        painter.circle_filled(egui::pos2(cx, cy), r * 0.45, eye_color);
+    } else {
+        let dim = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 80);
+        painter.circle_stroke(egui::pos2(cx, cy), r, egui::Stroke::new(1.5, dim));
+        painter.line_segment(
+            [egui::pos2(cx - r * 1.3, cy), egui::pos2(cx + r * 1.3, cy)],
+            egui::Stroke::new(1.5, dim),
+        );
     }
-    let stroke = egui::Stroke::new(2.0, color);
-    painter.line_segment(
-        [
-            egui::pos2(rect.left() + 5.0, rect.center().y + 1.0),
-            egui::pos2(rect.center().x - 1.0, rect.bottom() - 6.0),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(rect.center().x - 1.0, rect.bottom() - 6.0),
-            egui::pos2(rect.right() - 4.0, rect.top() + 5.0),
-        ],
-        stroke,
-    );
 }
 
 type LimitsSnapshot = ((f64, f64, f64, f64), Option<(f64, f64)>);
@@ -2336,6 +2387,29 @@ impl PlotWidget {
         self.set_active_item(item)
     }
 
+    /// Show or hide an item. Hidden items are excluded from all draw passes.
+    /// Returns `false` if the handle is unknown.
+    pub fn set_item_visible(&mut self, handle: ItemHandle, visible: bool) -> bool {
+        self.backend.set_item_visible(handle, visible)
+    }
+
+    /// Whether an item is currently visible.
+    pub fn is_item_visible(&self, handle: ItemHandle) -> bool {
+        self.backend.is_item_visible(handle)
+    }
+
+    /// Set the draw-order z-value for an item. Within each GPU item layer
+    /// (images, curves), higher-z items are drawn on top.
+    /// Returns `false` if the handle is unknown.
+    pub fn set_item_z(&mut self, handle: ItemHandle, z: f32) -> bool {
+        self.backend.set_item_z(handle, z)
+    }
+
+    /// Current z-value for an item.
+    pub fn item_z_value(&self, handle: ItemHandle) -> f32 {
+        self.backend.item_z(handle)
+    }
+
     /// Return retained statistics for an item.
     pub fn item_stats(&self, handle: ItemHandle) -> Option<&ItemStats> {
         self.item_record(handle)
@@ -2358,17 +2432,20 @@ impl PlotWidget {
         }
     }
 
-    /// Draw a selectable legend list. Clicking an entry makes it active.
+    /// Draw a selectable legend list. Clicking a row body makes it active;
+    /// clicking the eye icon toggles visibility.
     pub fn show_legend(&mut self, ui: &mut egui::Ui) -> LegendResponse {
-        let rows: Vec<(ItemHandle, PlotItemKind, String, bool, LegendVisual)> = self
+        let rows: Vec<(ItemHandle, PlotItemKind, String, bool, bool, LegendVisual)> = self
             .item_records
             .iter()
             .map(|record| {
+                let visible = self.backend.is_item_visible(record.handle);
                 (
                     record.handle,
                     record.kind,
                     self.legend_label(record),
                     self.active_item == Some(record.handle),
+                    visible,
                     record.visual,
                 )
             })
@@ -2386,13 +2463,18 @@ impl PlotWidget {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 let width = legend_row_width(ui.available_width());
-                for (handle, kind, label, active, visual) in rows {
-                    let response = legend_row_response(ui, width, kind, &label, active, visual);
-                    if response.clicked() {
+                for (handle, kind, label, active, visible, visual) in rows {
+                    let result =
+                        legend_row_response(ui, width, kind, &label, active, visible, visual);
+                    if result.row_clicked {
                         out.selected = Some(handle);
                         if self.set_active_item(Some(handle)) {
                             out.activated = Some(handle);
                         }
+                    }
+                    if result.eye_clicked {
+                        self.backend.set_item_visible(handle, !visible);
+                        out.visibility_changed = Some(handle);
                     }
                 }
             });
