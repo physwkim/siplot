@@ -31,6 +31,21 @@ use crate::render::gpu_image::{ImageData, ImagePixels};
 use crate::render::save::SaveError;
 use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
 
+/// Live profile extraction mode (silx profile toolbar).
+///
+/// Used with [`Plot2D::show_profile_toolbar`] and
+/// [`Plot2D::try_update_profile_from_response`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProfileMode {
+    /// Profile disabled.
+    #[default]
+    None,
+    /// Extract the row at the cursor Y position (horizontal slice).
+    Horizontal,
+    /// Extract the column at the cursor X position (vertical slice).
+    Vertical,
+}
+
 /// Data validation failures returned by helper APIs that build derived items.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlotDataError {
@@ -2570,6 +2585,53 @@ impl PlotWidget {
         (PlotWithToolbarResponse { toolbar, plot }, extra)
     }
 
+    /// Show a compact profile-mode toolbar with None / Horizontal / Vertical buttons.
+    ///
+    /// The selected mode is stored in egui temp-memory keyed by the plot id so it
+    /// persists across frames. Returns the current mode.
+    ///
+    /// Place it inside `show_toolbar_with` so it sits in the same toolbar row:
+    ///
+    /// ```ignore
+    /// let (_, mode) = plot.show_toolbar_with(ui, |ui, plot| {
+    ///     ui.separator();
+    ///     plot.show_profile_toolbar(ui)
+    /// });
+    /// ```
+    pub fn show_profile_toolbar(&self, ui: &mut egui::Ui) -> ProfileMode {
+        let id = egui::Id::new(self.backend().plot().id).with("profile_mode");
+        let mut mode = ui
+            .data(|d| d.get_temp::<ProfileMode>(id))
+            .unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(mode == ProfileMode::None, "○")
+                .on_hover_text("No profile")
+                .clicked()
+            {
+                mode = ProfileMode::None;
+            }
+            if ui
+                .selectable_label(mode == ProfileMode::Horizontal, "H")
+                .on_hover_text("Horizontal profile (row slice)")
+                .clicked()
+            {
+                mode = ProfileMode::Horizontal;
+            }
+            if ui
+                .selectable_label(mode == ProfileMode::Vertical, "V")
+                .on_hover_text("Vertical profile (column slice)")
+                .clicked()
+            {
+                mode = ProfileMode::Vertical;
+            }
+        });
+
+        ui.data_mut(|d| d.insert_temp(id, mode));
+        mode
+    }
+
     fn show_toolbar_controls(&mut self, ui: &mut egui::Ui, out: &mut ToolbarResponse) {
         if toolbar_icon_button(ui, ToolbarIcon::Home, false, "Reset zoom").clicked() {
             self.reset_zoom();
@@ -3255,6 +3317,63 @@ impl Plot2D {
         column: u32,
     ) -> Result<Vec<f64>, PlotDataError> {
         vertical_profile_values(width, height, data, column)
+    }
+
+    /// Extract a profile at the cursor position from `plot_response`.
+    ///
+    /// Returns `Some((x_axis, y_values))` when `mode` is active and the cursor is over
+    /// a valid pixel, `None` otherwise.  `pixels` must be a row-major `f32` array of
+    /// `width * height` elements.
+    ///
+    /// Typical use in the frame loop:
+    ///
+    /// ```ignore
+    /// if let Some((x, y)) = image_plot.profile_at_cursor(&resp, &pixels, w, h, mode) {
+    ///     profile_plot.update_curve_data(handle, &CurveData::new(x, y, Color32::YELLOW));
+    /// }
+    /// ```
+    pub fn profile_at_cursor(
+        &self,
+        plot_response: &PlotResponse,
+        pixels: &[f32],
+        width: u32,
+        height: u32,
+        mode: ProfileMode,
+    ) -> Option<(Vec<f64>, Vec<f64>)> {
+        if mode == ProfileMode::None {
+            return None;
+        }
+        let hover_px = plot_response.response.hover_pos()?;
+        let (data_x, data_y) = plot_response.transform.pixel_to_data(hover_px);
+
+        let col = data_x.floor() as i64;
+        let row = data_y.floor() as i64;
+
+        match mode {
+            ProfileMode::None => None,
+            ProfileMode::Horizontal => {
+                if row < 0 || row >= height as i64 {
+                    return None;
+                }
+                horizontal_profile_values(width, height, pixels, row as u32)
+                    .ok()
+                    .map(|y| {
+                        let x: Vec<f64> = (0..width as usize).map(|i| i as f64).collect();
+                        (x, y)
+                    })
+            }
+            ProfileMode::Vertical => {
+                if col < 0 || col >= width as i64 {
+                    return None;
+                }
+                vertical_profile_values(width, height, pixels, col as u32)
+                    .ok()
+                    .map(|y| {
+                        let x: Vec<f64> = (0..height as usize).map(|i| i as f64).collect();
+                        (x, y)
+                    })
+            }
+        }
     }
 
     pub fn into_inner(self) -> PlotWidget {
