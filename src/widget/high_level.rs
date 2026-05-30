@@ -149,16 +149,22 @@ impl ValueStats {
 /// Statistics for curve-like items.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveStats {
+    /// Statistics over the X values.
     pub x: ValueStats,
+    /// Statistics over the Y values.
     pub y: ValueStats,
+    /// Which Y axis this curve is bound to.
     pub y_axis: YAxis,
 }
 
 /// Statistics for image-like items.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageStats {
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Total pixel count (`width * height`).
     pub pixel_count: usize,
     /// Scalar pixel statistics. `None` for direct RGBA images and masks.
     pub scalar: Option<ValueStats>,
@@ -167,8 +173,11 @@ pub struct ImageStats {
 /// Geometry shared by image-like items.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageGeometry {
+    /// Data-space position of the image's top-left corner `(x, y)`.
     pub origin: (f64, f64),
+    /// Data-space size of one pixel `(dx, dy)`.
     pub scale: (f64, f64),
+    /// Overall opacity in `[0.0, 1.0]`.
     pub alpha: f32,
 }
 
@@ -203,6 +212,7 @@ pub enum PlotItemKind {
 }
 
 impl PlotItemKind {
+    /// Short lowercase string name for the item family.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Curve => "curve",
@@ -216,10 +226,12 @@ impl PlotItemKind {
         }
     }
 
+    /// `true` for item families that live on the curve layer (Curve, Histogram, Scatter).
     pub fn is_curve_like(self) -> bool {
         matches!(self, Self::Curve | Self::Histogram | Self::Scatter)
     }
 
+    /// `true` for item families that live on the image layer (Image, Mask).
     pub fn is_image_like(self) -> bool {
         matches!(self, Self::Image | Self::Mask)
     }
@@ -228,33 +240,40 @@ impl PlotItemKind {
 /// High-level events queued by [`PlotWidget`] for application code to drain.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlotEvent {
+    /// An item was added to the plot.
     ItemAdded {
         handle: ItemHandle,
         kind: PlotItemKind,
     },
+    /// An item's data was updated in place.
     ItemUpdated {
         handle: ItemHandle,
         kind: PlotItemKind,
     },
+    /// An item was removed from the plot.
     ItemRemoved {
         handle: ItemHandle,
         kind: PlotItemKind,
     },
+    /// The selected item changed (via legend click or [`PlotWidget::set_active_item`]).
     ActiveItemChanged {
         previous: Option<ItemHandle>,
         current: Option<ItemHandle>,
     },
+    /// The display limits changed (pan, zoom, or programmatic update).
     LimitsChanged,
-    RoiChanged {
-        index: usize,
-    },
+    /// An ROI edge drag moved the ROI at `index`.
+    RoiChanged { index: usize },
+    /// All ROIs were cleared.
     RoisCleared,
 }
 
 /// Return value of [`PlotWidget::show_legend`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LegendResponse {
+    /// Item whose row was clicked (single-click select).
     pub selected: Option<ItemHandle>,
+    /// Item whose row was double-clicked (activation).
     pub activated: Option<ItemHandle>,
     /// Handle whose visibility was toggled this frame (eye icon click).
     pub visibility_changed: Option<ItemHandle>,
@@ -263,21 +282,33 @@ pub struct LegendResponse {
 /// Return value of [`PlotWidget::show_toolbar`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolbarResponse {
+    /// Home button was clicked this frame.
     pub reset_zoom: bool,
+    /// Interaction mode button (select/pan/zoom) was clicked.
     pub interaction_mode_changed: bool,
+    /// Crosshair cursor toggle was clicked.
     pub cursor_changed: bool,
+    /// Major grid toggle was clicked.
     pub grid_changed: bool,
+    /// Minor grid toggle was clicked.
     pub minor_grid_changed: bool,
+    /// Keep-aspect-ratio toggle was clicked.
     pub aspect_changed: bool,
+    /// X log toggle was clicked.
     pub x_log_changed: bool,
+    /// Y log toggle was clicked.
     pub y_log_changed: bool,
+    /// X invert toggle was clicked.
     pub x_inverted_changed: bool,
+    /// Y invert toggle was clicked.
     pub y_inverted_changed: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
 pub struct PlotWithToolbarResponse {
+    /// What the toolbar registered this frame.
     pub toolbar: ToolbarResponse,
+    /// What the plot view registered this frame.
     pub plot: PlotResponse,
 }
 
@@ -1424,6 +1455,7 @@ impl PlotWidget {
         self.auto_reset_zoom = on;
     }
 
+    /// Whether newly added data updates the displayed data limits.
     pub fn auto_reset_zoom(&self) -> bool {
         self.auto_reset_zoom
     }
@@ -3292,6 +3324,7 @@ pub struct Plot1D {
 }
 
 impl Plot1D {
+    /// Create a 1D plot with default X/Y labels and major grid enabled.
     pub fn new(render_state: &RenderState, id: PlotId) -> Self {
         let mut inner = PlotWidget::new(render_state, id);
         inner.set_graph_x_label("X");
@@ -3341,6 +3374,7 @@ impl Plot1D {
             .add_vertical_profile_curve(width, height, data, column, color)
     }
 
+    /// Unwrap to the underlying [`PlotWidget`].
     pub fn into_inner(self) -> PlotWidget {
         self.inner
     }
@@ -3366,6 +3400,7 @@ pub struct Plot2D {
 }
 
 impl Plot2D {
+    /// Create a 2D plot with column/row labels, no grid, aspect lock, and Y-axis inverted.
     pub fn new(render_state: &RenderState, id: PlotId) -> Self {
         let mut inner = PlotWidget::new(render_state, id);
         inner.set_graph_x_label("Columns");
@@ -3495,6 +3530,7 @@ impl Plot2D {
         }
     }
 
+    /// Unwrap to the underlying [`PlotWidget`].
     pub fn into_inner(self) -> PlotWidget {
         self.inner
     }
