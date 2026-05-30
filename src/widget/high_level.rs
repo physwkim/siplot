@@ -89,7 +89,9 @@ pub struct ValueStats {
 }
 
 impl ValueStats {
-    fn from_f64(values: &[f64]) -> Self {
+    /// Compute statistics from `f64` values, ignoring non-finite values for
+    /// min/max/mean while still counting them in [`Self::count`].
+    pub fn from_f64(values: &[f64]) -> Self {
         let mut stats = Self {
             count: values.len(),
             ..Self::default()
@@ -107,7 +109,9 @@ impl ValueStats {
         stats
     }
 
-    fn from_f32(values: &[f32]) -> Self {
+    /// Compute statistics from `f32` values, ignoring non-finite values for
+    /// min/max/mean while still counting them in [`Self::count`].
+    pub fn from_f32(values: &[f32]) -> Self {
         let mut stats = Self {
             count: values.len(),
             ..Self::default()
@@ -143,6 +147,24 @@ pub struct ImageStats {
     pub pixel_count: usize,
     /// Scalar pixel statistics. `None` for direct RGBA images and masks.
     pub scalar: Option<ValueStats>,
+}
+
+/// Geometry shared by image-like items.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageGeometry {
+    pub origin: (f64, f64),
+    pub scale: (f64, f64),
+    pub alpha: f32,
+}
+
+impl Default for ImageGeometry {
+    fn default() -> Self {
+        Self {
+            origin: (0.0, 0.0),
+            scale: (1.0, 1.0),
+            alpha: 1.0,
+        }
+    }
 }
 
 /// Per-item statistics retained by [`PlotWidget`].
@@ -252,6 +274,13 @@ fn validate_image_len(width: u32, height: u32, actual: usize) -> Result<usize, P
     } else {
         Err(PlotDataError::ImageDataLength { expected, actual })
     }
+}
+
+fn mask_rgba_pixels(mask: &[bool], color: Color32) -> Vec<[u8; 4]> {
+    let rgba = color.to_srgba_unmultiplied();
+    mask.iter()
+        .map(|masked| if *masked { rgba } else { [0, 0, 0, 0] })
+        .collect()
 }
 
 /// Build a step-line outline for histogram `counts` and bin `edges`.
@@ -843,8 +872,12 @@ impl PlotWidget {
     pub fn update_curve_spec(&mut self, handle: ItemHandle, spec: CurveSpec<'_>) -> bool {
         let bounds = curve_spec_bounds(&spec);
         let stats = Some(curve_spec_stats(&spec));
+        let kind = self
+            .item_kind(handle)
+            .filter(|kind| kind.is_curve_like())
+            .unwrap_or(PlotItemKind::Curve);
         if self.backend.update_curve(handle, spec) {
-            self.update_item_record(handle, PlotItemKind::Curve, bounds, stats);
+            self.update_item_record(handle, kind, bounds, stats);
             true
         } else {
             false
@@ -929,9 +962,49 @@ impl PlotWidget {
         self.add_image_spec(ImageSpec::scalar(width, height, data, colormap))
     }
 
+    /// Add a scalar image, returning an error instead of panicking on length mismatch.
+    pub fn try_add_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[f32],
+        colormap: Colormap,
+    ) -> Result<ItemHandle, PlotDataError> {
+        validate_image_len(width, height, data.len())?;
+        Ok(self.add_image(width, height, data, colormap))
+    }
+
     /// Add a scalar image using the widget's default colormap.
     pub fn add_image_default(&mut self, width: u32, height: u32, data: &[f32]) -> ItemHandle {
         self.add_image(width, height, data, self.default_colormap.clone())
+    }
+
+    /// Add a scalar image using the widget's default colormap, returning an
+    /// error instead of panicking on length mismatch.
+    pub fn try_add_image_default(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[f32],
+    ) -> Result<ItemHandle, PlotDataError> {
+        self.try_add_image(width, height, data, self.default_colormap.clone())
+    }
+
+    /// Add a scalar image with explicit origin/scale/alpha.
+    pub fn add_image_with_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[f32],
+        colormap: Colormap,
+        geometry: ImageGeometry,
+    ) -> Result<ItemHandle, PlotDataError> {
+        validate_image_len(width, height, data.len())?;
+        let mut spec = ImageSpec::scalar(width, height, data, colormap);
+        spec.origin = geometry.origin;
+        spec.scale = geometry.scale;
+        spec.alpha = geometry.alpha;
+        Ok(self.add_image_spec(spec))
     }
 
     /// Add a scalar image using the widget's default colormap and assign a legend label.
@@ -950,6 +1023,33 @@ impl PlotWidget {
     /// Add a direct RGBA image with unit scale and origin `(0, 0)`.
     pub fn add_rgba_image(&mut self, width: u32, height: u32, data: &[[u8; 4]]) -> ItemHandle {
         self.add_image_spec(ImageSpec::rgba(width, height, data))
+    }
+
+    /// Add a direct RGBA image, returning an error instead of panicking on length mismatch.
+    pub fn try_add_rgba_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[[u8; 4]],
+    ) -> Result<ItemHandle, PlotDataError> {
+        validate_image_len(width, height, data.len())?;
+        Ok(self.add_rgba_image(width, height, data))
+    }
+
+    /// Add a direct RGBA image with explicit origin/scale/alpha.
+    pub fn add_rgba_image_with_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[[u8; 4]],
+        geometry: ImageGeometry,
+    ) -> Result<ItemHandle, PlotDataError> {
+        validate_image_len(width, height, data.len())?;
+        let mut spec = ImageSpec::rgba(width, height, data);
+        spec.origin = geometry.origin;
+        spec.scale = geometry.scale;
+        spec.alpha = geometry.alpha;
+        Ok(self.add_image_spec(spec))
     }
 
     /// Add an image from an existing [`ImageData`] value.
@@ -974,12 +1074,43 @@ impl PlotWidget {
     pub fn update_image_spec(&mut self, handle: ItemHandle, spec: ImageSpec<'_>) -> bool {
         let bounds = image_spec_bounds(&spec);
         let stats = Some(image_spec_stats(&spec));
+        let kind = self
+            .item_kind(handle)
+            .filter(|kind| kind.is_image_like())
+            .unwrap_or(PlotItemKind::Image);
         if self.backend.update_image(handle, spec) {
-            self.update_item_record(handle, PlotItemKind::Image, bounds, stats);
+            self.update_item_record(handle, kind, bounds, stats);
             true
         } else {
             false
         }
+    }
+
+    /// Replace an existing scalar image, returning an error instead of panicking
+    /// on length mismatch.
+    pub fn try_update_image(
+        &mut self,
+        handle: ItemHandle,
+        width: u32,
+        height: u32,
+        data: &[f32],
+        colormap: Colormap,
+    ) -> Result<bool, PlotDataError> {
+        validate_image_len(width, height, data.len())?;
+        Ok(self.update_image_spec(handle, ImageSpec::scalar(width, height, data, colormap)))
+    }
+
+    /// Replace an existing direct RGBA image, returning an error instead of
+    /// panicking on length mismatch.
+    pub fn try_update_rgba_image(
+        &mut self,
+        handle: ItemHandle,
+        width: u32,
+        height: u32,
+        data: &[[u8; 4]],
+    ) -> Result<bool, PlotDataError> {
+        validate_image_len(width, height, data.len())?;
+        Ok(self.update_image_spec(handle, ImageSpec::rgba(width, height, data)))
     }
 
     /// Replace an existing image by handle from [`ImageData`].
@@ -995,18 +1126,25 @@ impl PlotWidget {
         mask: &[bool],
         color: Color32,
     ) -> Result<ItemHandle, PlotDataError> {
+        self.add_mask_with_geometry(width, height, mask, color, ImageGeometry::default())
+    }
+
+    /// Add a boolean mask as a transparent RGBA overlay with explicit geometry.
+    pub fn add_mask_with_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        mask: &[bool],
+        color: Color32,
+        geometry: ImageGeometry,
+    ) -> Result<ItemHandle, PlotDataError> {
         validate_image_len(width, height, mask.len())?;
-        let rgba: Vec<[u8; 4]> = mask
-            .iter()
-            .map(|masked| {
-                if *masked {
-                    [color.r(), color.g(), color.b(), color.a()]
-                } else {
-                    [0, 0, 0, 0]
-                }
-            })
-            .collect();
-        Ok(self.add_image_spec_as_kind(ImageSpec::rgba(width, height, &rgba), PlotItemKind::Mask))
+        let rgba = mask_rgba_pixels(mask, color);
+        let mut spec = ImageSpec::rgba(width, height, &rgba);
+        spec.origin = geometry.origin;
+        spec.scale = geometry.scale;
+        spec.alpha = geometry.alpha;
+        Ok(self.add_image_spec_as_kind(spec, PlotItemKind::Mask))
     }
 
     /// Add a boolean mask overlay and assign a legend label.
@@ -1237,6 +1375,55 @@ impl PlotWidget {
         self.remove_records_by_kinds(|kind| kind == PlotItemKind::Mask);
     }
 
+    fn remove_if_kind(
+        &mut self,
+        handle: ItemHandle,
+        predicate: impl Fn(PlotItemKind) -> bool,
+    ) -> bool {
+        if self.item_kind(handle).is_some_and(predicate) {
+            self.remove(handle)
+        } else {
+            false
+        }
+    }
+
+    /// Remove a curve-like item by handle.
+    pub fn remove_curve(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, PlotItemKind::is_curve_like)
+    }
+
+    /// Remove an image-like item by handle.
+    pub fn remove_image(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, PlotItemKind::is_image_like)
+    }
+
+    /// Remove a histogram item by handle.
+    pub fn remove_histogram(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, |kind| kind == PlotItemKind::Histogram)
+    }
+
+    /// Remove a scatter item by handle.
+    pub fn remove_scatter(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, |kind| kind == PlotItemKind::Scatter)
+    }
+
+    /// Remove a mask item by handle.
+    pub fn remove_mask(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, |kind| kind == PlotItemKind::Mask)
+    }
+
+    /// Remove a marker item by handle.
+    pub fn remove_marker(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, |kind| kind == PlotItemKind::Marker)
+    }
+
+    /// Remove a shape or triangle overlay item by handle.
+    pub fn remove_overlay_item(&mut self, handle: ItemHandle) -> bool {
+        self.remove_if_kind(handle, |kind| {
+            matches!(kind, PlotItemKind::Shape | PlotItemKind::Triangles)
+        })
+    }
+
     /// Return every backend item handle in draw order.
     pub fn get_items(&self) -> Vec<ItemHandle> {
         self.backend.items_back_to_front()
@@ -1281,6 +1468,47 @@ impl PlotWidget {
             .iter()
             .filter_map(|record| predicate(record.kind).then_some(record.handle))
             .collect()
+    }
+
+    fn handle_by_legend_and_kind(
+        &self,
+        legend: &str,
+        predicate: impl Fn(PlotItemKind) -> bool,
+    ) -> Option<ItemHandle> {
+        self.item_records.iter().find_map(|record| {
+            (record.legend.as_deref() == Some(legend) && predicate(record.kind))
+                .then_some(record.handle)
+        })
+    }
+
+    /// Return the first item handle with this legend label.
+    pub fn item_by_legend(&self, legend: &str) -> Option<ItemHandle> {
+        self.handle_by_legend_and_kind(legend, |_| true)
+    }
+
+    /// Return the first curve-like item handle with this legend label.
+    pub fn curve_by_legend(&self, legend: &str) -> Option<ItemHandle> {
+        self.handle_by_legend_and_kind(legend, PlotItemKind::is_curve_like)
+    }
+
+    /// Return the first image-like item handle with this legend label.
+    pub fn image_by_legend(&self, legend: &str) -> Option<ItemHandle> {
+        self.handle_by_legend_and_kind(legend, PlotItemKind::is_image_like)
+    }
+
+    /// Return the first histogram item handle with this legend label.
+    pub fn histogram_by_legend(&self, legend: &str) -> Option<ItemHandle> {
+        self.handle_by_legend_and_kind(legend, |kind| kind == PlotItemKind::Histogram)
+    }
+
+    /// Return the first scatter item handle with this legend label.
+    pub fn scatter_by_legend(&self, legend: &str) -> Option<ItemHandle> {
+        self.handle_by_legend_and_kind(legend, |kind| kind == PlotItemKind::Scatter)
+    }
+
+    /// Return the first mask item handle with this legend label.
+    pub fn mask_by_legend(&self, legend: &str) -> Option<ItemHandle> {
+        self.handle_by_legend_and_kind(legend, |kind| kind == PlotItemKind::Mask)
     }
 
     /// Return the high-level family of an item.
@@ -1928,6 +2156,17 @@ impl Plot2D {
         self.inner.add_image_default(width, height, data)
     }
 
+    /// Add a scalar image using this plot's default colormap, returning an
+    /// error instead of panicking on length mismatch.
+    pub fn try_add_default_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[f32],
+    ) -> Result<ItemHandle, PlotDataError> {
+        self.inner.try_add_image_default(width, height, data)
+    }
+
     /// Add a boolean mask overlay.
     pub fn add_mask(
         &mut self,
@@ -1937,6 +2176,19 @@ impl Plot2D {
         color: Color32,
     ) -> Result<ItemHandle, PlotDataError> {
         self.inner.add_mask(width, height, mask, color)
+    }
+
+    /// Add a boolean mask overlay with explicit image geometry.
+    pub fn add_mask_with_geometry(
+        &mut self,
+        width: u32,
+        height: u32,
+        mask: &[bool],
+        color: Color32,
+        geometry: ImageGeometry,
+    ) -> Result<ItemHandle, PlotDataError> {
+        self.inner
+            .add_mask_with_geometry(width, height, mask, color, geometry)
     }
 
     /// Extract a row profile from image data.
@@ -2074,5 +2326,23 @@ mod tests {
         assert_eq!(stats.min, Some(1.0));
         assert_eq!(stats.max, Some(4.0));
         assert_eq!(stats.mean, Some(2.5));
+    }
+
+    #[test]
+    fn value_stats_from_f32_matches_f64_semantics() {
+        let stats = ValueStats::from_f32(&[1.0, f32::NAN, 4.0, f32::INFINITY]);
+        assert_eq!(stats.count, 4);
+        assert_eq!(stats.finite_count, 2);
+        assert_eq!(stats.min, Some(1.0));
+        assert_eq!(stats.max, Some(4.0));
+        assert_eq!(stats.mean, Some(2.5));
+    }
+
+    #[test]
+    fn mask_rgba_pixels_are_transparent_where_false() {
+        let color = Color32::from_rgba_unmultiplied(10, 20, 30, 40);
+        let pixels = mask_rgba_pixels(&[true, false, true], color);
+        let rgba = color.to_srgba_unmultiplied();
+        assert_eq!(pixels, vec![rgba, [0, 0, 0, 0], rgba]);
     }
 }
