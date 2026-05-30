@@ -2761,6 +2761,58 @@ impl PlotWidget {
         self.backend.plot().x_inverted
     }
 
+    // --- Axis range constraints (silx Axis.setRangeConstraints / setLimitsConstraints) ---
+
+    /// Minimum allowed X span (prevents zooming in below this width).
+    pub fn set_x_min_range(&mut self, min: Option<f64>) {
+        self.backend.plot_mut().x_constraints.min_range = min;
+    }
+
+    /// Maximum allowed X span (prevents zooming out above this width).
+    pub fn set_x_max_range(&mut self, max: Option<f64>) {
+        self.backend.plot_mut().x_constraints.max_range = max;
+    }
+
+    /// Minimum allowed X lower bound (prevents panning below this value).
+    pub fn set_x_min_pos(&mut self, min: Option<f64>) {
+        self.backend.plot_mut().x_constraints.min_pos = min;
+    }
+
+    /// Maximum allowed X upper bound (prevents panning above this value).
+    pub fn set_x_max_pos(&mut self, max: Option<f64>) {
+        self.backend.plot_mut().x_constraints.max_pos = max;
+    }
+
+    /// Minimum allowed Y span (prevents zooming in below this height).
+    pub fn set_y_min_range(&mut self, min: Option<f64>) {
+        self.backend.plot_mut().y_constraints.min_range = min;
+    }
+
+    /// Maximum allowed Y span (prevents zooming out above this height).
+    pub fn set_y_max_range(&mut self, max: Option<f64>) {
+        self.backend.plot_mut().y_constraints.max_range = max;
+    }
+
+    /// Minimum allowed Y lower bound (prevents panning below this value).
+    pub fn set_y_min_pos(&mut self, min: Option<f64>) {
+        self.backend.plot_mut().y_constraints.min_pos = min;
+    }
+
+    /// Maximum allowed Y upper bound (prevents panning above this value).
+    pub fn set_y_max_pos(&mut self, max: Option<f64>) {
+        self.backend.plot_mut().y_constraints.max_pos = max;
+    }
+
+    /// Read back current X axis constraints.
+    pub fn x_constraints(&self) -> crate::core::plot::AxisConstraints {
+        self.backend.plot().x_constraints
+    }
+
+    /// Read back current Y axis constraints.
+    pub fn y_constraints(&self) -> crate::core::plot::AxisConstraints {
+        self.backend.plot().y_constraints
+    }
+
     pub fn set_y_inverted(&mut self, on: bool) {
         self.backend.set_y_inverted(on);
     }

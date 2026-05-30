@@ -383,9 +383,17 @@ fn apply_interaction(
 }
 
 /// Adopt `next` limits only if they are non-degenerate, otherwise keep the
-/// current ones (guards against a collapsed/inverted view).
+/// current ones (guards against a collapsed/inverted view). Applies per-axis
+/// constraints after the validity check.
 fn commit(plot: &mut Plot, next: interaction::Limits) {
-    if interaction::is_valid(next) {
-        plot.limits = next;
+    if !interaction::is_valid(next) {
+        return;
+    }
+    let (x0, x1, y0, y1) = next;
+    let (x0, x1) = plot.x_constraints.apply(x0, x1);
+    let (y0, y1) = plot.y_constraints.apply(y0, y1);
+    let constrained = (x0, x1, y0, y1);
+    if interaction::is_valid(constrained) {
+        plot.limits = constrained;
     }
 }

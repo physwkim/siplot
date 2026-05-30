@@ -23,7 +23,7 @@ pub use crate::core::colormap::{Colormap, ColormapName, Normalization};
 pub use crate::core::decimate::min_max_decimate;
 pub use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
 pub use crate::core::marker::{DEFAULT_MARKER_SIZE, Marker, MarkerKind, MarkerSymbol};
-pub use crate::core::plot::{GraphGrid, Plot, PlotId};
+pub use crate::core::plot::{AxisConstraints, GraphGrid, Plot, PlotId};
 pub use crate::core::roi::{Roi, RoiEdge};
 pub use crate::core::shape::{Shape, ShapeKind};
 pub use crate::core::transform::{Axis, Margins, Scale, Transform, YAxis};

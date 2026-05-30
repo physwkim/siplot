@@ -14,6 +14,84 @@ use crate::core::shape::Shape;
 use crate::core::transform::{Axis, Margins, Scale, Transform, keep_aspect_limits};
 use crate::core::triangles::Triangles;
 
+/// Per-axis pan/zoom range constraints mirroring silx
+/// `Axis.setRangeConstraints` / `Axis.setLimitsConstraints`.
+///
+/// All fields are optional; `None` means unconstrained. Applied by the
+/// interaction helpers after every pan/zoom so the display range always
+/// satisfies all set constraints.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AxisConstraints {
+    /// Minimum allowed span (display range). Prevents zooming in past this.
+    pub min_range: Option<f64>,
+    /// Maximum allowed span (display range). Prevents zooming out past this.
+    pub max_range: Option<f64>,
+    /// Minimum allowed lower bound. Prevents panning the view below this value.
+    pub min_pos: Option<f64>,
+    /// Maximum allowed upper bound. Prevents panning the view above this value.
+    pub max_pos: Option<f64>,
+}
+
+impl AxisConstraints {
+    /// Return `(lo, hi)` clamped so all set constraints are satisfied. The
+    /// span is corrected first (centered on the current midpoint), then the
+    /// position window is clamped (shifting both ends equally).
+    pub fn apply(self, lo: f64, hi: f64) -> (f64, f64) {
+        let mut span = hi - lo;
+        if span <= 0.0 {
+            return (lo, hi);
+        }
+
+        // 1. Clamp the span.
+        if let Some(min) = self.min_range
+            && span < min
+        {
+            span = min;
+        }
+        if let Some(max) = self.max_range
+            && span > max
+        {
+            span = max;
+        }
+
+        // 2. Re-center the clamped span on the original midpoint.
+        let mid = (lo + hi) * 0.5;
+        let mut new_lo = mid - span * 0.5;
+        let mut new_hi = mid + span * 0.5;
+
+        // 3. Clamp the position window (shift both ends to stay inside bounds).
+        if let Some(min_pos) = self.min_pos
+            && new_lo < min_pos
+        {
+            let shift = min_pos - new_lo;
+            new_lo += shift;
+            new_hi += shift;
+        }
+        if let Some(max_pos) = self.max_pos
+            && new_hi > max_pos
+        {
+            let shift = new_hi - max_pos;
+            new_lo -= shift;
+            new_hi -= shift;
+        }
+
+        // 4. Final sanity — keep lo < hi even if constraints are contradictory.
+        if new_lo >= new_hi {
+            return (lo, hi);
+        }
+
+        (new_lo, new_hi)
+    }
+
+    /// `true` when all fields are `None` (no constraints set).
+    pub fn is_unconstrained(self) -> bool {
+        self.min_range.is_none()
+            && self.max_range.is_none()
+            && self.min_pos.is_none()
+            && self.max_pos.is_none()
+    }
+}
+
 /// Identifier for a single `Plot` instance.
 ///
 /// `egui_wgpu`'s `callback_resources` is a global type map, so multi-plot keeps
@@ -114,6 +192,10 @@ pub struct Plot {
     pub grid_color: Option<Color32>,
     /// Grid lines drawn in the data area (`setGraphGrid`).
     pub grid: GraphGrid,
+    /// Pan/zoom constraints for the X axis (silx `getXAxis().setRangeConstraints`).
+    pub x_constraints: AxisConstraints,
+    /// Pan/zoom constraints for the left Y axis (silx `getYAxis().setRangeConstraints`).
+    pub y_constraints: AxisConstraints,
 }
 
 impl Plot {
@@ -145,6 +227,8 @@ impl Plot {
             foreground: None,
             grid_color: None,
             grid: GraphGrid::Major,
+            x_constraints: AxisConstraints::default(),
+            y_constraints: AxisConstraints::default(),
         }
     }
 
@@ -195,6 +279,71 @@ mod tests {
 
     fn area() -> Rect {
         Rect::from_min_max(pos2(0.0, 0.0), pos2(200.0, 100.0))
+    }
+
+    #[test]
+    fn axis_constraints_unconstrained_is_passthrough() {
+        let c = AxisConstraints::default();
+        assert_eq!(c.apply(0.0, 10.0), (0.0, 10.0));
+        assert!(c.is_unconstrained());
+    }
+
+    #[test]
+    fn axis_constraints_min_range_widens_span() {
+        let c = AxisConstraints {
+            min_range: Some(5.0),
+            ..Default::default()
+        };
+        // Current span is 2.0, below min; should be widened to 5.0 centered on 1.0.
+        let (lo, hi) = c.apply(0.0, 2.0);
+        assert!((hi - lo - 5.0).abs() < 1e-10, "span={}", hi - lo);
+        assert!(((lo + hi) / 2.0 - 1.0).abs() < 1e-10); // centered on original mid
+    }
+
+    #[test]
+    fn axis_constraints_max_range_narrows_span() {
+        let c = AxisConstraints {
+            max_range: Some(5.0),
+            ..Default::default()
+        };
+        // Current span is 10.0, above max; should be narrowed to 5.0 centered on 5.0.
+        let (lo, hi) = c.apply(0.0, 10.0);
+        assert!((hi - lo - 5.0).abs() < 1e-10, "span={}", hi - lo);
+        assert!(((lo + hi) / 2.0 - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn axis_constraints_min_pos_shifts_window_right() {
+        let c = AxisConstraints {
+            min_pos: Some(2.0),
+            ..Default::default()
+        };
+        // View [0, 4] would place lo below min_pos=2; shift right so lo=2.
+        let (lo, hi) = c.apply(0.0, 4.0);
+        assert!((lo - 2.0).abs() < 1e-10, "lo={lo}");
+        assert!((hi - 6.0).abs() < 1e-10, "hi={hi}");
+    }
+
+    #[test]
+    fn axis_constraints_max_pos_shifts_window_left() {
+        let c = AxisConstraints {
+            max_pos: Some(8.0),
+            ..Default::default()
+        };
+        // View [6, 12] places hi above max_pos=8; shift left so hi=8.
+        let (lo, hi) = c.apply(6.0, 12.0);
+        assert!((hi - 8.0).abs() < 1e-10, "hi={hi}");
+        assert!((lo - 2.0).abs() < 1e-10, "lo={lo}");
+    }
+
+    #[test]
+    fn axis_constraints_degenerate_span_is_passthrough() {
+        let c = AxisConstraints {
+            min_range: Some(1.0),
+            ..Default::default()
+        };
+        // Already-invalid spans return unchanged (guard against further corruption).
+        assert_eq!(c.apply(5.0, 3.0), (5.0, 3.0));
     }
 
     #[test]

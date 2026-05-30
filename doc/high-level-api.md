@@ -23,6 +23,7 @@ The high-level examples mirror common silx examples from `silx/examples/`:
 | `plotContextMenu.py` | `cargo run --example high_level_context_menu` | plot-area context menu, reset/cursor/grid/save actions |
 | `shiftPlotAction.py` | `cargo run --example high_level_shift_action` | custom action mutating the active curve in place |
 | `plotUpdateImageFromThread.py` and `plotUpdateImageFromGevent.py` | `cargo run --example high_level_live_image` | retained image handle updates without resetting zoom |
+| `plotLimits.py` | `cargo run --example high_level_plot_limits` | per-axis min/max span and position constraints, visibility toggle, z-order |
 
 `syncPlotLocation.py` is not ported yet. It needs multiple independent
 high-level plots visible in one window, while the current wgpu resource path is
