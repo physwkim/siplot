@@ -36,10 +36,10 @@ pub use crate::render::gpu_curve::CurveData;
 pub use crate::render::gpu_image::{ImageData, ImagePixels};
 pub use crate::render::save::{SaveError, encode_png, save_graph};
 pub use crate::widget::high_level::{
-    CurveStats, ImageGeometry, ImageStats, ItemStats, LegendResponse, Plot1D, Plot2D,
-    PlotDataError, PlotEvent, PlotItemKind, PlotWidget, PlotWindow, PlotWithToolbarResponse,
-    ProfileMode, ToolbarResponse, ValueStats, histogram_step_values, horizontal_profile_values,
-    vertical_profile_values,
+    CompareImages, CompareMode, CurveStats, ImageGeometry, ImageStats, ItemStats, LegendResponse,
+    Plot1D, Plot2D, PlotDataError, PlotEvent, PlotItemKind, PlotWidget, PlotWindow,
+    PlotWithToolbarResponse, ProfileMode, ToolbarResponse, ValueStats, histogram_step_values,
+    horizontal_profile_values, vertical_profile_values,
 };
 pub use crate::widget::interaction::{PointPick, image_index, nearest_point};
 pub use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};

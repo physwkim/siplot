@@ -3395,6 +3395,256 @@ impl DerefMut for Plot2D {
     }
 }
 
+// ─── CompareImages ────────────────────────────────────────────────────────────
+
+/// Visual mode for [`CompareImages`].
+///
+/// Mirrors the `VisualizationMode` options in silx `CompareImages.py`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum CompareMode {
+    /// Show only image A.
+    OnlyA,
+    /// Show only image B.
+    OnlyB,
+    /// Left/right split: the left `split` fraction shows A, the rest shows B.
+    #[default]
+    HalfHalf,
+    /// Pixel-wise A − B, normalised to `[-1, 1]` for display.
+    Subtract,
+}
+
+/// A retained widget that displays two co-registered images with a draggable
+/// split slider, mirroring silx `CompareImages`.
+///
+/// Create once, call [`Self::set_images`] to upload both images, then in the
+/// frame loop call [`Self::show_toolbar`] and [`Self::show`].
+///
+/// ```ignore
+/// let mut cmp = CompareImages::new(render_state, 0);
+/// cmp.set_images(width, height, &data_a, &data_b, Colormap::viridis(0.0, 1.0))?;
+///
+/// // frame loop
+/// cmp.show_toolbar(ui);
+/// cmp.show(ui);
+/// ```
+pub struct CompareImages {
+    inner: PlotWidget,
+    width: u32,
+    height: u32,
+    data_a: Vec<f32>,
+    data_b: Vec<f32>,
+    colormap: Colormap,
+    composite_handle: Option<ItemHandle>,
+    split: f32,
+    mode: CompareMode,
+    dirty: bool,
+}
+
+impl CompareImages {
+    /// Create a new compare-images widget backed by wgpu plot id `id`.
+    pub fn new(render_state: &RenderState, id: PlotId) -> Self {
+        let mut inner = PlotWidget::new(render_state, id);
+        inner.set_keep_data_aspect_ratio(true);
+        Self {
+            inner,
+            width: 0,
+            height: 0,
+            data_a: Vec::new(),
+            data_b: Vec::new(),
+            colormap: Colormap::viridis(0.0, 1.0),
+            composite_handle: None,
+            split: 0.5,
+            mode: CompareMode::HalfHalf,
+            dirty: false,
+        }
+    }
+
+    /// Upload both images.  Validates `data_a.len() == data_b.len() == width * height`.
+    pub fn set_images(
+        &mut self,
+        width: u32,
+        height: u32,
+        data_a: &[f32],
+        data_b: &[f32],
+        colormap: Colormap,
+    ) -> Result<(), PlotDataError> {
+        let expected = (width as usize).saturating_mul(height as usize);
+        if data_a.len() != expected {
+            return Err(PlotDataError::ImageDataLength {
+                expected,
+                actual: data_a.len(),
+            });
+        }
+        if data_b.len() != expected {
+            return Err(PlotDataError::ImageDataLength {
+                expected,
+                actual: data_b.len(),
+            });
+        }
+        self.width = width;
+        self.height = height;
+        self.data_a = data_a.to_vec();
+        self.data_b = data_b.to_vec();
+        self.colormap = colormap;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Current split position in [0, 1] — fraction of the width shown as A.
+    pub fn split(&self) -> f32 {
+        self.split
+    }
+
+    /// Set the split position.
+    pub fn set_split(&mut self, split: f32) {
+        let clamped = split.clamp(0.0, 1.0);
+        if (clamped - self.split).abs() > 1e-6 {
+            self.split = clamped;
+            self.dirty = true;
+        }
+    }
+
+    /// Current visualization mode.
+    pub fn mode(&self) -> CompareMode {
+        self.mode
+    }
+
+    /// Set the visualization mode.
+    pub fn set_mode(&mut self, mode: CompareMode) {
+        if mode != self.mode {
+            self.mode = mode;
+            self.dirty = true;
+        }
+    }
+
+    /// Show mode + split controls in a compact toolbar row.  Returns the current mode.
+    ///
+    /// Call this before [`Self::show`].
+    pub fn show_toolbar(&mut self, ui: &mut egui::Ui) -> CompareMode {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+
+            for (label, tooltip, m) in [
+                ("A", "Show only image A", CompareMode::OnlyA),
+                ("B", "Show only image B", CompareMode::OnlyB),
+                ("½", "Half-half split (drag slider)", CompareMode::HalfHalf),
+                ("A-B", "Subtract: A minus B", CompareMode::Subtract),
+            ] {
+                if ui
+                    .selectable_label(self.mode == m, label)
+                    .on_hover_text(tooltip)
+                    .clicked()
+                    && self.mode != m
+                {
+                    self.mode = m;
+                    self.dirty = true;
+                }
+            }
+
+            if self.mode == CompareMode::HalfHalf && !self.data_a.is_empty() {
+                ui.add_space(4.0);
+                if ui
+                    .add(egui::Slider::new(&mut self.split, 0.0..=1.0).text("split"))
+                    .changed()
+                {
+                    self.dirty = true;
+                }
+            }
+        });
+
+        self.mode
+    }
+
+    /// Render the comparison image in `ui`.
+    pub fn show(&mut self, ui: &mut egui::Ui) -> PlotResponse {
+        if self.dirty && !self.data_a.is_empty() {
+            let composite = self.build_composite();
+            if let Some(handle) = self.composite_handle {
+                self.inner
+                    .try_update_rgba_image(handle, self.width, self.height, &composite)
+                    .ok();
+            } else {
+                let handle = self
+                    .inner
+                    .add_rgba_image(self.width, self.height, &composite);
+                self.composite_handle = Some(handle);
+            }
+            self.dirty = false;
+        }
+        self.inner.show(ui)
+    }
+
+    /// Build the composite RGBA pixel array for the current mode and split.
+    fn build_composite(&self) -> Vec<[u8; 4]> {
+        let n = (self.width as usize) * (self.height as usize);
+        let split_col = (self.split * self.width as f32).round() as usize;
+
+        match self.mode {
+            CompareMode::OnlyA => colormap_to_rgba(self.width, &self.data_a, &self.colormap),
+            CompareMode::OnlyB => colormap_to_rgba(self.width, &self.data_b, &self.colormap),
+            CompareMode::HalfHalf => {
+                let rgba_a = colormap_to_rgba(self.width, &self.data_a, &self.colormap);
+                let rgba_b = colormap_to_rgba(self.width, &self.data_b, &self.colormap);
+                let mut out = vec![[0u8; 4]; n];
+                for row in 0..self.height as usize {
+                    let base = row * self.width as usize;
+                    for col in 0..self.width as usize {
+                        let i = base + col;
+                        out[i] = if col < split_col {
+                            rgba_a[i]
+                        } else {
+                            rgba_b[i]
+                        };
+                    }
+                }
+                out
+            }
+            CompareMode::Subtract => self
+                .data_a
+                .iter()
+                .zip(self.data_b.iter())
+                .map(|(&a, &b)| {
+                    let diff = (a - b).clamp(-1.0, 1.0);
+                    if diff > 0.0 {
+                        [(diff * 255.0) as u8, 0, 0, 255]
+                    } else if diff < 0.0 {
+                        [0, 0, ((-diff) * 255.0) as u8, 255]
+                    } else {
+                        [128, 128, 128, 255]
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+impl Deref for CompareImages {
+    type Target = PlotWidget;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for CompareImages {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Apply a colormap to scalar pixel data and return RGBA bytes.
+fn colormap_to_rgba(_width: u32, data: &[f32], colormap: &Colormap) -> Vec<[u8; 4]> {
+    data.iter()
+        .map(|&v| {
+            let t = colormap.normalize(v as f64);
+            let idx = (t * 255.0).clamp(0.0, 255.0) as usize;
+            colormap.lut[idx]
+        })
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// Short human-readable description of a single ROI for the ROI manager table.
 fn roi_description(roi: &Roi) -> String {
     match roi {
