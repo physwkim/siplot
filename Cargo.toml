@@ -174,3 +174,7 @@ path = "examples/high_level_fit_widget.rs"
 [[example]]
 name = "high_level_mask_tools"
 path = "examples/high_level_mask_tools.rs"
+
+[[example]]
+name = "high_level_colormap_dialog"
+path = "examples/high_level_colormap_dialog.rs"
