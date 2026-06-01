@@ -84,16 +84,33 @@ impl ProfileWindow {
         }
     }
 
-    /// Show the profile window using the given egui context.
+    /// Show the profile in its own native OS window (a separate egui viewport).
+    ///
+    /// Using a viewport instead of an [`egui::Window`] lets the profile be
+    /// moved anywhere on the desktop, including outside the parent application
+    /// window, so it no longer clips against the main window and covers the
+    /// image. On backends without multi-viewport support egui transparently
+    /// falls back to an embedded in-app window.
     pub fn show(&mut self, ctx: &egui::Context) {
-        let mut open = self.open;
-        egui::Window::new("Profile Window")
-            .id(self.window_id)
-            .open(&mut open)
-            .default_size([400.0, 300.0])
-            .show(ctx, |ui| {
+        if !self.open {
+            return;
+        }
+        let viewport_id = egui::ViewportId::from_hash_of(self.window_id);
+        let mut close_requested = false;
+        ctx.show_viewport_immediate(
+            viewport_id,
+            egui::ViewportBuilder::default()
+                .with_title("Profile")
+                .with_inner_size([420.0, 320.0]),
+            |ui, _class| {
                 self.plot.show(ui);
-            });
-        self.open = open;
+                if ui.ctx().input(|i| i.viewport().close_requested()) {
+                    close_requested = true;
+                }
+            },
+        );
+        if close_requested {
+            self.open = false;
+        }
     }
 }
