@@ -39,10 +39,12 @@ pub use crate::widget::high_level::{
     CompareImages, CompareMode, CurveStats, ImageGeometry, ImageStats, ImageView, ItemStats,
     LegendResponse, Plot1D, Plot2D, PlotDataError, PlotEvent, PlotItemKind, PlotWidget, PlotWindow,
     PlotWithToolbarResponse, ProfileMode, ScatterView, StackView, ToolbarResponse, ValueStats,
-    histogram_step_values, horizontal_profile_values, vertical_profile_values,
+    histogram_step_values, horizontal_profile_values, line_profile_values, rect_profile_values,
+    vertical_profile_values,
 };
 pub use crate::widget::interaction::{PointPick, image_index, nearest_point};
 pub use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
+pub use crate::widget::profile_window::ProfileWindow;
 pub use crate::widget::sync::SyncAxes;
 
 // Plotting-library convention: re-export so downstreams use the same

@@ -85,7 +85,7 @@ impl eframe::App for LiveProfileApp {
             let label = match mode {
                 ProfileMode::Horizontal => "column",
                 ProfileMode::Vertical => "row",
-                ProfileMode::None => "index",
+                ProfileMode::None | ProfileMode::Line | ProfileMode::Rectangle => "index",
             };
             self.profile_plot.set_graph_x_label(label);
         }

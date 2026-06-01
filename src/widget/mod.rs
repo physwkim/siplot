@@ -9,4 +9,5 @@ pub mod chrome;
 pub mod high_level;
 pub mod interaction;
 pub mod plot_widget;
+pub mod profile_window;
 pub mod sync;

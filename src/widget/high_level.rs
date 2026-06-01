@@ -44,6 +44,10 @@ pub enum ProfileMode {
     Horizontal,
     /// Extract the column at the cursor X position (vertical slice).
     Vertical,
+    /// Extract profile along a drawn line segment.
+    Line,
+    /// Extract profile averaged/summed over a drawn rectangle.
+    Rectangle,
 }
 
 /// Data validation failures returned by helper APIs that build derived items.
@@ -744,6 +748,108 @@ pub fn vertical_profile_values(
     Ok((0..height as usize)
         .map(|row| data[row * width + column] as f64)
         .collect())
+}
+
+/// Extract a 1D profile along a line segment using nearest neighbor sampling.
+/// `start` and `end` are in (column, row) coordinates.
+pub fn line_profile_values(
+    width: u32,
+    height: u32,
+    data: &[f32],
+    start: (f64, f64),
+    end: (f64, f64),
+) -> Result<(Vec<f64>, Vec<f64>), PlotDataError> {
+    validate_image_len(width, height, data.len())?;
+    let (x0, y0) = start;
+    let (x1, y1) = end;
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let dist = (dx * dx + dy * dy).sqrt();
+    let n_points = dist.ceil() as usize + 1;
+
+    let mut x_vals = Vec::with_capacity(n_points);
+    let mut y_vals = Vec::with_capacity(n_points);
+
+    let w = width as i64;
+    let h = height as i64;
+
+    for i in 0..n_points {
+        let t = if n_points > 1 {
+            i as f64 / (n_points - 1) as f64
+        } else {
+            0.0
+        };
+        let x = x0 + t * dx;
+        let y = y0 + t * dy;
+        let col = x.round() as i64;
+        let row = y.round() as i64;
+
+        let val = if col >= 0 && col < w && row >= 0 && row < h {
+            data[(row as usize) * (width as usize) + (col as usize)] as f64
+        } else {
+            f64::NAN
+        };
+        x_vals.push(t * dist);
+        y_vals.push(val);
+    }
+
+    Ok((x_vals, y_vals))
+}
+
+/// Extract a 1D profile within a rectangle by averaging along an axis.
+/// `rect` is (x_min, x_max, y_min, y_max) in (column, row) coordinates.
+pub fn rect_profile_values(
+    width: u32,
+    height: u32,
+    data: &[f32],
+    rect: (f64, f64, f64, f64),
+    horizontal: bool,
+) -> Result<(Vec<f64>, Vec<f64>), PlotDataError> {
+    validate_image_len(width, height, data.len())?;
+    let (x_min, x_max, y_min, y_max) = rect;
+
+    let col_min = x_min.round().max(0.0) as usize;
+    let col_max = x_max.round().min(width as f64 - 1.0) as usize;
+    let row_min = y_min.round().max(0.0) as usize;
+    let row_max = y_max.round().min(height as f64 - 1.0) as usize;
+
+    if col_min > col_max
+        || row_min > row_max
+        || col_max >= width as usize
+        || row_max >= height as usize
+    {
+        return Ok((vec![], vec![]));
+    }
+
+    if horizontal {
+        let num_rows = (row_max - row_min + 1) as f64;
+        let mut x_vals = Vec::with_capacity(col_max - col_min + 1);
+        let mut y_vals = Vec::with_capacity(col_max - col_min + 1);
+
+        for col in col_min..=col_max {
+            let mut sum = 0.0;
+            for row in row_min..=row_max {
+                sum += data[row * width as usize + col] as f64;
+            }
+            x_vals.push(col as f64);
+            y_vals.push(sum / num_rows);
+        }
+        Ok((x_vals, y_vals))
+    } else {
+        let num_cols = (col_max - col_min + 1) as f64;
+        let mut x_vals = Vec::with_capacity(row_max - row_min + 1);
+        let mut y_vals = Vec::with_capacity(row_max - row_min + 1);
+
+        for row in row_min..=row_max {
+            let mut sum = 0.0;
+            for col in col_min..=col_max {
+                sum += data[row * width as usize + col] as f64;
+            }
+            x_vals.push(row as f64);
+            y_vals.push(sum / num_cols);
+        }
+        Ok((x_vals, y_vals))
+    }
 }
 
 fn fmt_stat(value: Option<f64>) -> String {
@@ -2715,6 +2821,20 @@ impl PlotWidget {
             {
                 mode = ProfileMode::Vertical;
             }
+            if ui
+                .selectable_label(mode == ProfileMode::Line, "L")
+                .on_hover_text("Line profile (draw line ROI)")
+                .clicked()
+            {
+                mode = ProfileMode::Line;
+            }
+            if ui
+                .selectable_label(mode == ProfileMode::Rectangle, "R")
+                .on_hover_text("Rectangle profile (draw rect ROI)")
+                .clicked()
+            {
+                mode = ProfileMode::Rectangle;
+            }
         });
 
         ui.data_mut(|d| d.insert_temp(id, mode));
@@ -3527,6 +3647,7 @@ impl Plot2D {
                         (x, y)
                     })
             }
+            _ => None,
         }
     }
 
