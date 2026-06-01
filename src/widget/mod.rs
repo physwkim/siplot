@@ -10,6 +10,7 @@ pub mod colormap_dialog;
 pub mod fit_widget;
 pub mod high_level;
 pub mod interaction;
+pub mod limits_widget;
 pub mod mask_tools;
 pub mod plot_widget;
 pub mod profile_window;

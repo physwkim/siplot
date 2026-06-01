@@ -1,0 +1,146 @@
+use crate::core::transform::YAxis;
+use crate::widget::high_level::Plot2D;
+use egui::Window;
+
+/// A widget for interactively setting the plot limits, scaling, and grid options.
+pub struct LimitsWidget {
+    window_id: egui::Id,
+    pub open: bool,
+
+    // Staged limits. When the user types/drags values, they update these,
+    // and then apply them to the plot (or auto-apply if configured).
+    x_min: f64,
+    x_max: f64,
+    y_min: f64,
+    y_max: f64,
+
+    // Options
+    x_log: bool,
+    y_log: bool,
+    grid: bool,
+
+    initialized: bool,
+}
+
+impl Default for LimitsWidget {
+    fn default() -> Self {
+        Self {
+            window_id: egui::Id::new("limits_widget"),
+            open: false,
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+            x_log: false,
+            y_log: false,
+            grid: true,
+            initialized: false,
+        }
+    }
+}
+
+impl LimitsWidget {
+    /// Create a new LimitsWidget.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Synchronize the widget state with the current plot state.
+    fn sync_from_plot(&mut self, plot: &Plot2D) {
+        let (x_min, x_max) = plot.get_graph_x_limits();
+        self.x_min = x_min;
+        self.x_max = x_max;
+
+        if let Some((y_min, y_max)) = plot.get_graph_y_limits(YAxis::Left) {
+            self.y_min = y_min;
+            self.y_max = y_max;
+        }
+
+        // Note: PlotWidget doesn't easily expose is_x_log getter directly in high_level yet,
+        // but it could. For now, we assume this widget drives the settings, or we
+        // just let the user toggle it. If they toggle it here, it pushes to plot.
+    }
+
+    /// Show the Limits window.
+    pub fn show(&mut self, ctx: &egui::Context, plot: &mut Plot2D) {
+        if !self.initialized {
+            self.sync_from_plot(plot);
+            self.initialized = true;
+        }
+
+        let mut open = self.open;
+        let mut apply = false;
+
+        Window::new("Axis & Limits Settings")
+            .id(self.window_id)
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.group(|ui| {
+                    ui.heading("X Axis");
+                    ui.horizontal(|ui| {
+                        ui.label("Min:");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.x_min).speed(0.1))
+                            .changed()
+                        {
+                            apply = true;
+                        }
+                        ui.label("Max:");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.x_max).speed(0.1))
+                            .changed()
+                        {
+                            apply = true;
+                        }
+                    });
+                    if ui.checkbox(&mut self.x_log, "Log Scale").changed() {
+                        plot.set_graph_x_log(self.x_log);
+                    }
+                });
+
+                ui.group(|ui| {
+                    ui.heading("Y Axis");
+                    ui.horizontal(|ui| {
+                        ui.label("Min:");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.y_min).speed(0.1))
+                            .changed()
+                        {
+                            apply = true;
+                        }
+                        ui.label("Max:");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.y_max).speed(0.1))
+                            .changed()
+                        {
+                            apply = true;
+                        }
+                    });
+                    if ui.checkbox(&mut self.y_log, "Log Scale").changed() {
+                        plot.set_graph_y_log(self.y_log);
+                    }
+                });
+
+                ui.separator();
+
+                if ui.checkbox(&mut self.grid, "Show Grid").changed() {
+                    plot.set_graph_grid(self.grid);
+                }
+
+                ui.horizontal(|ui| {
+                    if ui.button("Sync from Plot").clicked() {
+                        self.sync_from_plot(plot);
+                    }
+                });
+            });
+
+        self.open = open;
+
+        if apply {
+            // Apply limits to plot
+            plot.set_graph_x_limits(self.x_min, self.x_max);
+            plot.set_graph_y_limits(self.y_min, self.y_max, YAxis::Left);
+        }
+    }
+}

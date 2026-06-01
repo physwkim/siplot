@@ -178,3 +178,7 @@ path = "examples/high_level_mask_tools.rs"
 [[example]]
 name = "high_level_colormap_dialog"
 path = "examples/high_level_colormap_dialog.rs"
+
+[[example]]
+name = "high_level_limits_widget"
+path = "examples/high_level_limits_widget.rs"
