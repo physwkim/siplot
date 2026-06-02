@@ -9,3 +9,8 @@ pub mod backend_wgpu;
 pub mod gpu_curve;
 pub mod gpu_image;
 pub mod save;
+
+// Headless WGSL validation of the shaders in `shaders/` (naga parse + validate,
+// no GPU). Test-only; see `shaders.rs`.
+#[cfg(test)]
+mod shaders;
