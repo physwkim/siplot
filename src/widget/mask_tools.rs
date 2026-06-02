@@ -634,6 +634,18 @@ impl MaskToolsWidget {
         }
     }
 
+    /// Mask every pixel whose `data` value is not finite (NaN or +/-infinity)
+    /// at the current level.
+    ///
+    /// Mirrors silx `_BaseMaskToolsWidget.updateNotFinite`
+    /// (gui/plot/_BaseMaskToolsWidget.py:296-304):
+    /// `updateStencil(level, ~numpy.isfinite(values))`. Finite values are left
+    /// untouched. `data` is row-major and must be the same length as the mask.
+    pub fn mask_not_finite(&mut self, data: &[f32]) {
+        let stencil: Vec<bool> = data.iter().map(|&v| !v.is_finite()).collect();
+        self.update_stencil(self.level, &stencil, true);
+    }
+
     /// Set pixel `idx` to `level` (mask) or clear it to 0 if it currently
     /// holds `level` (unmask). Mirrors the silx mask/unmask branch shared by
     /// the update operations.
@@ -1408,6 +1420,34 @@ mod tests {
             0, 0, 0, 0, //
         ];
         assert_eq!(w.mask, expected);
+    }
+
+    #[test]
+    fn mask_not_finite_masks_nan_and_infinities_only() {
+        // silx updateNotFinite: ~isfinite masks NaN, +inf, -inf; finite values
+        // (including 0.0 and very large/small finite values) are untouched.
+        let mut w = MaskToolsWidget::new(6, 1);
+        w.level = 1;
+        let data = [
+            0.0_f32,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MAX,
+            -1.5,
+        ];
+        w.mask_not_finite(&data);
+        assert_eq!(w.mask, vec![0, 1, 1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn mask_not_finite_uses_current_level() {
+        // The mask is written at the widget's current level, not always 1.
+        let mut w = MaskToolsWidget::new(2, 1);
+        w.level = 7;
+        let data = [f32::NAN, 3.0];
+        w.mask_not_finite(&data);
+        assert_eq!(w.mask, vec![7, 0]);
     }
 
     #[test]
