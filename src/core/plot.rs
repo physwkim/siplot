@@ -123,6 +123,25 @@ impl GraphGrid {
     }
 }
 
+/// Resolve the label to display on an axis, mirroring silx
+/// `items/axis.py:187-218` (`Axis.getLabel` / `_setCurrentLabel`): the axis
+/// shows its explicit label when one is set, otherwise it falls back to the
+/// active item's per-axis label, otherwise an empty string.
+///
+/// `explicit` is the axis' own label (silx `_defaultLabel`); `active_label` is
+/// the active curve/image's label for this axis (silx `getXLabel`/`getYLabel`).
+/// A `Some("")` is treated the same as `None` (silx `_setCurrentLabel` treats an
+/// empty string as "no label").
+pub fn resolved_axis_label(explicit: Option<&str>, active_label: Option<&str>) -> String {
+    fn non_empty(s: Option<&str>) -> Option<&str> {
+        s.filter(|l| !l.is_empty())
+    }
+    non_empty(explicit)
+        .or(non_empty(active_label))
+        .unwrap_or("")
+        .to_string()
+}
+
 /// The plot's redraw-dirty state, mirroring silx `PlotWidget._dirty`
 /// (`_getDirtyPlot` returns `False | "overlay" | True`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -520,6 +539,25 @@ impl Plot {
         self.autoreplot = autoreplot;
     }
 
+    /// The X-axis label to display, given the active curve's X label (silx
+    /// `Axis.getLabel`). Uses the explicit [`Self::x_label`] when set, otherwise
+    /// falls back to `active_label`, otherwise empty. See [`resolved_axis_label`].
+    pub fn x_axis_label(&self, active_label: Option<&str>) -> String {
+        resolved_axis_label(self.x_label.as_deref(), active_label)
+    }
+
+    /// The left-Y-axis label to display, given the active curve's Y label (silx
+    /// `Axis.getLabel`). See [`Self::x_axis_label`].
+    pub fn y_axis_label(&self, active_label: Option<&str>) -> String {
+        resolved_axis_label(self.y_label.as_deref(), active_label)
+    }
+
+    /// The right (y2) axis label to display, given the active curve's y2 label
+    /// (silx `Axis.getLabel`). See [`Self::x_axis_label`].
+    pub fn y2_axis_label(&self, active_label: Option<&str>) -> String {
+        resolved_axis_label(self.y2_label.as_deref(), active_label)
+    }
+
     /// Refit the view to `data` honoring the per-axis autoscale flags, mirroring
     /// silx `PlotWidget.resetZoom`. An axis whose autoscale flag is off keeps its
     /// current display range; an axis whose flag is on is refit to its data
@@ -877,6 +915,45 @@ mod tests {
         assert_eq!(plot.limits.1, 1000.0);
         // Y stays pinned.
         assert_eq!((plot.limits.2, plot.limits.3), (0.0, 1.0));
+    }
+
+    #[test]
+    fn axis_label_explicit_wins_over_active_curve() {
+        assert_eq!(
+            resolved_axis_label(Some("Energy"), Some("curve X")),
+            "Energy"
+        );
+    }
+
+    #[test]
+    fn axis_label_falls_back_to_active_curve_when_no_explicit() {
+        assert_eq!(resolved_axis_label(None, Some("curve X")), "curve X");
+    }
+
+    #[test]
+    fn axis_label_empty_when_neither_set() {
+        assert_eq!(resolved_axis_label(None, None), "");
+    }
+
+    #[test]
+    fn axis_label_empty_explicit_treated_as_unset() {
+        // silx _setCurrentLabel treats "" as no label -> falls back.
+        assert_eq!(resolved_axis_label(Some(""), Some("curve X")), "curve X");
+        // And an empty active label with no explicit -> empty.
+        assert_eq!(resolved_axis_label(Some(""), Some("")), "");
+        assert_eq!(resolved_axis_label(None, Some("")), "");
+    }
+
+    #[test]
+    fn plot_axis_label_uses_explicit_then_active() {
+        let mut plot = Plot::new(0);
+        plot.x_label = Some("X axis".to_string());
+        // Explicit set -> wins even with an active curve label.
+        assert_eq!(plot.x_axis_label(Some("curve")), "X axis");
+        // No explicit on y -> active curve label.
+        assert_eq!(plot.y_axis_label(Some("intensity")), "intensity");
+        // No explicit, no active -> empty.
+        assert_eq!(plot.y2_axis_label(None), "");
     }
 
     #[test]

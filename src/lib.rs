@@ -30,6 +30,7 @@ pub use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
 pub use crate::core::marker::{DEFAULT_MARKER_SIZE, Marker, MarkerKind, MarkerSymbol};
 pub use crate::core::plot::{
     AxisConstraints, DataMargins, DataRange, DirtyState, GraphGrid, Plot, PlotId,
+    resolved_axis_label,
 };
 pub use crate::core::roi::{Roi, RoiEdge};
 pub use crate::core::shape::{Shape, ShapeKind};
