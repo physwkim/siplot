@@ -379,6 +379,10 @@ fn quantize_float_channel(value: f64) -> u8 {
 /// silx's default gamma-normalization exponent (`Colormap.__gamma`).
 const DEFAULT_GAMMA: f32 = 2.0;
 
+/// silx's default Not-A-Number color (`Colormap._DEFAULT_NAN_COLOR`): fully
+/// transparent white.
+const DEFAULT_NAN_COLOR: [u8; 4] = [255, 255, 255, 0];
+
 /// A 256-color lookup table with a value range and a [`Normalization`].
 ///
 /// `vmin`/`vmax` are the data values mapped to the first and last LUT entries.
@@ -394,6 +398,9 @@ pub struct Colormap {
     /// Exponent for [`Normalization::Gamma`] (ignored otherwise); `2.0` by
     /// default, matching silx.
     pub gamma: f32,
+    /// RGBA color used for Not-A-Number values (silx `Colormap.setNaNColor`);
+    /// fully transparent white by default.
+    pub nan_color: [u8; 4],
 }
 
 impl Colormap {
@@ -406,6 +413,7 @@ impl Colormap {
             vmax,
             normalization: Normalization::Linear,
             gamma: DEFAULT_GAMMA,
+            nan_color: DEFAULT_NAN_COLOR,
         }
     }
 
@@ -430,6 +438,13 @@ impl Colormap {
     /// under gamma normalization.
     pub fn with_gamma(mut self, gamma: f32) -> Self {
         self.gamma = gamma.max(0.0);
+        self
+    }
+
+    /// Set the RGBA color used for Not-A-Number values (silx
+    /// `Colormap.setNaNColor`).
+    pub fn with_nan_color(mut self, nan_color: [u8; 4]) -> Self {
+        self.nan_color = nan_color;
         self
     }
 
@@ -844,6 +859,17 @@ mod tests {
         assert_eq!(rev.lut[0], [255, 255, 255, 255]);
         assert_eq!(rev.lut[255], [0, 0, 0, 255]);
         assert_eq!(rev.lut[1], [254, 254, 254, 255]);
+    }
+
+    // --- NaN color -------------------------------------------------------
+
+    #[test]
+    fn nan_color_defaults_to_transparent_white_and_is_settable() {
+        // silx _DEFAULT_NAN_COLOR = (255, 255, 255, 0).
+        let cm = Colormap::viridis(0.0, 1.0);
+        assert_eq!(cm.nan_color, [255, 255, 255, 0]);
+        let recolored = cm.with_nan_color([10, 20, 30, 255]);
+        assert_eq!(recolored.nan_color, [10, 20, 30, 255]);
     }
 
     // --- Autoscale modes -------------------------------------------------
