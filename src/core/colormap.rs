@@ -750,9 +750,118 @@ fn nanpercentile(data: &[f64], percentile: f64) -> Option<f64> {
     Some(sorted[lo] + frac * (sorted[hi] - sorted[lo]))
 }
 
+/// Build the 256-entry mask-overlay LUT, faithful to silx
+/// `_BaseMaskToolsWidget._setMaskColors` (gui/plot/_BaseMaskToolsWidget.py
+/// lines 984-1010).
+///
+/// The mask is a `uint8` per-pixel level (`0` unmasked, `1..=255` mask levels);
+/// the overlay is rendered by indexing this LUT directly: `rgba = lut[level]`.
+///
+/// Arguments:
+/// - `base`: default overlay RGB in `[0, 1]` (silx `_defaultOverlayColor`,
+///   default `rgba("gray")`). Applied to every level whose override is `None`.
+/// - `overrides`: per-level color override; `overrides[i] == Some(rgb in [0,1])`
+///   gives level `i` a distinct color. Mirrors silx `_overlayColors[i]` where
+///   `_defaultColors[i] == False` (silx lines 997-999). Indices beyond
+///   `overrides.len()` fall back to `base`.
+/// - `selected_level`: the silx `levelSpinBox` value (`1..=255`); this level
+///   gets the full `alpha` (silx line 1005). Every other masked level gets
+///   `alpha / 2` (silx line 1002).
+/// - `alpha`: overlay alpha in `[0, 1]` (silx slider yields `[0.3, 1.0]`). The
+///   value is clamped to `[0, 1]` to defend the contract.
+///
+/// Level `0` is always fully transparent `[0, 0, 0, 0]` (silx line 1008, set
+/// last so it overrides both RGB and alpha for the unmasked level).
+///
+/// Float channels are mapped to `u8` exactly as silx does — silx uploads the
+/// float LUT and the GL backend applies `numpy.clip(colors * 256, 0, 255)
+/// .astype(uint8)`, which TRUNCATES (does not round, does not scale by 255).
+pub fn mask_overlay_lut(
+    base: [f32; 3],
+    overrides: &[Option<[f32; 3]>],
+    selected_level: u8,
+    alpha: f32,
+) -> [[u8; 4]; 256] {
+    // silx slider produces alpha in [0.3, 1.0]; clamp to defend the contract.
+    let alpha = alpha.clamp(0.0, 1.0);
+    // silx maps float -> uint8 via numpy.clip(c * 256, 0, 255).astype(uint8),
+    // which truncates toward zero.
+    let to_u8 = |x: f32| (x * 256.0).clamp(0.0, 255.0) as u8;
+
+    let half_alpha = alpha / 2.0;
+    let mut lut = [[0u8; 4]; 256];
+    for (i, entry) in lut.iter_mut().enumerate() {
+        // silx lines 995/999: default overlay RGB, replaced by a per-level
+        // override where one was set by the user.
+        let rgb = overrides.get(i).copied().flatten().unwrap_or(base);
+        // silx line 1002: every level starts at alpha / 2.
+        *entry = [
+            to_u8(rgb[0]),
+            to_u8(rgb[1]),
+            to_u8(rgb[2]),
+            to_u8(half_alpha),
+        ];
+    }
+    // silx line 1005: highlighted level gets the full alpha (overwrites
+    // alpha / 2 written above).
+    lut[selected_level as usize][3] = to_u8(alpha);
+    // silx line 1008 (set LAST): the no-mask level is fully transparent,
+    // overriding both its RGB and alpha.
+    lut[0] = [0, 0, 0, 0];
+    lut
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rgba("gray") = 0.50196 in float, which truncates to byte 128 via
+    /// silx's `(c * 256).astype(uint8)` (0.50196 * 256 = 128.5 -> 128).
+    const GRAY: [f32; 3] = [0.50196, 0.50196, 0.50196];
+
+    #[test]
+    fn mask_overlay_lut_matches_silx_set_mask_colors() {
+        // silx _setMaskColors(level=1, alpha=0.8) with no per-level overrides
+        // (_BaseMaskToolsWidget.py:984-1010).
+        let lut = mask_overlay_lut(GRAY, &[], 1, 0.8);
+
+        // silx line 1008: no-mask level is fully transparent.
+        assert_eq!(lut[0], [0, 0, 0, 0]);
+        // silx line 1005: selected level 1 gets full alpha.
+        // rgb 0.50196 * 256 = 128.5 -> trunc 128; alpha 0.8 * 256 = 204.8 -> 204.
+        assert_eq!(lut[1], [128, 128, 128, 204]);
+        // silx line 1002: other masked levels get alpha / 2.
+        // alpha/2 = 0.4; 0.4 * 256 = 102.4 -> trunc 102.
+        assert_eq!(lut[2], [128, 128, 128, 102]);
+        assert_eq!(lut[5], [128, 128, 128, 102]);
+    }
+
+    #[test]
+    fn mask_overlay_lut_applies_per_level_override() {
+        // silx lines 997-999: a per-level override replaces the base RGB at
+        // that level only; its alpha still follows the level/alpha rule.
+        let mut overrides = vec![None; 256];
+        overrides[3] = Some([1.0, 0.0, 0.0]); // red override at level 3
+
+        // selected_level = 1, so level 3 keeps alpha / 2 (silx line 1002).
+        let lut = mask_overlay_lut(GRAY, &overrides, 1, 0.8);
+        assert_eq!(lut[3], [255, 0, 0, 102]);
+
+        // selected_level = 3, so level 3 now gets full alpha (silx line 1005).
+        let lut = mask_overlay_lut(GRAY, &overrides, 3, 0.8);
+        assert_eq!(lut[3][3], 204);
+        assert_eq!(&lut[3][0..3], &[255, 0, 0]);
+    }
+
+    #[test]
+    fn mask_overlay_lut_clamps_alpha_to_unit_range() {
+        // The contract clamps alpha to [0, 1] before silx's float->u8 map.
+        // alpha = 2.0 -> clamped 1.0; selected alpha 1.0 * 256 = 256 -> clip 255.
+        // others alpha/2 = 0.5; 0.5 * 256 = 128 -> trunc 128.
+        let lut = mask_overlay_lut(GRAY, &[], 1, 2.0);
+        assert_eq!(lut[1][3], 255);
+        assert_eq!(lut[2][3], 128);
+    }
 
     #[test]
     fn new_viridis_matches_convenience_ctor() {
