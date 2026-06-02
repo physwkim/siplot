@@ -5280,6 +5280,22 @@ mod tests {
         let values = info.values(cursor);
         assert_eq!(values, vec!["12.5".to_owned(), "-3".to_owned()]);
 
+        // A Clicked and a DoubleClicked event read the cursor the same way
+        // (silx PositionInfo tracks the pointer for every mouse signal, not just
+        // hover), so the readout follows the press position too.
+        let clicked = PlotPointerEvent::Clicked {
+            button: crate::widget::interaction::MouseButton::Left,
+            data: (4.0, 8.0),
+            pixel: (10.0, 20.0),
+        };
+        assert_eq!(cursor_from_pointer_event(Some(&clicked)), Some([4.0, 8.0]));
+        let double = PlotPointerEvent::DoubleClicked {
+            button: crate::widget::interaction::MouseButton::Left,
+            data: (-1.5, 2.25),
+            pixel: (10.0, 20.0),
+        };
+        assert_eq!(cursor_from_pointer_event(Some(&double)), Some([-1.5, 2.25]));
+
         // A LimitsChanged event carries no cursor; absence of an event too.
         let limits = PlotPointerEvent::LimitsChanged {
             x: (0.0, 1.0),
