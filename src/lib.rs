@@ -56,6 +56,7 @@ pub use crate::widget::interaction::{PanDirection, PointPick, image_index, neare
 pub use crate::widget::limits_widget::LimitsWidget;
 pub use crate::widget::mask_tools::{MaskTool, MaskToolsWidget, ThresholdMode};
 pub use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
+pub use crate::widget::position_info::{PositionInfo, format_value};
 pub use crate::widget::profile_window::ProfileWindow;
 pub use crate::widget::roi_manager::{ManagedRoi, RoiManagerWidget};
 pub use crate::widget::roi_stats::{RoiStats, curve_roi_stats, image_roi_stats, roi_x_span};

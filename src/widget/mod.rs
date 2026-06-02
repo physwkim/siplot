@@ -16,6 +16,7 @@ pub mod interaction;
 pub mod limits_widget;
 pub mod mask_tools;
 pub mod plot_widget;
+pub mod position_info;
 pub mod profile_window;
 pub mod roi_manager;
 pub mod roi_stats;
