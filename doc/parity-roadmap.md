@@ -285,6 +285,37 @@ Two file-disjoint worktree clusters; per-item adversarial verify; 1 fix applied 
   Percentile autoscale from raw pixels (`Plot2D::get_image_pixels_raw`); mask mode-vs-pan
   (`PlotInteractionMode::MaskDraw`) + pencil-draw routing.
 
+### Wave 6B-2 — HL view wiring (ScatterView side) + stats/fit binding + raw-pixel autoscale
+Single `high_level.rs`-sole-writer cluster (6 items); per-item adversarial verify (all 6 accepted, 0 issues).
+- ScatterView value ColorBar synced to colormap limits (`b03d76c`, silx `ScatterView.py:83-88`).
+- ScatterView visualization-mode dispatch: new `ScatterVisualization` enum (silx
+  `ScatterVisualizationMixIn`); POINTS = existing marker cloud (default, unchanged); IRREGULAR_GRID /
+  REGULAR_GRID / BINNED_STATISTIC convert retained `(x,y,value)` via the Wave-5 `core::scatter_viz`
+  primitives → `GridImage` → image path; `rebuild_visualization` is the single owner of the
+  scatter-vs-grid item handle (`f6ee396`, silx `scatter.py:402-680`). SOLID deferred (shader).
+- ScatterView mask-tools panel: embeds a `ScatterMaskWidget` sized to point count; level/clear/invert/
+  undo/redo/threshold/disk/rect/polygon selections applied to the scatter (`2440965`, silx
+  `ScatterView.py:116-122`).
+- `StatsWidget` bound to live items via new `RetainedItemData` on `ItemRecord` (populated by the typed
+  curve/image spec entry points); `feed_active_stats` recomputes from the active item through the one
+  `core::stats` engine (`c2d1fa3`, silx `StatsWidget`).
+- `FitWidget` bound to a live curve: `set_fit_target`/`set_active_fit_target` pull the curve's retained
+  `(x,y)` and call `FitWidget::set_data`; images/non-curves rejected (`43cc1df`, silx `FitWidget`).
+- Raw-pixel autoscale: new `Plot2D::get_image_pixels_raw`; `autoscale_active_image` computes Stddev3
+  (mean ± 3·std) / Percentile bounds NaN-ignoring via `AutoscaleMode` and re-uploads the image colormap;
+  `colormap_dialog.rs` untouched (`1be8f53`, silx `ColormapDialog.py:450-480`).
+- Gate: clippy `--workspace` clean, **647 tests pass** (+14), doctests ok. `lib.rs` gained one additive
+  re-export (`ScatterVisualization`). No foreign-file edits.
+- Integration note: an agent's first Item-1 edits leaked into the MAIN checkout via a bare repo-root
+  path (same failure mode as 6B-1); the agent reverted with `git checkout -- <file>` and redid the work
+  in the worktree, but its recovery left a stray `git reset` that fast-forwarded `main` to the branch
+  tip. Verified safe before recording: `main^{tree}` byte-identical to the adversarially-verified
+  `wave6/hl-scatter-stats` tip, 6 commits linear on `8a0ee44`, diff touches only `high_level.rs`+`lib.rs`,
+  full-workspace gate re-run green on the main checkout.
+- **Deferred to 6C** (need `plot_widget.rs`+`interaction.rs`+a toolbar toggle): mask mode-vs-pan
+  (`PlotInteractionMode::MaskDraw`) + on-plot pencil-draw routing. **Deferred (shader):** SOLID scatter
+  visualization, per-point scatter alpha.
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
