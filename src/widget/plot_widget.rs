@@ -34,6 +34,9 @@ struct Interaction {
     selection: Option<egui::Rect>,
     /// Index of the ROI whose bounds an edge drag changed this frame.
     roi_changed: Option<usize>,
+    /// The low-level pointer event detected over the data area this frame
+    /// (click / double-click / move), or `None`.
+    pointer_event: Option<interaction::PlotPointerEvent>,
 }
 use crate::render::backend_wgpu::{ClearCallback, CurveCallback, ImageCallback};
 use crate::widget::{chrome, interaction};
@@ -64,6 +67,21 @@ pub struct PlotResponse {
     /// Index into `Plot::rois` of the region whose bounds changed this frame
     /// from an edge drag, or `None` (`doc/design.md` §13 C3).
     pub roi_changed: Option<usize>,
+    /// The low-level pointer event detected over the data area this frame
+    /// (silx `prepareMouseSignal` "mouseClicked" / "mouseDoubleClicked" /
+    /// "mouseMoved", `PlotEvents.py:58-71`), or `None` when there was none. The
+    /// data coordinates are projected through the display [`Transform`]. A
+    /// click/double-click takes precedence over a bare move in the same frame.
+    pub pointer_event: Option<interaction::PlotPointerEvent>,
+    /// The latest draw-mode event produced this frame (silx `drawingProgress` /
+    /// `drawingFinished`), or `None`. Populated only by
+    /// [`PlotView::show_with_draw`]; the plain [`PlotView::show`] /
+    /// [`PlotView::show_with_interaction`] paths leave it `None` (they run no
+    /// draw state machine).
+    pub draw_event: Option<interaction::DrawEvent>,
+    /// The active primary-pointer interaction mode this frame (silx's current
+    /// `Interaction.StateMachine` mode), surfaced read-only for status-bar UIs.
+    pub interaction_mode: PlotInteractionMode,
 }
 
 /// What [`PlotView::show_with_draw`] returns: the [`PlotResponse`] plus the
@@ -139,6 +157,7 @@ impl PlotView {
         let Interaction {
             selection,
             roi_changed,
+            pointer_event,
         } = apply_interaction(ui, &response, plot, area, &view, interaction_mode);
 
         // Final transforms for this frame (after any interaction). The left
@@ -300,6 +319,11 @@ impl PlotView {
             response,
             transform,
             roi_changed,
+            pointer_event,
+            // The plain show path runs no draw state machine; show_with_draw
+            // fills this in below.
+            draw_event: None,
+            interaction_mode,
         }
     }
 
@@ -323,7 +347,7 @@ impl PlotView {
         draw: &mut interaction::DrawState,
         style: interaction::SelectionStyle,
     ) -> DrawResponse {
-        let plot_response =
+        let mut plot_response =
             PlotView::new().show_with_interaction(ui, plot, PlotInteractionMode::Select);
         let response = &plot_response.response;
         let transform = plot_response.transform;
@@ -358,6 +382,11 @@ impl PlotView {
         } else if let Some(interaction::DrawEvent::InProgress { mode, points }) = &event {
             draw_overlay(ui.painter(), &transform, *mode, points, style);
         }
+
+        // Surface this frame's draw event through PlotResponse too, so consumers
+        // reading the embedded plot response (not only DrawResponse.event) see
+        // the latest draw event on this path.
+        plot_response.draw_event = event.clone();
 
         DrawResponse {
             plot: plot_response,
@@ -594,10 +623,87 @@ fn apply_interaction(
         }
     }
 
+    // Low-level pointer event over the data area (silx prepareMouseSignal). A
+    // click/double-click is reported at the interaction pointer position; a bare
+    // move (no button held) is reported at the hover position. Click and
+    // double-click take precedence over a move in the same frame, mirroring silx
+    // emitting the click/double-click signal in `click()` rather than a move.
+    let pointer_event = detect_pointer_event(response, view, area);
+
     Interaction {
         selection,
         roi_changed,
+        pointer_event,
     }
+}
+
+/// Detect the low-level pointer event over the data `area` this frame, projecting
+/// the cursor pixel to data through `view` (silx `prepareMouseSignal`,
+/// `PlotEvents.py:58-71`). Returns, in priority order: a double-click, a single
+/// click, then a bare move. `None` when nothing happened over the data area.
+///
+/// silx reports the double-click at the position of the *first* click; egui only
+/// exposes the current pointer position, so the double-click here carries the
+/// current (second-click) position. The data coordinate is otherwise faithful.
+fn detect_pointer_event(
+    response: &egui::Response,
+    view: &Transform,
+    area: Rect,
+) -> Option<interaction::PlotPointerEvent> {
+    use interaction::{MouseButton, PlotPointerEvent};
+
+    // Click / double-click use the interaction pointer position (the pressed /
+    // released pixel), which is what silx passes to prepareMouseSignal.
+    if let Some(p) = response.interact_pointer_pos()
+        && area.contains(p)
+    {
+        if response.double_clicked() {
+            // silx only emits mouseDoubleClicked for the left button.
+            return Some(PlotPointerEvent::double_clicked(MouseButton::Left, view, p));
+        }
+        for button in [
+            egui::PointerButton::Primary,
+            egui::PointerButton::Secondary,
+            egui::PointerButton::Middle,
+        ] {
+            if response.clicked_by(button) {
+                return Some(PlotPointerEvent::clicked(
+                    MouseButton::from_egui(button),
+                    view,
+                    p,
+                ));
+            }
+        }
+    }
+
+    // Bare move: the cursor moved over the data area this frame. silx leaves the
+    // button unset for a hover move; report the held button when one is down.
+    if let Some(p) = response.hover_pos()
+        && area.contains(p)
+        && ui_pointer_moved(response)
+    {
+        let button = if response.dragged_by(egui::PointerButton::Primary) {
+            Some(MouseButton::Left)
+        } else if response.dragged_by(egui::PointerButton::Secondary) {
+            Some(MouseButton::Right)
+        } else if response.dragged_by(egui::PointerButton::Middle) {
+            Some(MouseButton::Middle)
+        } else {
+            None
+        };
+        return Some(PlotPointerEvent::moved(button, view, p));
+    }
+
+    None
+}
+
+/// Whether the pointer moved this frame (silx hover "mouseMoved" only fires on
+/// actual movement). Uses the egui per-frame pointer delta via the response's
+/// context.
+fn ui_pointer_moved(response: &egui::Response) -> bool {
+    response
+        .ctx
+        .input(|i| i.pointer.delta() != egui::Vec2::ZERO)
 }
 
 /// Pan the plot by one arrow-key step in `dir`, mirroring silx
@@ -657,5 +763,226 @@ fn commit(plot: &mut Plot, next: interaction::Limits) {
     let constrained = (x0, x1, y0, y1);
     if interaction::is_valid(constrained) {
         plot.limits = constrained;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::plot::Plot;
+
+    /// Drive a headless egui frame with the given raw input, run `show`, and
+    /// return the resulting [`PlotResponse`] and its data area. The wgpu paint
+    /// callbacks are recorded but never executed in a headless run.
+    fn run_frame(
+        ctx: &egui::Context,
+        plot: &mut Plot,
+        raw: egui::RawInput,
+    ) -> (PlotResponse, Rect) {
+        let mut captured: Option<(PlotResponse, Rect)> = None;
+        let _ = ctx.run_ui(raw, |ui| {
+            let resp = PlotView::new().show(ui, plot);
+            let area = resp.transform.area;
+            captured = Some((resp, area));
+        });
+        captured.expect("ui ran")
+    }
+
+    /// Run a headless frame with `show_with_draw`, returning the [`DrawResponse`]
+    /// and the data area.
+    fn run_draw_frame(
+        ctx: &egui::Context,
+        plot: &mut Plot,
+        draw: &mut interaction::DrawState,
+        raw: egui::RawInput,
+    ) -> (DrawResponse, Rect) {
+        let mut captured: Option<(DrawResponse, Rect)> = None;
+        let _ = ctx.run_ui(raw, |ui| {
+            let resp = PlotView::new().show_with_draw(
+                ui,
+                plot,
+                draw,
+                interaction::SelectionStyle::default(),
+            );
+            let area = resp.plot.transform.area;
+            captured = Some((resp, area));
+        });
+        captured.expect("ui ran")
+    }
+
+    fn screen_input(screen: egui::Vec2) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn click_emits_clicked_event_with_correct_data_coords() {
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        let screen = egui::vec2(200.0, 200.0);
+
+        // Frame 1: discover the data area (no input).
+        let (_r0, area) = run_frame(&ctx, &mut plot, screen_input(screen));
+        let click_px = area.center();
+
+        // Frame 2: pointer pressed at the click pixel.
+        let mut press = screen_input(screen);
+        press.events.push(egui::Event::PointerMoved(click_px));
+        press.events.push(egui::Event::PointerButton {
+            pos: click_px,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        let _ = run_frame(&ctx, &mut plot, press);
+
+        // Frame 3: pointer released at the same pixel -> egui registers a click.
+        let mut release = screen_input(screen);
+        release.events.push(egui::Event::PointerButton {
+            pos: click_px,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let (resp, _area3) = run_frame(&ctx, &mut plot, release);
+
+        let event = resp.pointer_event.expect("a pointer event on click frame");
+        match event {
+            interaction::PlotPointerEvent::Clicked {
+                button,
+                data,
+                pixel,
+            } => {
+                assert_eq!(button, interaction::MouseButton::Left);
+                // The data coordinate is the transform inverse of the click pixel.
+                let expected = resp.transform.pixel_to_data(click_px);
+                assert!(
+                    (data.0 - expected.0).abs() < 1e-6,
+                    "x {data:?} {expected:?}"
+                );
+                assert!(
+                    (data.1 - expected.1).abs() < 1e-6,
+                    "y {data:?} {expected:?}"
+                );
+                // The center of [0,10]x[0,10] is (5, 5).
+                assert!((data.0 - 5.0).abs() < 0.5, "x≈5: {}", data.0);
+                assert!((data.1 - 5.0).abs() < 0.5, "y≈5: {}", data.1);
+                assert!((pixel.0 - click_px.x).abs() < 1e-3);
+                assert!((pixel.1 - click_px.y).abs() < 1e-3);
+            }
+            other => panic!("expected Clicked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_move_emits_moved_event() {
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        let screen = egui::vec2(200.0, 200.0);
+
+        // Frame 1: discover the data area.
+        let (_r0, area) = run_frame(&ctx, &mut plot, screen_input(screen));
+        let p0 = area.center();
+        // Frame 2: park the pointer at p0 (establishes hover, no move delta yet).
+        let mut f2 = screen_input(screen);
+        f2.events.push(egui::Event::PointerMoved(p0));
+        let _ = run_frame(&ctx, &mut plot, f2);
+
+        // Frame 3: move the pointer by a few pixels -> bare move event.
+        let p1 = p0 + egui::vec2(7.0, -5.0);
+        let mut f3 = screen_input(screen);
+        f3.events.push(egui::Event::PointerMoved(p1));
+        let (resp, _area) = run_frame(&ctx, &mut plot, f3);
+
+        let event = resp.pointer_event.expect("a moved event");
+        match event {
+            interaction::PlotPointerEvent::Moved {
+                button,
+                data,
+                pixel,
+            } => {
+                // A bare move (no button held) leaves the button unset.
+                assert_eq!(button, None);
+                let expected = resp.transform.pixel_to_data(p1);
+                assert!(
+                    (data.0 - expected.0).abs() < 1e-6,
+                    "x {data:?} {expected:?}"
+                );
+                assert!(
+                    (data.1 - expected.1).abs() < 1e-6,
+                    "y {data:?} {expected:?}"
+                );
+                assert!((pixel.0 - p1.x).abs() < 1e-3);
+                assert!((pixel.1 - p1.y).abs() < 1e-3);
+            }
+            other => panic!("expected Moved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_with_draw_surfaces_finished_draw_event_through_plot_response() {
+        // A Line draw: press at one point, release at another -> Finished event,
+        // surfaced both via DrawResponse.event AND PlotResponse.draw_event.
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        let mut draw = interaction::DrawState::new(interaction::DrawMode::Line);
+        let screen = egui::vec2(200.0, 200.0);
+
+        // Frame 1: discover the data area.
+        let (_d0, area) = run_draw_frame(&ctx, &mut plot, &mut draw, screen_input(screen));
+        let p0 = area.center() - egui::vec2(20.0, 20.0);
+        let p1 = area.center() + egui::vec2(20.0, 20.0);
+
+        // Frame 2: press at p0 (drag start).
+        let mut f2 = screen_input(screen);
+        f2.events.push(egui::Event::PointerMoved(p0));
+        f2.events.push(egui::Event::PointerButton {
+            pos: p0,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        let _ = run_draw_frame(&ctx, &mut plot, &mut draw, f2);
+
+        // Frame 3: drag to p1.
+        let mut f3 = screen_input(screen);
+        f3.events.push(egui::Event::PointerMoved(p1));
+        let _ = run_draw_frame(&ctx, &mut plot, &mut draw, f3);
+
+        // Frame 4: release at p1 -> Finished.
+        let mut f4 = screen_input(screen);
+        f4.events.push(egui::Event::PointerButton {
+            pos: p1,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let (resp, _a) = run_draw_frame(&ctx, &mut plot, &mut draw, f4);
+
+        // The same event is surfaced on both channels.
+        assert_eq!(resp.event, resp.plot.draw_event);
+        match resp.plot.draw_event {
+            Some(interaction::DrawEvent::Finished {
+                mode: interaction::DrawMode::Line,
+                ..
+            }) => {}
+            other => panic!("expected Finished Line draw event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_show_leaves_draw_event_none_and_surfaces_mode() {
+        // The plain show path runs no draw state machine -> draw_event is None,
+        // and the interaction mode is surfaced read-only.
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        let (resp, _area) = run_frame(&ctx, &mut plot, screen_input(egui::vec2(200.0, 200.0)));
+        assert!(resp.draw_event.is_none());
+        assert_eq!(resp.interaction_mode, PlotInteractionMode::Zoom);
     }
 }
