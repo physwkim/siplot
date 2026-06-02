@@ -318,6 +318,8 @@ pub struct ToolbarResponse {
     pub zoom_out: bool,
     /// Zoom-back button was clicked (silx `ZoomBackAction`).
     pub zoom_back: bool,
+    /// Save button was clicked (silx `SaveAction`).
+    pub save: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
@@ -334,6 +336,11 @@ pub struct PlotWithToolbarResponse {
 /// is an API alias for [`PlotWidget`] with the same retained item and toolbar
 /// behavior.
 pub type PlotWindow = PlotWidget;
+
+/// Default figure resolution used by the toolbar Save button when no explicit
+/// size is supplied (silx saves at the widget's pixel size; the toolbar has no
+/// data-area handle here, so it uses a fixed default).
+const DEFAULT_SAVE_SIZE: (u32, u32) = (1024, 768);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolbarIcon {
@@ -354,6 +361,7 @@ enum ToolbarIcon {
     ZoomIn,
     ZoomOut,
     ZoomBack,
+    Save,
 }
 
 impl ToolbarIcon {
@@ -442,7 +450,29 @@ fn draw_toolbar_icon(painter: &egui::Painter, rect: egui::Rect, icon: ToolbarIco
         ToolbarIcon::ZoomIn => draw_zoom_step_icon(painter, rect, stroke, true),
         ToolbarIcon::ZoomOut => draw_zoom_step_icon(painter, rect, stroke, false),
         ToolbarIcon::ZoomBack => draw_zoom_back_icon(painter, rect, stroke),
+        ToolbarIcon::Save => draw_save_icon(painter, rect, stroke),
     }
+}
+
+/// Draw a floppy-disk save glyph for the [`ToolbarIcon::Save`] button.
+fn draw_save_icon(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let body = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 2.0, rect.top() + 2.0),
+        egui::pos2(rect.right() - 2.0, rect.bottom() - 2.0),
+    );
+    painter.rect_stroke(body, 1.0, stroke, egui::StrokeKind::Inside);
+    // Label area (top strip).
+    let label = egui::Rect::from_min_max(
+        egui::pos2(body.left() + 3.0, body.top()),
+        egui::pos2(body.right() - 3.0, body.top() + body.height() * 0.35),
+    );
+    painter.rect_stroke(label, 0.0, stroke, egui::StrokeKind::Inside);
+    // Shutter notch.
+    let notch = egui::Rect::from_min_max(
+        egui::pos2(body.right() - 6.0, body.top() + 1.0),
+        egui::pos2(body.right() - 3.0, body.top() + body.height() * 0.3),
+    );
+    painter.rect_filled(notch, 0.0, stroke.color);
 }
 
 /// Draw a leftward back-arrow for the [`ToolbarIcon::ZoomBack`] button.
@@ -3476,6 +3506,16 @@ impl PlotWidget {
             crate::widget::actions::control::curve_style_cycle(self);
             out.curve_style_changed = true;
         }
+
+        ui.separator();
+
+        if toolbar_icon_button(ui, ToolbarIcon::Save, false, "Save figure or curve data").clicked()
+        {
+            // The save dialog + GPU readback are native shims; ignore the
+            // result here (the toolbar only reports the click).
+            let _ = self.save_dialog(DEFAULT_SAVE_SIZE);
+            out.save = true;
+        }
     }
 
     /// Set graph limits.
@@ -4002,6 +4042,56 @@ impl PlotWidget {
 
     pub fn save_graph(&self, path: &Path, size: (u32, u32)) -> Result<(), SaveError> {
         self.backend.save_graph(path, size)
+    }
+
+    /// Save to `path`, dispatching by its extension (silx `SaveAction`):
+    /// a `.csv` path writes the active curve's `(x, y)` data; a raster figure
+    /// extension renders the figure to a `size` pixel image. Returns `Ok(true)`
+    /// when a file was written, `Ok(false)` when the path's extension is not a
+    /// recognized save target or (for CSV) there is no active curve to save.
+    ///
+    /// Only PNG figure snapshots are routed here (the GPU readback shim); other
+    /// raster formats are not yet wired from this entry point.
+    pub fn save_to_path(&self, path: &Path, size: (u32, u32)) -> Result<bool, SaveError> {
+        use crate::render::save::SaveFormat;
+        use crate::widget::actions::io::{SaveTarget, curve_to_csv};
+
+        match SaveTarget::from_path(path) {
+            Some(SaveTarget::Figure(SaveFormat::Png)) => {
+                self.save_graph(path, size)?;
+                Ok(true)
+            }
+            Some(SaveTarget::Figure(_)) => Ok(false),
+            Some(SaveTarget::CurveCsv) => {
+                let Some(handle) = self.active_curve() else {
+                    return Ok(false);
+                };
+                let Some((x, y)) = self.retained_data(handle).and_then(retained_curve_xy) else {
+                    return Ok(false);
+                };
+                let csv = curve_to_csv(x, y);
+                std::fs::write(path, csv)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Open a native save-file dialog (silx `SaveAction` file dialog) and save
+    /// the figure or active-curve data to the chosen path via
+    /// [`Self::save_to_path`]. Returns `Ok(true)` when a file was written,
+    /// `Ok(false)` when the dialog was cancelled or the chosen path was not a
+    /// recognized target. The dialog is a native shim; the save logic it calls is
+    /// covered by unit tests.
+    pub fn save_dialog(&self, size: (u32, u32)) -> Result<bool, SaveError> {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG figure", &["png"])
+            .add_filter("Curve CSV", &["csv"])
+            .save_file()
+        else {
+            return Ok(false);
+        };
+        self.save_to_path(&path, size)
     }
 
     /// Apply accumulated data bounds to the current view.
