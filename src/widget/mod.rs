@@ -7,6 +7,7 @@
 
 pub mod chrome;
 pub mod colormap_dialog;
+pub mod complex_image_view;
 pub mod fit_widget;
 pub mod high_level;
 pub mod interaction;
