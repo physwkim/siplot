@@ -7956,6 +7956,137 @@ mod tests {
         assert_eq!(selection, vec![false, true, true, false, false]);
     }
 
+    /// A colormap whose LUT entry `i` is `[i, 255 - i, 0, 255]`, over `[0, 4]`.
+    /// Each LUT index maps to a unique, hand-computable color so a value's
+    /// resulting [`Color32`] is fully predictable.
+    fn ramp_colormap() -> Colormap {
+        let mut lut = [[0u8; 4]; 256];
+        for (i, entry) in lut.iter_mut().enumerate() {
+            *entry = [i as u8, 255 - i as u8, 0, 255];
+        }
+        Colormap::viridis(0.0, 4.0).with_lut(lut)
+    }
+
+    /// The exact color the [`point_colors`] LUT lookup produces for `v` under
+    /// [`ramp_colormap`], reproducing the index math
+    /// `idx = (normalize(v) * 255).clamp(0, 255)`.
+    fn ramp_color_at(cmap: &Colormap, v: f64) -> Color32 {
+        let idx = (cmap.normalize(v) * 255.0).clamp(0.0, 255.0) as usize;
+        let [r, g, b, a] = cmap.lut[idx];
+        Color32::from_rgba_unmultiplied(r, g, b, a)
+    }
+
+    #[test]
+    fn point_colors_maps_values_through_colormap_lut() {
+        // Wave 8C: point_colors maps each value through the colormap LUT (silx
+        // __applyColormapToData). Over [0, 4] with no per-point alpha, value 0
+        // hits LUT index 0, value 4 hits index 255, value 2 hits the midpoint.
+        let cmap = ramp_colormap();
+        let values = [0.0, 2.0, 4.0];
+        let colors = point_colors(&values, &cmap, None);
+        assert_eq!(
+            colors,
+            vec![
+                ramp_color_at(&cmap, 0.0),
+                ramp_color_at(&cmap, 2.0),
+                ramp_color_at(&cmap, 4.0),
+            ]
+        );
+        // Concretely: index 0 -> [0,255,0,255]; index 255 -> [255,0,0,255].
+        assert_eq!(colors[0], Color32::from_rgba_unmultiplied(0, 255, 0, 255));
+        assert_eq!(colors[2], Color32::from_rgba_unmultiplied(255, 0, 0, 255));
+    }
+
+    #[test]
+    fn point_colors_composes_per_point_alpha() {
+        // Wave 8C: with a per-point alpha array, point_colors scales each
+        // color's straight alpha (silx rgbacolors[:, -1] *= __alpha), identical
+        // to applying compose_per_point_alpha to the no-alpha colors.
+        let cmap = ramp_colormap();
+        let values = [0.0, 2.0, 4.0];
+        let alpha = [0.5, 0.25, 1.0];
+
+        let with_alpha = point_colors(&values, &cmap, Some(&alpha));
+
+        let mut expected = point_colors(&values, &cmap, None);
+        compose_per_point_alpha(&mut expected, &alpha);
+        assert_eq!(with_alpha, expected);
+
+        // Concretely: LUT alpha 255 scaled by 0.5 -> round(255*0.5) = 128.
+        assert_eq!(with_alpha[0].to_srgba_unmultiplied()[3], 128);
+        // ...by 0.25 -> round(255*0.25) = 64.
+        assert_eq!(with_alpha[1].to_srgba_unmultiplied()[3], 64);
+        // ...by 1.0 -> unchanged 255.
+        assert_eq!(with_alpha[2].to_srgba_unmultiplied()[3], 255);
+    }
+
+    #[test]
+    fn solid_path_colors_identical_to_points_path() {
+        // Wave 8C: silx shares __applyColormapToData between POINTS and SOLID,
+        // so the Solid arm must produce colors identical to the Points arm for
+        // the same input. Both arms call point_colors, so the vectors match —
+        // here against the prior inlined Points math to prove no drift.
+        let cmap = ramp_colormap();
+        let values = [0.0, 1.0, 3.0, 4.0];
+        let alpha = [1.0, 0.5, 0.25, 0.75];
+
+        // The shared helper used by BOTH arms.
+        let shared = point_colors(&values, &cmap, Some(&alpha));
+
+        // The pre-extraction inlined Points computation, reproduced here.
+        let mut points_inline: Vec<Color32> =
+            values.iter().map(|&v| ramp_color_at(&cmap, v)).collect();
+        compose_per_point_alpha(&mut points_inline, &alpha);
+
+        assert_eq!(shared, points_inline);
+    }
+
+    #[test]
+    fn solid_path_builds_triangles_with_per_vertex_colors() {
+        // Wave 8C: the Solid arm feeds point_colors into solid_triangles, the
+        // exact composition rebuild_visualization performs. Four non-collinear
+        // points triangulate, and every input color survives onto a vertex.
+        let cmap = ramp_colormap();
+        let x = [0.0, 4.0, 0.0, 4.0];
+        let y = [0.0, 0.0, 4.0, 4.0];
+        let values = [0.0, 2.0, 4.0, 1.0];
+
+        let colors = point_colors(&values, &cmap, None);
+        let tri = crate::core::scatter_viz::solid_triangles(&x, &y, &colors)
+            .expect("four non-collinear points triangulate");
+
+        // The mesh carries the per-vertex colors unchanged (Gourad input).
+        assert_eq!(tri.colors, colors);
+        assert_eq!(tri.x, x.to_vec());
+        assert_eq!(tri.y, y.to_vec());
+        // A square splits into at least two triangles.
+        assert!(
+            tri.indices.len() >= 2,
+            "square triangulates into >= 2 triangles, got {}",
+            tri.indices.len()
+        );
+    }
+
+    #[test]
+    fn solid_path_degenerate_input_yields_no_triangles() {
+        // Wave 8C: fewer than 3 finite points / all collinear cannot be
+        // triangulated, so the Solid arm draws nothing (None, no panic),
+        // matching silx's "Cannot display as solid surface" early-out.
+        let cmap = ramp_colormap();
+
+        // Fewer than 3 points.
+        let x2 = [0.0, 1.0];
+        let y2 = [0.0, 1.0];
+        let c2 = point_colors(&[0.0, 4.0], &cmap, None);
+        assert!(crate::core::scatter_viz::solid_triangles(&x2, &y2, &c2).is_none());
+
+        // Three collinear points (no triangle has area).
+        let xc = [0.0, 1.0, 2.0];
+        let yc = [0.0, 1.0, 2.0];
+        let cc = point_colors(&[0.0, 2.0, 4.0], &cmap, None);
+        assert!(crate::core::scatter_viz::solid_triangles(&xc, &yc, &cc).is_none());
+    }
+
     #[test]
     fn live_curve_stats_match_core_stats_engine() {
         // Item 4: a retained curve fed into a StatsWidget yields a row equal to
