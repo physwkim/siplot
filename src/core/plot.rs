@@ -123,6 +123,19 @@ impl GraphGrid {
     }
 }
 
+/// The full data range of a plot, mirroring silx `_PlotDataRange`
+/// (`PlotWidget.getDataRange`). Each member is the `(min, max)` data bounds for
+/// that axis, or `None` when no data is associated with the axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DataRange {
+    /// X-axis data bounds, or `None` when no item drives the X axis.
+    pub x: Option<(f64, f64)>,
+    /// Left Y-axis data bounds.
+    pub y: Option<(f64, f64)>,
+    /// Right (y2) Y-axis data bounds.
+    pub y2: Option<(f64, f64)>,
+}
+
 /// One plot.
 pub struct Plot {
     /// Instance identifier.
@@ -209,6 +222,21 @@ pub struct Plot {
     /// entry. Like silx, the stack is unbounded (silx `LimitsHistory` is a plain
     /// list with no depth cap).
     limits_history: Vec<LimitsHistoryEntry>,
+    /// Whether the X axis refits to data on reset-zoom (silx
+    /// `Axis.setAutoScale` / `PlotWidget.setXAxisAutoScale`). Defaults to `true`.
+    x_autoscale: bool,
+    /// Whether the left Y axis refits to data on reset-zoom
+    /// (`setYAxisAutoScale`). Defaults to `true`.
+    y_autoscale: bool,
+    /// Whether the right (y2) Y axis refits to data on reset-zoom. Defaults to
+    /// `true`. silx ties y2 autoscale to the left Y axis flag; here it is
+    /// tracked separately so a caller can pin only the y2 range.
+    y2_autoscale: bool,
+    /// Cached per-axis data bounds, mirroring silx `PlotWidget._dataRange`
+    /// (returned by `getDataRange`). The high-level widget owns item data and
+    /// pushes the accumulated bounds here via [`Self::set_data_range`]; the model
+    /// layer holds no items, so this is `None` until populated.
+    data_range: Option<DataRange>,
 }
 
 /// One snapshot in [`Plot::limits_history`]: the left-axes limits plus the
@@ -250,6 +278,10 @@ impl Plot {
             x_max_ticks: None,
             y_max_ticks: None,
             limits_history: Vec::new(),
+            x_autoscale: true,
+            y_autoscale: true,
+            y2_autoscale: true,
+            data_range: None,
         }
     }
 
@@ -283,6 +315,105 @@ impl Plot {
     /// Number of stored history entries, mirroring `len(LimitsHistory)`.
     pub fn limits_history_len(&self) -> usize {
         self.limits_history.len()
+    }
+
+    /// Whether the X axis refits to data on reset-zoom (silx
+    /// `isXAxisAutoScale`).
+    pub fn x_autoscale(&self) -> bool {
+        self.x_autoscale
+    }
+
+    /// Set whether the X axis refits to data on reset-zoom
+    /// (silx `setXAxisAutoScale`).
+    pub fn set_x_autoscale(&mut self, on: bool) {
+        self.x_autoscale = on;
+    }
+
+    /// Whether the left Y axis refits to data on reset-zoom (silx
+    /// `isYAxisAutoScale`).
+    pub fn y_autoscale(&self) -> bool {
+        self.y_autoscale
+    }
+
+    /// Set whether the left Y axis refits to data on reset-zoom
+    /// (silx `setYAxisAutoScale`).
+    pub fn set_y_autoscale(&mut self, on: bool) {
+        self.y_autoscale = on;
+    }
+
+    /// Whether the right (y2) Y axis refits to data on reset-zoom.
+    pub fn y2_autoscale(&self) -> bool {
+        self.y2_autoscale
+    }
+
+    /// Set whether the right (y2) Y axis refits to data on reset-zoom.
+    pub fn set_y2_autoscale(&mut self, on: bool) {
+        self.y2_autoscale = on;
+    }
+
+    /// The cached per-axis data range, mirroring silx `getDataRange`. Returns a
+    /// [`DataRange`] with each member `None` until the high-level widget pushes
+    /// bounds via [`Self::set_data_range`]. silx lazily recomputes from items
+    /// here; this model layer holds no items, so an unset range reads as all
+    /// `None`.
+    pub fn data_range(&self) -> DataRange {
+        self.data_range.unwrap_or_default()
+    }
+
+    /// Store the accumulated per-axis data bounds (silx populates `_dataRange`
+    /// from its items in `_updateDataRange`). The high-level widget owns the
+    /// item data and calls this; [`Self::reset_zoom`] then refits from it.
+    pub fn set_data_range(&mut self, range: DataRange) {
+        self.data_range = Some(range);
+    }
+
+    /// Refit the view from the cached [`Self::data_range`], honoring the per-axis
+    /// autoscale flags (silx `PlotWidget.resetZoom` with `getDataRange()`).
+    /// Equivalent to `reset_zoom_to_data_range(self.data_range())`.
+    pub fn reset_zoom(&mut self) {
+        self.reset_zoom_to_data_range(self.data_range());
+    }
+
+    /// Refit the view to `data` honoring the per-axis autoscale flags, mirroring
+    /// silx `PlotWidget.resetZoom`. An axis whose autoscale flag is off keeps its
+    /// current display range; an axis whose flag is on is refit to its data
+    /// bounds (when present).
+    ///
+    /// silx also forces autoscale on a log axis whose current lower limit is
+    /// `<= 0` (so toggling to log re-fits to positive data); that rule is applied
+    /// here per axis via the [`Scale::Log10`] check (matches
+    /// `PlotWidget.resetZoom`:3377-3382). Axes with no data bounds and autoscale
+    /// off are left untouched.
+    ///
+    /// This is the pure model operation; the high-level widget owns the actual
+    /// `data` accumulation (its `DataBounds`) and calls this with the current
+    /// range.
+    pub fn reset_zoom_to_data_range(&mut self, data: DataRange) {
+        let (mut x_min, mut x_max, mut y_min, mut y_max) = self.limits;
+        let mut y2 = self.y2;
+
+        // Force autoscale on a log axis whose lower limit is <= 0 (silx
+        // resetZoom:3377-3382).
+        let x_auto = self.x_autoscale || (self.x_scale == Scale::Log10 && x_min <= 0.0);
+        let y_log_force = self.y_scale == Scale::Log10
+            && (y_min <= 0.0 || self.y2.map(|(lo, _)| lo <= 0.0).unwrap_or(false));
+        let y_auto = self.y_autoscale || y_log_force;
+        let y2_auto = self.y2_autoscale || y_log_force;
+
+        if x_auto && let Some((dmin, dmax)) = data.x {
+            x_min = dmin;
+            x_max = dmax;
+        }
+        if y_auto && let Some((dmin, dmax)) = data.y {
+            y_min = dmin;
+            y_max = dmax;
+        }
+        if y2_auto && let Some((dmin, dmax)) = data.y2 {
+            y2 = Some((dmin, dmax));
+        }
+
+        self.limits = (x_min, x_max, y_min, y_max);
+        self.y2 = y2;
     }
 
     /// Build the data↔screen transform for the given data-area rect, honoring
@@ -482,6 +613,136 @@ mod tests {
         let top = right.data_to_pixel(0.0, 1.0).y;
         assert!((bottom - area().bottom()).abs() <= 1e-3, "{bottom}");
         assert!((top - area().top()).abs() <= 1e-3, "{top}");
+    }
+
+    #[test]
+    fn autoscale_defaults_on_for_all_axes() {
+        let plot = Plot::new(0);
+        assert!(plot.x_autoscale());
+        assert!(plot.y_autoscale());
+        assert!(plot.y2_autoscale());
+    }
+
+    #[test]
+    fn reset_zoom_refits_only_autoscale_on_axes() {
+        // X autoscale off: X range preserved; Y autoscale on: Y refit to data.
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 1.0, 0.0, 1.0);
+        plot.set_x_autoscale(false);
+        plot.set_y_autoscale(true);
+        plot.reset_zoom_to_data_range(DataRange {
+            x: Some((10.0, 20.0)),
+            y: Some((-5.0, 5.0)),
+            y2: None,
+        });
+        // X preserved (autoscale off), Y refit (autoscale on).
+        assert_eq!(plot.limits, (0.0, 1.0, -5.0, 5.0));
+    }
+
+    #[test]
+    fn reset_zoom_refits_x_when_only_x_autoscale_on() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 1.0, 0.0, 1.0);
+        plot.set_x_autoscale(true);
+        plot.set_y_autoscale(false);
+        plot.reset_zoom_to_data_range(DataRange {
+            x: Some((10.0, 20.0)),
+            y: Some((-5.0, 5.0)),
+            y2: None,
+        });
+        // X refit, Y preserved.
+        assert_eq!(plot.limits, (10.0, 20.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn reset_zoom_with_all_autoscale_off_is_noop() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 1.0, 0.0, 1.0);
+        plot.y2 = Some((0.0, 2.0));
+        plot.set_x_autoscale(false);
+        plot.set_y_autoscale(false);
+        plot.set_y2_autoscale(false);
+        plot.reset_zoom_to_data_range(DataRange {
+            x: Some((10.0, 20.0)),
+            y: Some((-5.0, 5.0)),
+            y2: Some((-1.0, 1.0)),
+        });
+        // Nothing changes: every axis pinned.
+        assert_eq!(plot.limits, (0.0, 1.0, 0.0, 1.0));
+        assert_eq!(plot.y2, Some((0.0, 2.0)));
+    }
+
+    #[test]
+    fn reset_zoom_autoscale_on_axis_with_no_data_is_preserved() {
+        // Boundary: autoscale on but no data bounds -> range left untouched.
+        let mut plot = Plot::new(0);
+        plot.limits = (3.0, 7.0, 2.0, 8.0);
+        plot.reset_zoom_to_data_range(DataRange {
+            x: None,
+            y: Some((-1.0, 1.0)),
+            y2: None,
+        });
+        // X has no data -> preserved; Y refit.
+        assert_eq!(plot.limits, (3.0, 7.0, -1.0, 1.0));
+    }
+
+    #[test]
+    fn reset_zoom_log_axis_forces_autoscale_when_lower_limit_nonpositive() {
+        // X is log with a <= 0 lower limit and autoscale OFF; silx forces it on.
+        let mut plot = Plot::new(0);
+        plot.x_scale = Scale::Log10;
+        plot.limits = (-1.0, 100.0, 0.0, 1.0);
+        plot.set_x_autoscale(false);
+        plot.set_y_autoscale(false);
+        plot.reset_zoom_to_data_range(DataRange {
+            x: Some((1.0, 1000.0)),
+            y: Some((-5.0, 5.0)),
+            y2: None,
+        });
+        // X refit despite autoscale off (forced by log + nonpositive lower).
+        assert_eq!(plot.limits.0, 1.0);
+        assert_eq!(plot.limits.1, 1000.0);
+        // Y stays pinned.
+        assert_eq!((plot.limits.2, plot.limits.3), (0.0, 1.0));
+    }
+
+    #[test]
+    fn data_range_is_empty_until_set() {
+        let plot = Plot::new(0);
+        let r = plot.data_range();
+        assert_eq!(r, DataRange::default());
+        assert!(r.x.is_none() && r.y.is_none() && r.y2.is_none());
+    }
+
+    #[test]
+    fn reset_zoom_uses_cached_data_range() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 1.0, 0.0, 1.0);
+        plot.set_data_range(DataRange {
+            x: Some((2.0, 4.0)),
+            y: Some((6.0, 8.0)),
+            y2: None,
+        });
+        plot.reset_zoom();
+        assert_eq!(plot.limits, (2.0, 4.0, 6.0, 8.0));
+    }
+
+    #[test]
+    fn reset_zoom_refits_y2_independently() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 1.0, 0.0, 1.0);
+        plot.y2 = Some((0.0, 1.0));
+        plot.set_x_autoscale(false);
+        plot.set_y_autoscale(false);
+        plot.set_y2_autoscale(true);
+        plot.reset_zoom_to_data_range(DataRange {
+            x: Some((10.0, 20.0)),
+            y: Some((-5.0, 5.0)),
+            y2: Some((100.0, 200.0)),
+        });
+        // Only y2 refit.
+        assert_eq!(plot.limits, (0.0, 1.0, 0.0, 1.0));
+        assert_eq!(plot.y2, Some((100.0, 200.0)));
     }
 
     #[test]
