@@ -16,6 +16,19 @@ pub enum MaskTool {
     Ellipse,
 }
 
+/// Threshold masking mode, mirroring the silx threshold action group
+/// (`belowThresholdAction` / `betweenThresholdAction` / `aboveThresholdAction`
+/// in `_BaseMaskToolsWidget._initThresholdGroupBox`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThresholdMode {
+    /// Mask where `data < min`.
+    Below,
+    /// Mask where `min <= data <= max`.
+    Between,
+    /// Mask where `data > max`.
+    Above,
+}
+
 /// A widget for interactively drawing a multi-level mask over a 2D image.
 ///
 /// The mask mirrors silx `ImageMask`: a `uint8` array the same shape as the
@@ -325,6 +338,68 @@ impl MaskToolsWidget {
         self.update_points(level, &rows, &cols, mask);
     }
 
+    /// Mask/unmask pixels selected by a boolean stencil at the current level.
+    ///
+    /// Mirrors silx `BaseMask.updateStencil`: when `mask` is true, every
+    /// stencil pixel is set to `level`; otherwise only pixels already at
+    /// `level` and inside the stencil are cleared. `stencil` is row-major and
+    /// must be the same length as the mask.
+    pub fn update_stencil(&mut self, level: u8, stencil: &[bool], mask: bool) {
+        for (idx, &selected) in stencil.iter().enumerate() {
+            if selected {
+                self.set_or_clear(idx, level, mask);
+            }
+        }
+        self.is_dirty = true;
+    }
+
+    /// Mask/unmask pixels whose `data` value is below `threshold`.
+    ///
+    /// Mirrors silx `BaseMask.updateBelowThreshold` (`data < threshold`).
+    pub fn update_below_threshold(&mut self, level: u8, data: &[f32], threshold: f32, mask: bool) {
+        let stencil: Vec<bool> = data.iter().map(|&v| v < threshold).collect();
+        self.update_stencil(level, &stencil, mask);
+    }
+
+    /// Mask/unmask pixels whose `data` value is within `[min, max]`.
+    ///
+    /// Mirrors silx `BaseMask.updateBetweenThresholds`
+    /// (`min <= data <= max`, both bounds inclusive).
+    pub fn update_between_thresholds(
+        &mut self,
+        level: u8,
+        data: &[f32],
+        min: f32,
+        max: f32,
+        mask: bool,
+    ) {
+        let stencil: Vec<bool> = data.iter().map(|&v| min <= v && v <= max).collect();
+        self.update_stencil(level, &stencil, mask);
+    }
+
+    /// Mask/unmask pixels whose `data` value is above `threshold`.
+    ///
+    /// Mirrors silx `BaseMask.updateAboveThreshold` (`data > threshold`).
+    pub fn update_above_threshold(&mut self, level: u8, data: &[f32], threshold: f32, mask: bool) {
+        let stencil: Vec<bool> = data.iter().map(|&v| v > threshold).collect();
+        self.update_stencil(level, &stencil, mask);
+    }
+
+    /// Apply a threshold mask at the current level over `data` for the given
+    /// `mode`.
+    ///
+    /// Mirrors silx `_maskBtnClicked`: `Below` uses `min`, `Above` uses `max`,
+    /// `Between` uses both bounds.
+    pub fn update_threshold(&mut self, data: &[f32], mode: ThresholdMode, min: f32, max: f32) {
+        match mode {
+            ThresholdMode::Below => self.update_below_threshold(self.level, data, min, true),
+            ThresholdMode::Between => {
+                self.update_between_thresholds(self.level, data, min, max, true)
+            }
+            ThresholdMode::Above => self.update_above_threshold(self.level, data, max, true),
+        }
+    }
+
     /// Set pixel `idx` to `level` (mask) or clear it to 0 if it currently
     /// holds `level` (unmask). Mirrors the silx mask/unmask branch shared by
     /// the update operations.
@@ -630,6 +705,62 @@ mod tests {
         let expected_cols = vec![-1, 0, 1, -1, 0, 1, -1, 0, 1];
         assert_eq!(rows, expected_rows);
         assert_eq!(cols, expected_cols);
+    }
+
+    #[test]
+    fn threshold_below_is_strict() {
+        // silx updateBelowThreshold: data < threshold (boundary value excluded).
+        let mut w = MaskToolsWidget::new(4, 1);
+        let data = [0.0_f32, 1.0, 2.0, 3.0];
+        w.update_below_threshold(1, &data, 2.0, true);
+        assert_eq!(w.mask, vec![1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn threshold_between_is_inclusive() {
+        // silx updateBetweenThresholds: min <= data <= max (bounds included).
+        let mut w = MaskToolsWidget::new(5, 1);
+        let data = [0.0_f32, 1.0, 2.0, 3.0, 4.0];
+        w.update_between_thresholds(1, &data, 1.0, 3.0, true);
+        assert_eq!(w.mask, vec![0, 1, 1, 1, 0]);
+    }
+
+    #[test]
+    fn threshold_above_is_strict() {
+        // silx updateAboveThreshold: data > threshold (boundary value excluded).
+        let mut w = MaskToolsWidget::new(4, 1);
+        let data = [0.0_f32, 1.0, 2.0, 3.0];
+        w.update_above_threshold(1, &data, 2.0, true);
+        assert_eq!(w.mask, vec![0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn threshold_dispatch_maps_bounds_per_mode() {
+        // Below -> min, Above -> max, Between -> both (silx _maskBtnClicked).
+        let data = [0.0_f32, 1.0, 2.0, 3.0];
+
+        let mut below = MaskToolsWidget::new(4, 1);
+        below.update_threshold(&data, ThresholdMode::Below, 2.0, 99.0);
+        assert_eq!(below.mask, vec![1, 1, 0, 0]);
+
+        let mut above = MaskToolsWidget::new(4, 1);
+        above.update_threshold(&data, ThresholdMode::Above, -99.0, 2.0);
+        assert_eq!(above.mask, vec![0, 0, 0, 1]);
+
+        let mut between = MaskToolsWidget::new(4, 1);
+        between.update_threshold(&data, ThresholdMode::Between, 1.0, 2.0);
+        assert_eq!(between.mask, vec![0, 1, 1, 0]);
+    }
+
+    #[test]
+    fn threshold_unmask_only_clears_current_level() {
+        // silx updateStencil unmask branch: clears pixels at `level` & stencil.
+        let mut w = MaskToolsWidget::new(4, 1);
+        w.mask = vec![1, 2, 1, 2];
+        let data = [0.0_f32, 1.0, 2.0, 3.0];
+        // Unmask level 1 below threshold 3: covers idx 0,1,2; only level-1 clear.
+        w.update_below_threshold(1, &data, 3.0, false);
+        assert_eq!(w.mask, vec![0, 2, 0, 2]);
     }
 
     #[test]
