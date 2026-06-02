@@ -10,6 +10,11 @@
 //! the bytes are converted to tightly packed RGBA8 (swapping channels when the
 //! surface format is BGRA). The pure byte-layout and PNG-encoding helpers are
 //! unit-tested; the GPU render + readback runs only with a real device.
+//!
+//! Beyond PNG, the raster snapshot can also be exported as PPM (P6), mirroring
+//! silx `PlotImageFile.saveImageToFile`. The `encode_*` helpers are pure
+//! functions over the RGBA pixels so they are testable without a GPU or the
+//! filesystem.
 
 use std::fmt;
 use std::path::Path;
@@ -123,6 +128,38 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, png::
     Ok(out)
 }
 
+/// Drop the alpha channel of a tightly packed `width * height` RGBA8 buffer,
+/// returning tightly packed `width * height` RGB8 (3 bytes per pixel).
+///
+/// silx's raster image export (`PlotImageFile.saveImageToFile`) operates on an
+/// `(h, w, 3)` RGB array; the PPM body carries RGB, so the readback's RGBA is
+/// reduced to RGB by discarding alpha.
+pub fn rgba_to_rgb(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let n = (width as usize) * (height as usize);
+    let mut out = Vec::with_capacity(n * 3);
+    for px in rgba.chunks_exact(4).take(n) {
+        out.push(px[0]);
+        out.push(px[1]);
+        out.push(px[2]);
+    }
+    out
+}
+
+/// Encode tightly packed `width * height` RGBA8 pixels as a binary (P6) PPM
+/// byte stream.
+///
+/// Faithful to silx `PlotImageFile.saveImageToFile` (`fileFormat == "ppm"`):
+/// the header is `P6\n<width> <height>\n255\n` followed by raw RGB bytes (the
+/// alpha channel is dropped). The header is ASCII and self-describing.
+pub fn encode_ppm(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let rgb = rgba_to_rgb(rgba, width, height);
+    let header = format!("P6\n{width} {height}\n255\n");
+    let mut out = Vec::with_capacity(header.len() + rgb.len());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&rgb);
+    out
+}
+
 /// Per-axis log flags `[x, y]` (1.0 = log10) for the shaders, matching a
 /// transform's scales.
 fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
@@ -230,5 +267,28 @@ mod tests {
         assert_eq!(info.height, 2);
         assert_eq!(info.color_type, png::ColorType::Rgba);
         assert_eq!(&buf[..rgba.len()], rgba.as_slice());
+    }
+
+    #[test]
+    fn rgba_to_rgb_drops_alpha() {
+        // 2×1 RGBA → RGB; alpha bytes (4th of each quad) are removed.
+        let rgba = [10, 20, 30, 99, 40, 50, 60, 88];
+        let rgb = rgba_to_rgb(&rgba, 2, 1);
+        assert_eq!(rgb, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn encode_ppm_header_and_pixels_round_trip() {
+        // 2×1 image with distinct pixels.
+        let rgba = [1, 2, 3, 255, 4, 5, 6, 255];
+        let ppm = encode_ppm(&rgba, 2, 1);
+
+        // Header is exactly "P6\n2 1\n255\n" then raw RGB.
+        let header = b"P6\n2 1\n255\n";
+        assert_eq!(&ppm[..header.len()], header);
+        // Raw RGB body, alpha dropped.
+        assert_eq!(&ppm[header.len()..], &[1, 2, 3, 4, 5, 6]);
+        // Total length = header + width*height*3 (2×1 pixels × 3 channels).
+        assert_eq!(ppm.len(), header.len() + 6);
     }
 }
