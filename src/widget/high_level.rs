@@ -4035,6 +4035,15 @@ fn scatter_view_colorbar(
     colormap.map(image_view_colorbar)
 }
 
+/// Project a [`crate::widget::scatter_mask::ScatterMaskWidget`]'s per-point
+/// level buffer onto the boolean point selection applied to the scatter (silx
+/// `ScatterView` mask: a point is selected when its level is non-zero). Split
+/// out from [`ScatterView`] so the level→selection mapping is unit-testable
+/// without a GPU backend.
+fn scatter_masked_selection(mask: &[u8]) -> Vec<bool> {
+    mask.iter().map(|&level| level != 0).collect()
+}
+
 /// Extract cursor data coordinates `[x, y]` from a pointer event for the
 /// PositionInfo readout (silx `PositionInfo._updateStatusBar`, fed by
 /// `sigMouseMoved`). A move (hover), click, or double-click over the data area
@@ -4936,6 +4945,10 @@ pub struct ScatterView {
     /// modes (silx `GRID_SHAPE` / `BINNED_STATISTIC_SHAPE`, default 100×100,
     /// scatter.py:476).
     grid_resolution: (usize, usize),
+    /// Per-point scatter mask, sized to the point count on [`Self::set_data`]
+    /// (silx `ScatterView` `ScatterMaskToolsWidget`, ScatterView.py:116-122).
+    /// Its non-zero levels flag the masked-point selection.
+    mask: crate::widget::scatter_mask::ScatterMaskWidget,
 }
 
 impl ScatterView {
@@ -4951,6 +4964,7 @@ impl ScatterView {
             points: None,
             visualization: ScatterVisualization::Points,
             grid_resolution: (100, 100),
+            mask: crate::widget::scatter_mask::ScatterMaskWidget::new(0),
         }
     }
 
@@ -4975,6 +4989,12 @@ impl ScatterView {
             });
         }
 
+        // Resize the scatter mask to the new point count, resetting the mask
+        // and its undo history (silx `ScatterMask.reset(shape)`). A length
+        // change clears any prior selection.
+        if self.mask.len() != x.len() {
+            self.mask.reset_len(x.len());
+        }
         self.points = Some((x.to_vec(), y.to_vec(), values.to_vec()));
         self.colormap = Some(colormap);
         self.rebuild_visualization();
@@ -5125,6 +5145,151 @@ impl ScatterView {
     /// [`ColorBarWidget`]: crate::widget::colorbar::ColorBarWidget
     pub fn colorbar(&self) -> Option<crate::widget::colorbar::ColorBarWidget> {
         scatter_view_colorbar(self.colormap.as_ref())
+    }
+
+    /// The scatter mask, sized to the point count of the last [`Self::set_data`]
+    /// (silx `ScatterView.getMaskToolsDockWidget().getSelectionMask()`,
+    /// ScatterView.py:116-122). Drive selections via its geometric / threshold
+    /// operations (e.g. [`ScatterMaskWidget::update_rectangle`]); the resulting
+    /// non-zero levels flag the masked points, queryable via
+    /// [`Self::masked_selection`].
+    ///
+    /// [`ScatterMaskWidget::update_rectangle`]: crate::widget::scatter_mask::ScatterMaskWidget::update_rectangle
+    pub fn scatter_mask(&self) -> &crate::widget::scatter_mask::ScatterMaskWidget {
+        &self.mask
+    }
+
+    /// Mutable access to the scatter mask, to apply selection operations against
+    /// the scatter's point arrays (silx `ScatterMaskToolsWidget`).
+    pub fn scatter_mask_mut(&mut self) -> &mut crate::widget::scatter_mask::ScatterMaskWidget {
+        &mut self.mask
+    }
+
+    /// The boolean point selection applied to the scatter: one entry per point,
+    /// `true` where the mask level is non-zero (silx scatter mask selection).
+    pub fn masked_selection(&self) -> Vec<bool> {
+        scatter_masked_selection(&self.mask.mask)
+    }
+
+    /// Mask (or unmask) the scatter points inside the data-space rectangle with
+    /// bottom-left `anchor = (x, y)` and `size = (width, height)`, at the
+    /// current mask level, then commit it to the undo history (silx
+    /// `ScatterMask.updateRectangle` over the scatter points). Uses the
+    /// retained point coordinates from the last [`Self::set_data`].
+    pub fn mask_rectangle(&mut self, anchor: (f64, f64), size: (f64, f64), mask: bool) {
+        let (px, py) = self.mask_point_coords();
+        let level = self.mask.level;
+        self.mask.update_rectangle(
+            level,
+            (anchor.1 as f32, anchor.0 as f32),
+            (size.1 as f32, size.0 as f32),
+            &px,
+            &py,
+            mask,
+        );
+        self.mask.commit();
+    }
+
+    /// Mask (or unmask) the scatter points inside the data-space polygon
+    /// `vertices` (`(x, y)` corners), at the current mask level, then commit it
+    /// to the undo history (silx `ScatterMask.updatePolygon`). Uses the retained
+    /// point coordinates from the last [`Self::set_data`].
+    pub fn mask_polygon(&mut self, vertices: &[(f64, f64)], mask: bool) {
+        let (px, py) = self.mask_point_coords();
+        // scatter_mask vertices are (y, x) corners (silx Polygon order).
+        let verts: Vec<(f32, f32)> = vertices
+            .iter()
+            .map(|&(x, y)| (y as f32, x as f32))
+            .collect();
+        let level = self.mask.level;
+        self.mask.update_polygon(level, &verts, &px, &py, mask);
+        self.mask.commit();
+    }
+
+    /// The retained scatter point coordinate arrays as `f32` `(x, y)` for the
+    /// geometric mask operations, or empty vectors before any data is uploaded.
+    fn mask_point_coords(&self) -> (Vec<f32>, Vec<f32>) {
+        match &self.points {
+            Some((x, y, _)) => (
+                x.iter().map(|&v| v as f32).collect(),
+                y.iter().map(|&v| v as f32).collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// The retained scatter values as `f32` for the threshold mask operations,
+    /// or an empty vector before any data is uploaded.
+    fn mask_values(&self) -> Vec<f32> {
+        match &self.points {
+            Some((_, _, v)) => v.iter().map(|&val| val as f32).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Render the scatter mask-tools panel beside the plot (silx
+    /// `ScatterView` mask dock, ScatterView.py:116-122).
+    ///
+    /// Exposes the whole-mask operations (clear-level / clear-all / invert /
+    /// undo / redo) plus value-threshold selection over the scatter's value
+    /// array; geometric selections (rectangle / polygon / disk) are driven
+    /// programmatically through [`Self::scatter_mask_mut`]. The resulting
+    /// boolean selection ([`Self::masked_selection`]) is applied to the scatter
+    /// — masked points are flagged. Returns `true` when the selection changed
+    /// this frame.
+    pub fn show_mask_tools(&mut self, ui: &mut egui::Ui) -> bool {
+        let before = self.mask.mask.clone();
+        ui.horizontal(|ui| {
+            ui.label("Mask level:");
+            let mut level = self.mask.level;
+            if ui
+                .add(egui::DragValue::new(&mut level).range(1..=255))
+                .changed()
+            {
+                self.mask.level = level;
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Clear level").clicked() {
+                self.mask.clear();
+                self.mask.commit();
+            }
+            if ui.button("Clear all").clicked() {
+                self.mask.clear_all();
+                self.mask.commit();
+            }
+            if ui.button("Invert").clicked() {
+                self.mask.invert();
+                self.mask.commit();
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.mask.can_undo(), egui::Button::new("Undo"))
+                .clicked()
+            {
+                self.mask.undo();
+            }
+            if ui
+                .add_enabled(self.mask.can_redo(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                self.mask.redo();
+            }
+            if ui.button("Mask non-finite").clicked() {
+                let values = self.mask_values();
+                self.mask.mask_not_finite(&values);
+                self.mask.commit();
+            }
+        });
+
+        let changed = self.mask.mask != before;
+        ui.label(format!(
+            "{} / {} points masked",
+            self.masked_selection().iter().filter(|&&m| m).count(),
+            self.mask.len()
+        ));
+        changed
     }
 
     /// Show the standard toolbar.
@@ -5820,6 +5985,35 @@ mod tests {
         assert_eq!(img.shape, (1, 5));
         assert_eq!(img.get(0, 0), Some(1.0));
         assert_eq!(img.get(0, 4), Some(5.0));
+    }
+
+    #[test]
+    fn scatter_masked_selection_flags_nonzero_levels() {
+        // Item 3: the boolean selection applied to the scatter is true exactly
+        // where the per-point mask level is non-zero.
+        let mask = [0u8, 1, 0, 3, 0];
+        assert_eq!(
+            scatter_masked_selection(&mask),
+            vec![false, true, false, true, false]
+        );
+        // Empty mask -> empty selection.
+        assert!(scatter_masked_selection(&[]).is_empty());
+    }
+
+    #[test]
+    fn scatter_mask_rectangle_selection_applies_to_points() {
+        // Item 3: a rectangle selection on the scatter mask flags exactly the
+        // points inside the rectangle (silx ScatterMask.updateRectangle).
+        // Five points along X; select the box x in [0.5, 2.5], y in [-0.5, 0.5].
+        let px: Vec<f32> = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let py: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut mask = crate::widget::scatter_mask::ScatterMaskWidget::new(px.len());
+        // update_rectangle takes anchor=(y,x) bottom-left, size=(height,width).
+        // Box: x in [0.5, 2.5], y in [-0.5, 0.5].
+        mask.update_rectangle(1, (-0.5, 0.5), (1.0, 2.0), &px, &py, true);
+        let selection = scatter_masked_selection(&mask.mask);
+        // Only x=1 and x=2 fall inside the box; x=0, x=3, x=4 are outside.
+        assert_eq!(selection, vec![false, true, true, false, false]);
     }
 
     #[test]
