@@ -28,6 +28,7 @@ pub use crate::core::marker::{DEFAULT_MARKER_SIZE, Marker, MarkerKind, MarkerSym
 pub use crate::core::plot::{AxisConstraints, GraphGrid, Plot, PlotId};
 pub use crate::core::roi::{Roi, RoiEdge};
 pub use crate::core::shape::{Shape, ShapeKind};
+pub use crate::core::stats::{ComCoord, StatScope, Stats};
 pub use crate::core::transform::{Axis, Margins, Scale, Transform, YAxis};
 pub use crate::core::triangles::Triangles;
 pub use crate::render::backend_wgpu::{

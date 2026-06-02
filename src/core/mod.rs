@@ -9,5 +9,6 @@ pub mod marker;
 pub mod plot;
 pub mod roi;
 pub mod shape;
+pub mod stats;
 pub mod transform;
 pub mod triangles;
