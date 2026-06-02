@@ -262,6 +262,29 @@ each item adversarially verified (silx-fidelity + additive-only + gate); 2 fixes
   data-layer (no under-chrome render path); `DirtyState::Overlay` short-circuit (render-loop wave);
   high-level mouseClicked/markerClicked/curveClicked **consumption** (lands in `high_level.rs`, 6B).
 
+### Wave 6B-1 — HL view wiring (ImageView side) + standalone widget files (2 parallel clusters)
+Two file-disjoint worktree clusters; per-item adversarial verify; 1 fix applied at source.
+- **standalone-widgets** (own files, disjoint from `high_level.rs`): ColormapDialog NaN-color picker
+  (`503bc34`) + percentile-fields regression test (`b70acc9`); ComplexImageView `show_mode_toolbar`
+  mode selector (`3837a68`, silx `_ComplexDataToolButton`); ImageStack public `show_toolbar` +
+  `NavAction` first/prev/next/last/goto (`9600976`); mask `.npy` codec moved to one owner in
+  `render::save` (`encode_mask_npy`/`decode_mask_npy`, numpy v1.0 uint8) + path-string save/load,
+  `mask_tools` delegates (`3054459`); NEW `ItemsSelectionDialog` — per-kind filter + grouped
+  selection, genuinely missing vs the flat example (`e21fdff`). Interactive controls factored into
+  pure `*_ui` helpers for headless-egui tests.
+- **hl-views** (`high_level.rs` sole writer): ColorBar column synced to colormap (`68b8eb7`);
+  AlphaSlider→active image (`9d8f890`); interpolation/aggregation selectors (`700edf0`); PositionInfo
+  bound to the live cursor via 6A's `PlotPointerEvent` (`50b0f0e`,`9f6eb92` test fix adds
+  Clicked/DoubleClicked coverage); RadarView overview→pan/zoom (`c2f35ee`); profile tool (`29e645a`);
+  optional pre-upload `ScalarMask`→NaN on `Plot2D` images (`8ef46c2`); `ValueStats` delegated to
+  `core::stats` single source (`d2468ab`).
+- Gate: clippy `--workspace` clean, **633 tests pass** (+35), doctests ok. All 14 items accepted by
+  review except the PositionInfo test gap (fixed). No items deferred within this sub-wave.
+- **Deferred to 6B-2** (need `high_level.rs` + `plot_widget.rs`/`interaction.rs` together, or raw pixels):
+  ScatterView ColorBar/scatter-viz-dispatch/mask-panel; StatsWidget + FitWidget binding; Stddev3/
+  Percentile autoscale from raw pixels (`Plot2D::get_image_pixels_raw`); mask mode-vs-pan
+  (`PlotInteractionMode::MaskDraw`) + pencil-draw routing.
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
