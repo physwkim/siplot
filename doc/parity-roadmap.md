@@ -60,6 +60,39 @@ Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/
   toggles; ROI creation-mode toolbar + on-plot draw; limits-history undo/redo buttons;
   ComplexImageView mode selector wired into a toolbar/menu (widget is self-contained).
 
+### Wave 3 — ROI stats/styling / ColorBar+Alpha / Stats engine / ImageStack (parallel, worktree-isolated)
+- **ROI** (`79822ac`,`9f17d0d`,`e112b63`,`b48175f`): handle geometry (`Roi::handles()` →
+  RoiHandle{pos,kind}, `Roi::translate`, pure — no mouse wiring); ArcROI (annular sector,
+  `rem_euclid` angle wrap) + BandROI (rotatable band) variants with `contains()`/handles/
+  chrome draw; per-ROI line width/style(Solid/Dashed/Dotted, manual dash segments)/fill on
+  ManagedRoi+chrome; ROI statistics module `roi_stats.rs` (`image_roi_stats`/`curve_roi_stats`
+  — min/max/mean/sum/integral, NaN-skipping; silx ROIStats + CurvesROIWidget raw-count).
+  Adding the two enum variants required 2 match arms in `high_level.rs` roi_description and
+  `examples/roi.rs` (non-`#[non_exhaustive]` enum obligation, not new hub logic).
+- **ColorBar/Alpha** (`c25a273`,`16c9c59`,`88877a9`): standalone `ColorBarWidget`
+  (256-step gradient, vertical+horizontal, nice/decade ticks via silx `ticklayout.py`,
+  `%g` end labels, rotated legend); `AlphaSlider` (0..=255 ↔ f32 alpha); Colormap utilities
+  — custom-LUT (`with_lut` + Nx3/Nx4 resample to 256), `set_autoscale_percentiles`,
+  `editable` flag guarding mutators (public field — silx `_editable` is public; required so
+  FRU `..Colormap::new()` in complex_image_view still compiles), copy/set_from.
+- **Stats** (`429f45b`,`4ad46dc`,`28a1574`): pure engine `core/stats.rs` — min/max/delta/
+  mean/sum/COM/argmin-argmax-coords/integral, `StatScope::{All,OnLimits}` viewport clipping,
+  curve-ROI x-range scope (silx `stats.py`); `StatsWidget` table (per-item rows, stat columns,
+  auto/manual update, `%.7g` formatter); `PositionInfo` readout bar with pluggable converters
+  (default polar). Built standalone — `high_level.rs`'s minimal ValueStats not yet delegated.
+- **ImageStack** (`7ce78b3`): self-contained composite (mirrors ComplexImageView) browsing an
+  in-memory `Vec<Option<Frame>>` — slider + first/prev/next/last, frame table with visibility
+  toggles, waiting overlay for empty/hidden/size-mismatched slots; pure `FrameNav` core (clamp/
+  step/visibility/labels) drives 22 tests. Lazy URL/HDF5 + prefetch out of scope (silx.io).
+- Gate: clippy `--workspace` clean, **381 tests pass** (+142), doctests ok.
+- **Deferred follow-ups** (need `high_level.rs`/`interaction.rs`, an actions wave): on-plot
+  ROI editing/creation incl. Arc/Band per-handle drag + `Roi::move_edge` for the new kinds
+  (no-op now); ROITable rich-stats columns wiring `image_roi_stats`; ColorBarWidget into
+  ImageView/ScatterView/chrome; NamedItem/ActiveImage AlphaSlider (needs plot model);
+  StatsWidget/PositionInfo bound to live items+cursor + PositionInfo snapping; delegating
+  `high_level.rs` ValueStats to `core::stats`; ItemsSelectionDialog; ImageStack toolbar entry;
+  promoting `RoiLineStyle` to the lib.rs convenience re-export.
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
