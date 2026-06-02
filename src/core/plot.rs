@@ -123,6 +123,20 @@ impl GraphGrid {
     }
 }
 
+/// The plot's redraw-dirty state, mirroring silx `PlotWidget._dirty`
+/// (`_getDirtyPlot` returns `False | "overlay" | True`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DirtyState {
+    /// Nothing changed since the last replot (silx `False`).
+    #[default]
+    Clean,
+    /// Only the overlay changed; just the overlay needs redrawing
+    /// (silx `"overlay"`).
+    Overlay,
+    /// The full plot needs redrawing (silx `True`).
+    Full,
+}
+
 /// The full data range of a plot, mirroring silx `_PlotDataRange`
 /// (`PlotWidget.getDataRange`). Each member is the `(min, max)` data bounds for
 /// that axis, or `None` when no data is associated with the axis.
@@ -289,6 +303,15 @@ pub struct Plot {
     /// Per-side data margins applied around the visible data on reset-zoom
     /// (silx `setDataMargins`). Zero by default.
     data_margins: DataMargins,
+    /// Whether the axes (frame, ticks, labels) are displayed (silx
+    /// `setAxesDisplayed` / `isAxesDisplayed`). Defaults to `true`. State only;
+    /// chrome wiring (removing the axes' margins when hidden) is deferred.
+    axes_displayed: bool,
+    /// Redraw-dirty state (silx `_dirty`). Defaults to [`DirtyState::Clean`].
+    dirty: DirtyState,
+    /// Whether the plot is redrawn automatically on change (silx `_autoreplot`).
+    /// Defaults to `true`, matching silx after `_init`.
+    autoreplot: bool,
 }
 
 /// One snapshot in [`Plot::limits_history`]: the left-axes limits plus the
@@ -335,6 +358,9 @@ impl Plot {
             y2_autoscale: true,
             data_range: None,
             data_margins: DataMargins::default(),
+            axes_displayed: true,
+            dirty: DirtyState::Clean,
+            autoreplot: true,
         }
     }
 
@@ -438,6 +464,60 @@ impl Plot {
     /// axes they expand in log space.
     pub fn set_data_margins(&mut self, margins: DataMargins) {
         self.data_margins = margins;
+    }
+
+    /// Whether the axes (frame/ticks/labels) are displayed (silx
+    /// `isAxesDisplayed`).
+    pub fn axes_displayed(&self) -> bool {
+        self.axes_displayed
+    }
+
+    /// Show or hide the axes (silx `setAxesDisplayed`). State only — the chrome
+    /// that drops the axis margins when hidden is deferred. Marks the plot dirty
+    /// (full redraw) when the value changes, mirroring silx
+    /// `setAxesDisplayed`'s `_setDirtyPlot()`.
+    pub fn set_axes_displayed(&mut self, displayed: bool) {
+        if displayed != self.axes_displayed {
+            self.axes_displayed = displayed;
+            self.set_dirty(false);
+        }
+    }
+
+    /// The current redraw-dirty state (silx `_getDirtyPlot`).
+    pub fn dirty(&self) -> DirtyState {
+        self.dirty
+    }
+
+    /// Mark the plot as needing redraw (silx `_setDirtyPlot`). `overlay_only`
+    /// requests an overlay-only redraw. The transition matches silx exactly:
+    /// from [`DirtyState::Clean`] an overlay-only mark becomes
+    /// [`DirtyState::Overlay`] and a full mark becomes [`DirtyState::Full`];
+    /// from any already-dirty state the mark escalates to [`DirtyState::Full`]
+    /// (an overlay-only mark cannot downgrade an already-pending full redraw).
+    pub fn set_dirty(&mut self, overlay_only: bool) {
+        self.dirty = if self.dirty == DirtyState::Clean && overlay_only {
+            DirtyState::Overlay
+        } else {
+            DirtyState::Full
+        };
+    }
+
+    /// Clear the dirty state to [`DirtyState::Clean`] (silx resets `_dirty` to
+    /// `False` in `_paintContext` after drawing). Call after a redraw has been
+    /// performed.
+    pub fn replot(&mut self) {
+        self.dirty = DirtyState::Clean;
+    }
+
+    /// Whether automatic replot is enabled (silx `getAutoReplot`).
+    pub fn autoreplot(&self) -> bool {
+        self.autoreplot
+    }
+
+    /// Enable or disable automatic replot (silx `setAutoReplot`). State only;
+    /// the render loop that would honor this is at the widget layer (deferred).
+    pub fn set_autoreplot(&mut self, autoreplot: bool) {
+        self.autoreplot = autoreplot;
     }
 
     /// Refit the view to `data` honoring the per-axis autoscale flags, mirroring
@@ -797,6 +877,76 @@ mod tests {
         assert_eq!(plot.limits.1, 1000.0);
         // Y stays pinned.
         assert_eq!((plot.limits.2, plot.limits.3), (0.0, 1.0));
+    }
+
+    #[test]
+    fn dirty_defaults_clean_and_autoreplot_on_and_axes_displayed() {
+        let plot = Plot::new(0);
+        assert_eq!(plot.dirty(), DirtyState::Clean);
+        assert!(plot.autoreplot());
+        assert!(plot.axes_displayed());
+    }
+
+    #[test]
+    fn dirty_clean_overlay_only_becomes_overlay() {
+        let mut plot = Plot::new(0);
+        plot.set_dirty(true);
+        assert_eq!(plot.dirty(), DirtyState::Overlay);
+    }
+
+    #[test]
+    fn dirty_clean_full_becomes_full() {
+        let mut plot = Plot::new(0);
+        plot.set_dirty(false);
+        assert_eq!(plot.dirty(), DirtyState::Full);
+    }
+
+    #[test]
+    fn dirty_overlay_then_overlay_only_escalates_to_full() {
+        // silx: once dirty, even an overlay-only mark sets _dirty = True.
+        let mut plot = Plot::new(0);
+        plot.set_dirty(true);
+        assert_eq!(plot.dirty(), DirtyState::Overlay);
+        plot.set_dirty(true);
+        assert_eq!(plot.dirty(), DirtyState::Full);
+    }
+
+    #[test]
+    fn dirty_full_then_overlay_only_stays_full() {
+        let mut plot = Plot::new(0);
+        plot.set_dirty(false);
+        plot.set_dirty(true);
+        assert_eq!(plot.dirty(), DirtyState::Full);
+    }
+
+    #[test]
+    fn replot_clears_dirty_to_clean() {
+        let mut plot = Plot::new(0);
+        plot.set_dirty(false);
+        assert_eq!(plot.dirty(), DirtyState::Full);
+        plot.replot();
+        assert_eq!(plot.dirty(), DirtyState::Clean);
+    }
+
+    #[test]
+    fn set_axes_displayed_change_marks_full_dirty() {
+        let mut plot = Plot::new(0);
+        // No change -> no dirty.
+        plot.set_axes_displayed(true);
+        assert_eq!(plot.dirty(), DirtyState::Clean);
+        // Change -> full dirty.
+        plot.set_axes_displayed(false);
+        assert!(!plot.axes_displayed());
+        assert_eq!(plot.dirty(), DirtyState::Full);
+    }
+
+    #[test]
+    fn set_autoreplot_toggles() {
+        let mut plot = Plot::new(0);
+        plot.set_autoreplot(false);
+        assert!(!plot.autoreplot());
+        plot.set_autoreplot(true);
+        assert!(plot.autoreplot());
     }
 
     #[test]
