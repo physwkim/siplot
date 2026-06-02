@@ -47,6 +47,80 @@ pub fn show_axis_toggle(plot: &mut PlotWidget) -> bool {
     next
 }
 
+/// silx zoom step factor (`ZoomInAction` calls `applyZoomToPlot(plot, 1.1)`;
+/// `ZoomOutAction` calls `applyZoomToPlot(plot, 1.0 / 1.1)`,
+/// `actions/control.py`). ZoomIn shrinks each axis range by this factor, ZoomOut
+/// grows it by its reciprocal.
+pub const ZOOM_STEP: f64 = 1.1;
+
+/// Scale a 1D `(min, max)` range about `center` by `scale`, mirroring silx
+/// `scale1DRange` (`_utils/panzoom.py`) for the linear case: the new range is
+/// `(max - min) / scale`, keeping `center` fixed at its original fractional
+/// offset within the range. A degenerate range (`min == max`) is returned
+/// unchanged, as in silx. Pure and deterministic so the zoom math is
+/// unit-testable without a GPU backend.
+///
+/// silx also handles a log10 branch (it scales in log space); this helper covers
+/// the linear axis only — the log branch is deferred with the per-axis log
+/// handling in the action wiring.
+pub fn scale_1d_range(min: f64, max: f64, center: f64, scale: f64) -> (f64, f64) {
+    if min == max {
+        return (min, max);
+    }
+    let offset = (center - min) / (max - min);
+    let range = (max - min) / scale;
+    let new_min = center - offset * range;
+    let new_max = center + (1.0 - offset) * range;
+    (new_min, new_max)
+}
+
+/// Scale a 1D `(min, max)` range by `scale` about its own midpoint, the center
+/// used by the toolbar zoom buttons when the whole view is visible (silx
+/// `applyZoomToPlot` defaults the center to the plot-bounds center, which for a
+/// fully-visible view is the range midpoint). Convenience over
+/// [`scale_1d_range`].
+pub fn scale_1d_range_about_midpoint(min: f64, max: f64, scale: f64) -> (f64, f64) {
+    let center = 0.5 * (min + max);
+    scale_1d_range(min, max, center, scale)
+}
+
+/// Apply a zoom `scale` to the plot's X and Y limits about their midpoints,
+/// pushing the pre-zoom view onto the limits history first (so [`zoom_back`]
+/// can restore it), mirroring silx `applyZoomToPlot`. `scale > 1` zooms in
+/// (shrinks the range); `scale < 1` zooms out.
+///
+/// [`zoom_back`]: zoom_back
+fn apply_zoom(plot: &mut PlotWidget, scale: f64) {
+    plot.plot_mut().push_limits();
+    let (xmin, xmax) = plot.x_limits();
+    let (nxmin, nxmax) = scale_1d_range_about_midpoint(xmin, xmax, scale);
+    let y = plot.y_limits(crate::core::transform::YAxis::Left);
+    let (nymin, nymax) = match y {
+        Some((ymin, ymax)) => scale_1d_range_about_midpoint(ymin, ymax, scale),
+        None => {
+            let (_, _, ymin, ymax) = plot.plot().limits;
+            scale_1d_range_about_midpoint(ymin, ymax, scale)
+        }
+    };
+    let y2 = plot
+        .plot()
+        .y2
+        .map(|(y2min, y2max)| scale_1d_range_about_midpoint(y2min, y2max, scale));
+    plot.set_limits(nxmin, nxmax, nymin, nymax, y2);
+}
+
+/// Zoom in, shrinking the view by [`ZOOM_STEP`] about its center (silx
+/// `ZoomInAction`).
+pub fn zoom_in(plot: &mut PlotWidget) {
+    apply_zoom(plot, ZOOM_STEP);
+}
+
+/// Zoom out, growing the view by `1 / `[`ZOOM_STEP`] about its center (silx
+/// `ZoomOutAction`).
+pub fn zoom_out(plot: &mut PlotWidget) {
+    apply_zoom(plot, 1.0 / ZOOM_STEP);
+}
+
 /// Cycle the active curve's line style to the next style in
 /// [`LINE_STYLE_CYCLE`], mirroring silx `CurveStyleAction` (which cycles the
 /// plot-wide default line/points state). Returns the new [`LineStyle`], or
@@ -110,6 +184,36 @@ mod tests {
 
         data.line_style = next_line_style(&data.line_style);
         assert_eq!(data.line_style, LineStyle::DashDot, "second cycle");
+    }
+
+    #[test]
+    fn scale_1d_range_zoom_in_and_out_about_midpoint() {
+        // Range [0, 10], midpoint 5.
+        // Zoom in by 1.1: range 10/1.1 = 9.0909..., centered on 5 →
+        // [0.4545..., 9.5454...].
+        let (zin_min, zin_max) = scale_1d_range_about_midpoint(0.0, 10.0, ZOOM_STEP);
+        assert!((zin_min - (5.0 - 10.0 / 1.1 / 2.0)).abs() < 1e-12);
+        assert!((zin_max - (5.0 + 10.0 / 1.1 / 2.0)).abs() < 1e-12);
+        assert!(zin_max - zin_min < 10.0, "zoom in shrinks the range");
+
+        // Zoom out by 1/1.1: range 10*1.1 = 11, centered on 5 → [-0.5, 10.5].
+        let (zout_min, zout_max) = scale_1d_range_about_midpoint(0.0, 10.0, 1.0 / ZOOM_STEP);
+        assert!((zout_min - (-0.5)).abs() < 1e-12);
+        assert!((zout_max - 10.5).abs() < 1e-12);
+        assert!(zout_max - zout_min > 10.0, "zoom out grows the range");
+    }
+
+    #[test]
+    fn scale_1d_range_keeps_off_center_invariant_point() {
+        // center at min keeps min fixed; new max = min + (max-min)/scale.
+        let (min, max) = scale_1d_range(2.0, 12.0, 2.0, 2.0);
+        assert!((min - 2.0).abs() < 1e-12, "center stays put");
+        assert!((max - 7.0).abs() < 1e-12, "range halved from the center");
+    }
+
+    #[test]
+    fn scale_1d_range_degenerate_is_unchanged() {
+        assert_eq!(scale_1d_range(3.0, 3.0, 3.0, 1.5), (3.0, 3.0));
     }
 
     #[test]

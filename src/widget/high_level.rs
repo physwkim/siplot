@@ -312,6 +312,10 @@ pub struct ToolbarResponse {
     pub show_axis_changed: bool,
     /// Curve-style cycle button was clicked (silx `CurveStyleAction`).
     pub curve_style_changed: bool,
+    /// Zoom-in button was clicked (silx `ZoomInAction`).
+    pub zoom_in: bool,
+    /// Zoom-out button was clicked (silx `ZoomOutAction`).
+    pub zoom_out: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
@@ -345,6 +349,8 @@ enum ToolbarIcon {
     InvertY,
     ShowAxis,
     CurveStyle,
+    ZoomIn,
+    ZoomOut,
 }
 
 impl ToolbarIcon {
@@ -430,6 +436,41 @@ fn draw_toolbar_icon(painter: &egui::Painter, rect: egui::Rect, icon: ToolbarIco
         ToolbarIcon::InvertY => draw_axis_icon(painter, rect, "Y", true, stroke),
         ToolbarIcon::ShowAxis => draw_show_axis_icon(painter, rect, stroke),
         ToolbarIcon::CurveStyle => draw_curve_style_icon(painter, rect, stroke),
+        ToolbarIcon::ZoomIn => draw_zoom_step_icon(painter, rect, stroke, true),
+        ToolbarIcon::ZoomOut => draw_zoom_step_icon(painter, rect, stroke, false),
+    }
+}
+
+/// Draw a magnifier with a `+` ([`ToolbarIcon::ZoomIn`]) or `-`
+/// ([`ToolbarIcon::ZoomOut`]) inside the lens.
+fn draw_zoom_step_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    stroke: egui::Stroke,
+    plus: bool,
+) {
+    let radius = rect.width().min(rect.height()) * 0.28;
+    let center = egui::pos2(rect.left() + radius + 2.0, rect.top() + radius + 2.0);
+    painter.circle_stroke(center, radius, stroke);
+    painter.line_segment(
+        [
+            center + egui::vec2(radius * 0.7, radius * 0.7),
+            egui::pos2(rect.right() - 2.0, rect.bottom() - 2.0),
+        ],
+        stroke,
+    );
+    let bar = radius * 0.55;
+    // Horizontal bar of the +/-.
+    painter.line_segment(
+        [center - egui::vec2(bar, 0.0), center + egui::vec2(bar, 0.0)],
+        stroke,
+    );
+    if plus {
+        // Vertical bar makes the +.
+        painter.line_segment(
+            [center - egui::vec2(0.0, bar), center + egui::vec2(0.0, bar)],
+            stroke,
+        );
     }
 }
 
@@ -3275,6 +3316,14 @@ impl PlotWidget {
         if toolbar_icon_button(ui, ToolbarIcon::Home, false, "Reset zoom").clicked() {
             self.reset_zoom();
             out.reset_zoom = true;
+        }
+        if toolbar_icon_button(ui, ToolbarIcon::ZoomIn, false, "Zoom in").clicked() {
+            crate::widget::actions::control::zoom_in(self);
+            out.zoom_in = true;
+        }
+        if toolbar_icon_button(ui, ToolbarIcon::ZoomOut, false, "Zoom out").clicked() {
+            crate::widget::actions::control::zoom_out(self);
+            out.zoom_out = true;
         }
 
         ui.separator();
