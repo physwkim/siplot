@@ -23,6 +23,9 @@ pub use crate::core::colormap::{
     AutoscaleMode, Colormap, ColormapName, DEFAULT_PERCENTILES, Normalization,
 };
 pub use crate::core::decimate::min_max_decimate;
+pub use crate::core::dtime_ticks::{
+    DateTime, DtUnit, best_unit, calc_ticks, calc_ticks_adaptive, format_tick, format_ticks,
+};
 pub use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
 pub use crate::core::marker::{DEFAULT_MARKER_SIZE, Marker, MarkerKind, MarkerSymbol};
 pub use crate::core::plot::{AxisConstraints, GraphGrid, Plot, PlotId};

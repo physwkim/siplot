@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod colormap;
 pub mod decimate;
+pub mod dtime_ticks;
 pub mod fitting;
 pub mod items;
 pub mod marker;
