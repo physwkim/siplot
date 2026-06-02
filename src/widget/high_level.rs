@@ -982,6 +982,61 @@ fn curve_spec_stats(spec: &CurveSpec<'_>) -> ItemStats {
     })
 }
 
+/// Capture a curve spec's raw data for live stats/fit consumers.
+fn curve_spec_retained_data(spec: &CurveSpec<'_>) -> RetainedItemData {
+    RetainedItemData::Curve {
+        x: spec.x.to_vec(),
+        y: spec.y.to_vec(),
+    }
+}
+
+/// Borrow a [`RetainedItemData`] as a [`StatsInput`] for a live
+/// [`StatsWidget`] / fit feed (silx `StatsWidget` per-item data). Split out so
+/// the data→input bridge is unit-testable without a GPU backend.
+///
+/// [`StatsInput`]: crate::widget::stats_widget::StatsInput
+fn retained_data_to_stats_input(
+    data: &RetainedItemData,
+) -> crate::widget::stats_widget::StatsInput<'_> {
+    use crate::widget::stats_widget::StatsInput;
+    match data {
+        RetainedItemData::Curve { x, y } => StatsInput::Curve { xs: x, ys: y },
+        RetainedItemData::Image {
+            data,
+            width,
+            height,
+            origin,
+            scale,
+        } => StatsInput::Image {
+            data,
+            width: *width,
+            height: *height,
+            origin: *origin,
+            scale: *scale,
+        },
+    }
+}
+
+/// Capture a scalar image spec's raw pixels and geometry for live consumers, or
+/// `None` for an RGBA image (no scalar field to retain).
+fn image_spec_retained_data(spec: &ImageSpec<'_>) -> Option<RetainedItemData> {
+    match &spec.pixels {
+        ImagePixelsSpec::Scalar {
+            width,
+            height,
+            data,
+            ..
+        } => Some(RetainedItemData::Image {
+            data: data.iter().map(|&v| v as f64).collect(),
+            width: *width as usize,
+            height: *height as usize,
+            origin: spec.origin,
+            scale: spec.scale,
+        }),
+        ImagePixelsSpec::Rgba { .. } => None,
+    }
+}
+
 fn image_spec_bounds(spec: &ImageSpec<'_>) -> DataBounds {
     let mut bounds = DataBounds::default();
     if let Some((x, y)) = image_bounds(spec) {
@@ -1211,6 +1266,25 @@ fn marker_spec_from_data(marker: &Marker) -> MarkerSpec<'_> {
     }
 }
 
+/// Raw item data retained alongside an [`ItemRecord`] so live consumers (a
+/// [`StatsWidget`], a [`FitWidget`], a raw-pixel autoscale) can read the active
+/// item's data without the caller re-supplying it. Only scalar curves and
+/// scalar images are retained; RGBA images, triangles, shapes, and markers have
+/// no retained data.
+#[derive(Clone, Debug)]
+enum RetainedItemData {
+    /// A curve's `(x, y)` arrays.
+    Curve { x: Vec<f64>, y: Vec<f64> },
+    /// A scalar image's row-major pixels (as `f64`) plus its geometry.
+    Image {
+        data: Vec<f64>,
+        width: usize,
+        height: usize,
+        origin: (f64, f64),
+        scale: (f64, f64),
+    },
+}
+
 #[derive(Clone, Debug)]
 struct ItemRecord {
     handle: ItemHandle,
@@ -1219,6 +1293,9 @@ struct ItemRecord {
     legend: Option<String>,
     stats: Option<ItemStats>,
     visual: LegendVisual,
+    /// Retained raw data for live stats/fit consumers; `None` for items whose
+    /// data is not retained (RGBA images, triangles, shapes, markers).
+    data: Option<RetainedItemData>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1689,6 +1766,7 @@ impl PlotWidget {
             legend: None,
             stats,
             visual,
+            data: None,
         });
         self.events.push(PlotEvent::ItemAdded { handle, kind });
         if self.active_item.is_none() {
@@ -1715,6 +1793,9 @@ impl PlotWidget {
             record.bounds = bounds;
             record.stats = stats;
             record.visual = visual;
+            // `data` is set by the typed entry points after this call; an
+            // untyped update (e.g. via update_item_record from a path with no
+            // retained data) leaves the existing data in place.
             self.events.push(PlotEvent::ItemUpdated { handle, kind });
         } else {
             self.item_records.push(ItemRecord {
@@ -1724,6 +1805,7 @@ impl PlotWidget {
                 legend: None,
                 stats,
                 visual,
+                data: None,
             });
             self.events.push(PlotEvent::ItemAdded { handle, kind });
         }
@@ -1773,6 +1855,21 @@ impl PlotWidget {
         self.item_records
             .iter_mut()
             .find(|record| record.handle == handle)
+    }
+
+    /// Attach (or clear) the retained raw data for an item. Called by the typed
+    /// curve/image spec entry points right after the record is created/updated,
+    /// so live stats/fit consumers can read the active item's data.
+    fn set_retained_data(&mut self, handle: ItemHandle, data: Option<RetainedItemData>) {
+        if let Some(record) = self.item_record_mut(handle) {
+            record.data = data;
+        }
+    }
+
+    /// The retained raw data for an item, if any.
+    fn retained_data(&self, handle: ItemHandle) -> Option<&RetainedItemData> {
+        self.item_record(handle)
+            .and_then(|record| record.data.as_ref())
     }
 
     fn clear_active_if_missing(&mut self) {
@@ -1831,8 +1928,10 @@ impl PlotWidget {
         let bounds = curve_spec_bounds(&spec);
         let stats = Some(curve_spec_stats(&spec));
         let visual = curve_spec_legend_visual(&spec, kind);
+        let data = curve_spec_retained_data(&spec);
         let handle = self.backend.add_curve(spec);
         self.record_item(handle, kind, bounds, stats, visual);
+        self.set_retained_data(handle, Some(data));
         handle
     }
 
@@ -1845,8 +1944,10 @@ impl PlotWidget {
             .filter(|kind| kind.is_curve_like())
             .unwrap_or(PlotItemKind::Curve);
         let visual = curve_spec_legend_visual(&spec, kind);
+        let data = curve_spec_retained_data(&spec);
         if self.backend.update_curve(handle, spec) {
             self.update_item_record(handle, kind, bounds, stats, visual);
+            self.set_retained_data(handle, Some(data));
             true
         } else {
             false
@@ -2048,8 +2149,10 @@ impl PlotWidget {
         let bounds = image_spec_bounds(&spec);
         let stats = Some(image_spec_stats(&spec));
         let visual = image_spec_legend_visual(&spec, kind);
+        let data = image_spec_retained_data(&spec);
         let handle = self.backend.add_image(spec);
         self.record_item(handle, kind, bounds, stats, visual);
+        self.set_retained_data(handle, data);
         handle
     }
 
@@ -2062,8 +2165,10 @@ impl PlotWidget {
             .filter(|kind| kind.is_image_like())
             .unwrap_or(PlotItemKind::Image);
         let visual = image_spec_legend_visual(&spec, kind);
+        let data = image_spec_retained_data(&spec);
         if self.backend.update_image(handle, spec) {
             self.update_item_record(handle, kind, bounds, stats, visual);
+            self.set_retained_data(handle, data);
             true
         } else {
             false
@@ -2763,6 +2868,76 @@ impl PlotWidget {
     pub fn show_active_stats(&self, ui: &mut egui::Ui) -> bool {
         self.active_item
             .is_some_and(|handle| self.show_stats(ui, handle))
+    }
+
+    /// Build a borrowed [`StatsInput`] for an item's retained raw data (silx
+    /// `StatsWidget` per-item data), or `None` when the item is unknown / has no
+    /// retained scalar data (e.g. an RGBA image).
+    fn stats_input(
+        &self,
+        handle: ItemHandle,
+    ) -> Option<crate::widget::stats_widget::StatsInput<'_>> {
+        self.retained_data(handle).map(retained_data_to_stats_input)
+    }
+
+    /// Feed the active item's retained data into a [`StatsWidget`], recomputing
+    /// its rows from the live data (silx `StatsWidget` bound to the active
+    /// item). The row is labelled with the item's legend.
+    ///
+    /// `viewport` is the visible data rectangle `((x0, x1), (y0, y1))`, used only
+    /// when the widget's on-visible-data toggle is enabled. Returns `true` when
+    /// there is an active item with retained scalar data to feed; `false`
+    /// otherwise (the widget is then fed an empty input and shows no rows).
+    pub fn feed_active_stats(
+        &self,
+        stats: &mut crate::widget::stats_widget::StatsWidget,
+        viewport: Option<((f64, f64), (f64, f64))>,
+    ) -> bool {
+        let Some(handle) = self.active_item else {
+            stats.recompute(&[], viewport);
+            return false;
+        };
+        let label = self
+            .item_record(handle)
+            .map(|record| self.legend_label(record))
+            .unwrap_or_else(|| "item".to_owned());
+        match self.stats_input(handle) {
+            Some(input) => {
+                stats.recompute(&[(label.as_str(), input)], viewport);
+                true
+            }
+            None => {
+                stats.recompute(&[], viewport);
+                false
+            }
+        }
+    }
+
+    /// Feed the active item's retained data into a [`StatsWidget`] and render
+    /// its table (silx `StatsWidget`). Combines [`Self::feed_active_stats`] with
+    /// [`StatsWidget::ui`]; the widget recomputes as the active item changes.
+    pub fn show_active_stats_widget(
+        &self,
+        ui: &mut egui::Ui,
+        stats: &mut crate::widget::stats_widget::StatsWidget,
+        viewport: Option<((f64, f64), (f64, f64))>,
+    ) {
+        match self.active_item.and_then(|handle| {
+            self.stats_input(handle).map(|input| {
+                let label = self
+                    .item_record(handle)
+                    .map(|record| self.legend_label(record))
+                    .unwrap_or_else(|| "item".to_owned());
+                (label, input)
+            })
+        }) {
+            Some((label, input)) => {
+                stats.ui(ui, &[(label.as_str(), input)], viewport);
+            }
+            None => {
+                stats.ui(ui, &[], viewport);
+            }
+        }
     }
 
     /// Draw an egui-native plot toolbar.
@@ -6014,6 +6189,59 @@ mod tests {
         let selection = scatter_masked_selection(&mask.mask);
         // Only x=1 and x=2 fall inside the box; x=0, x=3, x=4 are outside.
         assert_eq!(selection, vec![false, true, true, false, false]);
+    }
+
+    #[test]
+    fn live_curve_stats_match_core_stats_engine() {
+        // Item 4: a retained curve fed into a StatsWidget yields a row equal to
+        // a direct core::stats::Stats run on the same (xs, ys).
+        use crate::widget::stats_widget::{StatsWidget, UpdateMode};
+        let xs = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let ys = vec![2.0, -1.0, 5.0, f64::NAN, 0.5];
+        let data = RetainedItemData::Curve {
+            x: xs.clone(),
+            y: ys.clone(),
+        };
+        let input = retained_data_to_stats_input(&data);
+        let mut w = StatsWidget::new();
+        w.set_update_mode(UpdateMode::Auto);
+        w.recompute(&[("curve", input)], None);
+        let rows = w.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "curve");
+        let core =
+            crate::core::stats::Stats::for_curve(&xs, &ys, crate::core::stats::StatScope::All);
+        assert_eq!(rows[0].1, core);
+    }
+
+    #[test]
+    fn live_image_stats_match_core_stats_engine() {
+        // Item 4: a retained scalar image fed into a StatsWidget yields a row
+        // equal to a direct core::stats::Stats run on the same pixels+geometry.
+        use crate::widget::stats_widget::{StatsWidget, UpdateMode};
+        let pixels = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let data = RetainedItemData::Image {
+            data: pixels.clone(),
+            width: 3,
+            height: 2,
+            origin: (0.0, 0.0),
+            scale: (1.0, 1.0),
+        };
+        let input = retained_data_to_stats_input(&data);
+        let mut w = StatsWidget::new();
+        w.set_update_mode(UpdateMode::Auto);
+        w.recompute(&[("image", input)], None);
+        let rows = w.rows();
+        assert_eq!(rows.len(), 1);
+        let core = crate::core::stats::Stats::for_image(
+            &pixels,
+            3,
+            2,
+            (0.0, 0.0),
+            (1.0, 1.0),
+            crate::core::stats::StatScope::All,
+        );
+        assert_eq!(rows[0].1, core);
     }
 
     #[test]
