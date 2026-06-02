@@ -215,6 +215,26 @@ fn finite_range(values: &[f32]) -> (f64, f64) {
     }
 }
 
+/// Render a horizontal toolbar of selectable mode buttons (one per
+/// [`ComplexMode`] in silx menu order) and return the mode the user picked this
+/// frame, or `None` if no button was clicked.
+///
+/// Pure over an [`egui::Ui`] and the `current` mode (no GPU / [`Plot2D`]), so
+/// the toolbar's selection behaviour is unit-testable with a headless egui
+/// context. [`ComplexImageView::show_mode_toolbar`] applies the returned mode
+/// via [`ComplexImageView::set_mode`].
+pub fn mode_toolbar_ui(ui: &mut egui::Ui, current: ComplexMode) -> Option<ComplexMode> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        for mode in ComplexMode::ALL {
+            if ui.selectable_label(current == mode, mode.label()).clicked() && current != mode {
+                picked = Some(mode);
+            }
+        }
+    });
+    picked
+}
+
 /// Display an image of complex data and let the user choose the visualization.
 ///
 /// Mirrors silx `ComplexImageView`: it owns a [`Plot2D`], the complex data
@@ -334,6 +354,20 @@ impl ComplexImageView {
         self.mode
     }
 
+    /// A horizontal toolbar of selectable mode buttons (one per
+    /// [`ComplexMode`], in silx menu order), mirroring silx's
+    /// `_ComplexDataToolButton` mode menu more closely than the combo. Clicking
+    /// a button activates that mode and recomputes the image on the next
+    /// [`Self::show`]. Returns the current mode.
+    ///
+    /// Call before [`Self::show`].
+    pub fn show_mode_toolbar(&mut self, ui: &mut egui::Ui) -> ComplexMode {
+        if let Some(picked) = mode_toolbar_ui(ui, self.mode) {
+            self.set_mode(picked);
+        }
+        self.mode
+    }
+
     /// Recompute the displayed image for the current mode and update the plot
     /// in place (reusing the existing item handle so the zoom is preserved).
     fn rebuild_image(&mut self) {
@@ -401,6 +435,110 @@ mod tests {
     use super::*;
 
     const PI: f32 = std::f32::consts::PI;
+
+    // ── Mode toolbar selection (Item 3) ─────────────────────────────────────
+
+    /// Capture the on-screen rect of each toolbar button by running one
+    /// headless layout frame with the same widget sequence `mode_toolbar_ui`
+    /// emits. Geometry is deterministic, so the rects line up with the real
+    /// `mode_toolbar_ui` call on an identically-sized frame.
+    fn capture_button_rects(
+        ctx: &egui::Context,
+        current: ComplexMode,
+    ) -> Vec<(ComplexMode, egui::Rect)> {
+        let mut rects = Vec::new();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                for mode in ComplexMode::ALL {
+                    let r = ui.selectable_label(current == mode, mode.label());
+                    rects.push((mode, r.rect));
+                }
+            });
+        });
+        rects
+    }
+
+    /// Run one headless frame of the real `mode_toolbar_ui` with `raw` input,
+    /// returning the mode it reports as picked (if any).
+    fn run_toolbar(
+        ctx: &egui::Context,
+        current: ComplexMode,
+        raw: egui::RawInput,
+    ) -> Option<ComplexMode> {
+        let mut picked = None;
+        let _ = ctx.run_ui(raw, |ui| {
+            picked = mode_toolbar_ui(ui, current);
+        });
+        picked
+    }
+
+    fn click_at(point: egui::Pos2) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mode_toolbar_returns_none_without_a_click() {
+        let ctx = egui::Context::default();
+        // Layout frame, then an empty frame: no pointer input -> no selection.
+        let _ = run_toolbar(&ctx, ComplexMode::Absolute, egui::RawInput::default());
+        assert_eq!(
+            run_toolbar(&ctx, ComplexMode::Absolute, egui::RawInput::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn mode_toolbar_click_selects_that_mode() {
+        let ctx = egui::Context::default();
+        // Current is Phase, so clicking the (non-active) Real button selects it.
+        let current = ComplexMode::Phase;
+        let rects = capture_button_rects(&ctx, current);
+        let (_, real_rect) = rects
+            .iter()
+            .find(|(m, _)| *m == ComplexMode::Real)
+            .copied()
+            .expect("Real button present");
+
+        // Frame 1: lay the toolbar out so widget ids/rects are registered.
+        let _ = run_toolbar(&ctx, current, egui::RawInput::default());
+        // Frame 2: click the captured Real-button center.
+        let picked = run_toolbar(&ctx, current, click_at(real_rect.center()));
+        assert_eq!(picked, Some(ComplexMode::Real));
+    }
+
+    #[test]
+    fn mode_toolbar_click_on_active_mode_is_noop() {
+        let ctx = egui::Context::default();
+        let current = ComplexMode::Absolute;
+        let rects = capture_button_rects(&ctx, current);
+        let (_, active_rect) = rects
+            .iter()
+            .find(|(m, _)| *m == ComplexMode::Absolute)
+            .copied()
+            .expect("Absolute button present");
+
+        let _ = run_toolbar(&ctx, current, egui::RawInput::default());
+        // Clicking the already-active button reports no change.
+        let picked = run_toolbar(&ctx, current, click_at(active_rect.center()));
+        assert_eq!(picked, None);
+    }
 
     // ── Per-mode scalar conversion at known complex values ──────────────────
 
