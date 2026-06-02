@@ -234,6 +234,34 @@ Progress log below.
   image path + per-mode picking; FitWidget→live curve; RadarView→Plot2D pan + auto-extent; true
   vector SVG (record draw ops); JPEG/EPS/PDF; LM constraints + strip background + multi-peak search.
 
+### Wave 6A — Chrome / input plumbing (model + primitives the HL wiring consumes)
+First sub-wave of the chrome/actions effort. Single file-disjoint cluster owning `chrome.rs` +
+`plot_widget.rs` + `interaction.rs` + `core/plot.rs` (the others would collide on `plot_widget.rs`,
+which orchestrates chrome render + interaction together). Implemented by a worktree agent, then
+each item adversarially verified (silx-fidelity + additive-only + gate); 2 fixes applied at source.
+- **Datetime ticks** (`5ee3630`,`5477f69`): X-axis `TickMode` (Numeric/TimeSeries) on `Plot`; chrome
+  `axis_ticks_with_mode` routes a TimeSeries linear X axis through `dtime_ticks::calc_ticks`/
+  `format_ticks` (silx `XAxis.setTickMode`+`NiceDateLocator`). **Fidelity fix:** silx implements
+  `setTickMode` on `XAxis` only (`YAxis` raises `NotImplementedError`, no `setYAxisTimeSeries`), so
+  the time-series mode is X-only by API shape — dropped the symmetric `y_tick_mode` the first pass added.
+- **Axes-hidden gutters** (`ac84ca0`): `ChromeRequest.axes_hidden` collapses every axis gutter to
+  zero and skips frame/ticks/labels when `!axes_displayed()` (silx `setAxesDisplayed(False)`); colorbar
+  strip still reserved (separate widget). Default false = no behavior change.
+- **Infinite Line render** (`41eebb1`): `Plot.lines: Vec<Line>` + `add_line`; chrome `draw_lines`
+  clips each via the tested `Line::clipped_segment` and paints the visible segment, called after
+  `draw_shapes` (silx `items/shape.py` Line `__updatePoints`).
+- **PlotPointerEvent / DrawEvent / mode surfacing** (`7d23f37`,`84289c7`): `apply_interaction` emits
+  `PlotPointerEvent` (Clicked/DoubleClicked/Moved, pixel→data via transform; silx `prepareMouseSignal`)
+  via additive `PlotResponse.pointer_event`; `draw_event` mirrors the latest draw event onto the plain
+  show path; read-only `interaction_mode`. **Test fix:** added double-click (explicit headless
+  timestamps) + right/middle-button coverage.
+- Item 5 (ROI-edge cursor) was already complete on `main`; no no-op commit. Gate: clippy clean,
+  **598 tests pass** (+14), doctests ok.
+- **UNFIXED / deferred this sub-wave** (external dep or decision-gated): marker drag + marker-drag
+  cursor (marker list lives in `Plot2D`, not core `Plot` — needs ownership decision); `Shape::is_overlay`
+  data-layer (no under-chrome render path); `DirtyState::Overlay` short-circuit (render-loop wave);
+  high-level mouseClicked/markerClicked/curveClicked **consumption** (lands in `high_level.rs`, 6B).
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
