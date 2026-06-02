@@ -11,10 +11,10 @@
 //! surface format is BGRA). The pure byte-layout and PNG-encoding helpers are
 //! unit-tested; the GPU render + readback runs only with a real device.
 //!
-//! Beyond PNG, the raster snapshot can also be exported as PPM (P6), mirroring
-//! silx `PlotImageFile.saveImageToFile`. The `encode_*` helpers are pure
-//! functions over the RGBA pixels so they are testable without a GPU or the
-//! filesystem.
+//! Beyond PNG, the raster snapshot can also be exported as PPM (P6) and SVG (a
+//! base64 PNG `<image>`), mirroring silx `PlotImageFile.saveImageToFile`. The
+//! `encode_*` helpers are pure functions over the RGBA pixels so they are
+//! testable without a GPU or the filesystem.
 
 use std::fmt;
 use std::path::Path;
@@ -160,6 +160,86 @@ pub fn encode_ppm(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// Standard base64 alphabet (RFC 4648), used by [`encode_svg`].
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Encode bytes as standard (RFC 4648) base64 with `=` padding.
+///
+/// Implemented inline so the SVG export needs no external base64 crate
+/// (mirrors silx using the stdlib `base64.b64encode`).
+fn base64_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(BASE64_ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(BASE64_ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(BASE64_ALPHABET[(n & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Encode tightly packed `width * height` RGB8 pixels (3 bytes/pixel) as PNG.
+fn encode_rgb_png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, png::EncodingError> {
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(rgb)?;
+    }
+    Ok(out)
+}
+
+/// Encode tightly packed `width * height` RGBA8 pixels as an SVG document that
+/// embeds the raster as a base64 PNG `<image>`.
+///
+/// Faithful to silx `PlotImageFile.saveImageToFile` (`fileFormat == "svg"`):
+/// the same XML declaration, SVG 1.1 DOCTYPE, root `<svg>` carrying `width`/
+/// `height` in px, and a single `<image xlink:href="data:image/png;base64,…">`
+/// placed at `x=0 y=0` with the same width/height and `id="image"`. silx tracks
+/// no vector primitives in its raster path, so the rendered bitmap is embedded
+/// rather than re-emitted as vector geometry (see Defer note in the module).
+///
+/// The embedded PNG is RGB (alpha dropped) to match silx's `(h, w, 3)` array.
+pub fn encode_svg(rgba: &[u8], width: u32, height: u32) -> Result<String, png::EncodingError> {
+    let rgb = rgba_to_rgb(rgba, width, height);
+    let png = encode_rgb_png(&rgb, width, height)?;
+    let b64 = base64_encode(&png);
+    let mut s = String::new();
+    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
+    s.push_str("<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"\n");
+    s.push_str("  \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n");
+    s.push_str("<svg xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n");
+    s.push_str("     xmlns=\"http://www.w3.org/2000/svg\"\n");
+    s.push_str("     version=\"1.1\"\n");
+    s.push_str(&format!("     width=\"{width}\"\n"));
+    s.push_str(&format!("     height=\"{height}\">\n"));
+    s.push_str("    <image xlink:href=\"data:image/png;base64,");
+    s.push_str(&b64);
+    s.push_str("\"\n");
+    s.push_str("           x=\"0\"\n");
+    s.push_str("           y=\"0\"\n");
+    s.push_str(&format!("           width=\"{width}\"\n"));
+    s.push_str(&format!("           height=\"{height}\"\n"));
+    s.push_str("           id=\"image\" />\n");
+    s.push_str("</svg>");
+    Ok(s)
+}
+
 /// Per-axis log flags `[x, y]` (1.0 = log10) for the shaders, matching a
 /// transform's scales.
 fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
@@ -290,5 +370,85 @@ mod tests {
         assert_eq!(&ppm[header.len()..], &[1, 2, 3, 4, 5, 6]);
         // Total length = header + width*height*3 (2×1 pixels × 3 channels).
         assert_eq!(ppm.len(), header.len() + 6);
+    }
+
+    #[test]
+    fn base64_encode_matches_known_vector() {
+        // RFC 4648 test vectors.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn encode_svg_is_well_formed_with_size_and_png_payload() {
+        let rgba = [
+            11, 22, 33, 255, 44, 55, 66, 255, 77, 88, 99, 255, 1, 2, 3, 255,
+        ];
+        let svg = encode_svg(&rgba, 2, 2).expect("svg");
+
+        // XML declaration and SVG 1.1 DOCTYPE.
+        assert!(svg.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>"));
+        assert!(svg.contains("<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\""));
+        // Root dimensions in px appear on the <svg> element.
+        assert!(svg.contains("width=\"2\""));
+        assert!(svg.contains("height=\"2\""));
+        // The <image> element with a base64 PNG data URI and id.
+        assert!(svg.contains("<image xlink:href=\"data:image/png;base64,"));
+        assert!(svg.contains("x=\"0\""));
+        assert!(svg.contains("y=\"0\""));
+        assert!(svg.contains("id=\"image\" />"));
+        assert!(svg.trim_end().ends_with("</svg>"));
+
+        // The embedded payload decodes to a valid RGB PNG of the right size,
+        // matching the input pixels (alpha dropped).
+        let marker = "base64,";
+        let start = svg.find(marker).expect("data uri") + marker.len();
+        let end = svg[start..].find('"').expect("end quote") + start;
+        let b64 = &svg[start..end];
+        let png_bytes = base64_decode_for_test(b64);
+        let decoder = png::Decoder::new(std::io::Cursor::new(&png_bytes));
+        let mut reader = decoder.read_info().expect("read info");
+        let mut buf = vec![0u8; reader.output_buffer_size().expect("buffer size")];
+        let info = reader.next_frame(&mut buf).expect("frame");
+        assert_eq!(info.width, 2);
+        assert_eq!(info.height, 2);
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        let expected_rgb = rgba_to_rgb(&rgba, 2, 2);
+        assert_eq!(&buf[..expected_rgb.len()], expected_rgb.as_slice());
+    }
+
+    /// Minimal base64 decoder for the SVG payload round-trip test.
+    fn base64_decode_for_test(s: &str) -> Vec<u8> {
+        fn val(c: u8) -> Option<u8> {
+            match c {
+                b'A'..=b'Z' => Some(c - b'A'),
+                b'a'..=b'z' => Some(c - b'a' + 26),
+                b'0'..=b'9' => Some(c - b'0' + 52),
+                b'+' => Some(62),
+                b'/' => Some(63),
+                _ => None,
+            }
+        }
+        let mut out = Vec::new();
+        let mut acc = 0u32;
+        let mut bits = 0u32;
+        for &c in s.as_bytes() {
+            if c == b'=' {
+                break;
+            }
+            let Some(v) = val(c) else { continue };
+            acc = (acc << 6) | v as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+            }
+        }
+        out
     }
 }
