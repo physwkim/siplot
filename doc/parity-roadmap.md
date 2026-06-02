@@ -427,6 +427,35 @@ primitives already complete — this wave is wiring + one new dep.
   X/Y autoscale toggles + the widget-reset flag-respect fix; median filter (crate) + pixel-intensity
   histogram.
 
+### Wave 7B — Per-axis X/Y autoscale toggles + widget-reset structural fix
+Single worktree cluster owning `high_level.rs` + `actions/control.rs` (2 commits); per-item adversarial
+verify (both accept, `structuralNotPatch` true). BASE `ec1b854`. `core/plot.rs` untouched — the model was
+already complete.
+- **Structural fix (the real bug):** the per-axis autoscale flags `x/y/y2_autoscale` (all default `true`)
+  were honored by the model owner `Plot::reset_zoom_to_data_range` (tested) but the WIDGET reset path
+  (`apply_limits_from_data_bounds`) **bypassed** them — it called `set_limits_internal` writing both axes
+  unconditionally, so the flags were dead at the widget level (two reset paths, one flag-blind). Fixed by
+  the PREFERRED single-owner delegation: a new pure `data_range_from_bounds(DataBounds)→DataRange` (per-axis
+  `as_non_degenerate`, `None` for a dataless axis) feeds `reset_zoom_to_data_range`, with the `LimitsChanged`
+  event preserved (`limits_snapshot` + `push_limits_changed_if`). Verified safe: `WgpuBackend::set_limits`
+  only assigns `plot.limits`/`plot.y2` — the same two fields the model owner writes — and the event is the
+  only widget-side bookkeeping, so delegation regresses nothing. Default case (all flags on + zero margins)
+  is byte-identical to the old path; the only behavior change is the bug fix (off-axes now pinned) plus
+  non-zero `data_margins` now applied on reset (matches silx `_forceResetZoom`, zero by default). The flag/
+  log-force/margins logic now lives in exactly ONE place. Faithful to silx `PlotWidget.resetZoom`
+  (PlotWidget.py:3352-3403). Pure tests: x-off/y-on keeps X refits Y; converse; all-off no-op; degenerate
+  padding.
+- Per-axis X/Y autoscale toolbar toggles: `ToolbarIcon::AutoscaleX/AutoscaleY` (+ `draw_autoscale_icon`
+  glyph; the only exhaustive `ToolbarIcon` match got the two arms, `size()` uses a wildcard), checkable
+  buttons (selected = `plot().x_autoscale()`), `ToolbarResponse.autoscale_x_changed/autoscale_y_changed`,
+  + pure `toggle_x_autoscale`/`toggle_y_autoscale` in `control.rs`. Mirrors silx `XAxisAutoScaleAction`/
+  `YAxisAutoScaleAction` (control.py:172-223) `_actionTriggered(checked)`: `setAutoScale(checked)` then
+  reset-zoom ONLY on enable (disable pins the current view); the reset routes through the now-flag-aware
+  widget path. Pure tests: enable refits only the enabled axis; disable does not reset.
+- Gate: clippy `-p egui-silx --all-targets` clean, **680 tests pass** (+6), doctests ok (no doctest changed).
+- **Deferred:** Y2 (right-axis) autoscale toolbar button (model flag already honored; a third button would
+  bloat the toolbar row). **Wave 7C next:** median filter (`medians` crate) + pixel-intensity histogram.
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
