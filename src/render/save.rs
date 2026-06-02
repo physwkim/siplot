@@ -169,6 +169,136 @@ pub fn encode_ppm(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// Encode a 2D `uint8` array `(height, width)` (row-major / C-order) as a NumPy
+/// `.npy` v1.0 byte stream.
+///
+/// Mirrors `numpy.save` of a `uint8` array (silx `MaskToolsWidget.save(..,
+/// "npy")`): a `\x93NUMPY` magic, a `\x01\x00` version, a little-endian `u16`
+/// header length, then the ASCII header dict
+/// `{'descr': '|u1', 'fortran_order': False, 'shape': (h, w), }` padded with
+/// spaces so the whole preamble length is a multiple of 64 and terminated by a
+/// newline, then the raw C-order bytes. Pure (no GPU / filesystem) so it is
+/// directly unit-testable; `data` is expected to be `height * width` bytes long.
+pub fn encode_mask_npy(height: u32, width: u32, data: &[u8]) -> Vec<u8> {
+    const MAGIC: &[u8] = b"\x93NUMPY";
+    let header =
+        format!("{{'descr': '|u1', 'fortran_order': False, 'shape': ({height}, {width}), }}");
+    // Preamble = magic(6) + version(2) + header-len(2) + header + '\n',
+    // padded with spaces so the whole preamble length is a multiple of 64.
+    let unpadded = MAGIC.len() + 2 + 2 + header.len() + 1;
+    let pad = (64 - (unpadded % 64)) % 64;
+    let header_len = header.len() + pad + 1; // padding + trailing newline
+    debug_assert!(header_len <= u16::MAX as usize);
+
+    let mut out = Vec::with_capacity(unpadded + pad + data.len());
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&[1u8, 0u8]); // version 1.0
+    out.extend_from_slice(&(header_len as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend(std::iter::repeat_n(b' ', pad));
+    out.push(b'\n');
+    out.extend_from_slice(data);
+    out
+}
+
+/// Decode a 2D `uint8` NumPy `.npy` byte stream into `(height, width, data)` in
+/// C (row-major) order.
+///
+/// Accepts only `descr` of `|u1` / `<u1` / `>u1` / `u1` (uint8) with
+/// `fortran_order: False` and a 2D shape — what [`encode_mask_npy`] /
+/// `numpy.save` of a mask produces. Any other dtype, Fortran order,
+/// dimensionality, truncated body, or malformed header is an
+/// [`std::io::ErrorKind::InvalidData`] error. Pure over a byte stream so the
+/// round-trip is directly unit-testable.
+pub fn decode_mask_npy(bytes: &[u8]) -> std::io::Result<(u32, u32, Vec<u8>)> {
+    use std::io::Read;
+    let mut r = bytes;
+    let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string());
+
+    let mut magic = [0u8; 6];
+    r.read_exact(&mut magic)?;
+    if &magic != b"\x93NUMPY" {
+        return Err(invalid("not a .npy file (bad magic)"));
+    }
+
+    let mut version = [0u8; 2];
+    r.read_exact(&mut version)?;
+    // Header length is u16 (v1.0) or u32 (v2.0+); support both.
+    let header_len = if version[0] >= 2 {
+        let mut len = [0u8; 4];
+        r.read_exact(&mut len)?;
+        u32::from_le_bytes(len) as usize
+    } else {
+        let mut len = [0u8; 2];
+        r.read_exact(&mut len)?;
+        u16::from_le_bytes(len) as usize
+    };
+
+    let mut header_bytes = vec![0u8; header_len];
+    r.read_exact(&mut header_bytes)?;
+    let header =
+        std::str::from_utf8(&header_bytes).map_err(|_| invalid("npy header is not UTF-8"))?;
+
+    let descr =
+        npy_header_field(header, "descr").ok_or_else(|| invalid("npy header missing 'descr'"))?;
+    // uint8: '|u1' is canonical; tolerate explicit endianness markers.
+    if !matches!(descr.as_str(), "|u1" | "<u1" | ">u1" | "u1") {
+        return Err(invalid("npy mask must be uint8 ('|u1')"));
+    }
+
+    let fortran = npy_header_field(header, "fortran_order")
+        .ok_or_else(|| invalid("npy header missing 'fortran_order'"))?;
+    if fortran != "False" {
+        return Err(invalid("npy mask must be C-order (fortran_order: False)"));
+    }
+
+    let (height, width) = npy_shape_2d(header)?;
+
+    let count = (height as usize) * (width as usize);
+    let mut data = vec![0u8; count];
+    r.read_exact(&mut data)?;
+    Ok((height, width, data))
+}
+
+/// Extract the value of a `key` from a NumPy `.npy` header dict literal,
+/// stripping surrounding quotes (so `'|u1'` becomes `|u1` and the bare literal
+/// `False` stays `False`). Returns `None` if the key is absent.
+fn npy_header_field(header: &str, key: &str) -> Option<String> {
+    // Match `'key':` then take up to the next ',' or '}'.
+    let needle = format!("'{key}':");
+    let start = header.find(&needle)? + needle.len();
+    let rest = &header[start..];
+    let end = rest.find([',', '}'])?;
+    let value = rest[..end].trim();
+    Some(value.trim_matches(['\'', '"']).to_string())
+}
+
+/// Parse the `shape` tuple of a 2D NumPy `.npy` header into `(height, width)`.
+///
+/// Rejects shapes that are not exactly 2D, matching silx's mask load which only
+/// handles 2D image masks.
+fn npy_shape_2d(header: &str) -> std::io::Result<(u32, u32)> {
+    let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string());
+    let start = header
+        .find("'shape':")
+        .ok_or_else(|| invalid("npy header missing 'shape'"))?
+        + "'shape':".len();
+    let rest = &header[start..];
+    let open = rest.find('(').ok_or_else(|| invalid("malformed shape"))?;
+    let close = rest.find(')').ok_or_else(|| invalid("malformed shape"))?;
+    let dims: Vec<u32> = rest[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<u32>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| invalid("non-integer shape dimension"))?;
+    if dims.len() != 2 {
+        return Err(invalid("npy mask must be 2D"));
+    }
+    Ok((dims[0], dims[1]))
+}
+
 /// Standard base64 alphabet (RFC 4648), used by [`encode_svg`].
 const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -609,6 +739,76 @@ mod tests {
         assert_eq!(&ppm[header.len()..], &[1, 2, 3, 4, 5, 6]);
         // Total length = header + width*height*3 (2×1 pixels × 3 channels).
         assert_eq!(ppm.len(), header.len() + 6);
+    }
+
+    // --- NumPy .npy mask codec ---
+
+    #[test]
+    fn mask_npy_round_trips_bytes_and_shape() {
+        // A small 2x3 uint8 mask round-trips through encode -> decode with
+        // identical shape and data.
+        let data: Vec<u8> = vec![0, 1, 2, 250, 254, 255];
+        let bytes = encode_mask_npy(2, 3, &data);
+        let (h, w, out) = decode_mask_npy(&bytes).expect("decode");
+        assert_eq!((h, w), (2, 3));
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn mask_npy_header_is_valid_v1_format() {
+        let data = vec![7u8; 4];
+        let bytes = encode_mask_npy(2, 2, &data);
+        // Magic \x93NUMPY, version 1.0.
+        assert_eq!(&bytes[0..6], b"\x93NUMPY");
+        assert_eq!(&bytes[6..8], &[1, 0]);
+        // header_len (u16 LE) and the preamble length is a multiple of 64.
+        let header_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        let preamble = 10 + header_len;
+        assert_eq!(preamble % 64, 0, "preamble {preamble} not 64-aligned");
+        // The header dict carries descr/fortran_order/shape and ends in newline.
+        let header = std::str::from_utf8(&bytes[10..preamble]).expect("ascii header");
+        assert!(header.contains("'descr': '|u1'"));
+        assert!(header.contains("'fortran_order': False"));
+        assert!(header.contains("'shape': (2, 2)"));
+        assert!(header.ends_with('\n'));
+        // The raw C-order body follows the preamble exactly.
+        assert_eq!(&bytes[preamble..], data.as_slice());
+    }
+
+    #[test]
+    fn mask_npy_rejects_bad_magic_and_non_uint8() {
+        // Bad magic.
+        let err = decode_mask_npy(b"not-a-npy-file-at-all").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        // Valid framing but a float64 dtype is rejected.
+        let mut bytes = encode_mask_npy(1, 1, &[0]);
+        let header_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        let header = std::str::from_utf8(&bytes[10..10 + header_len])
+            .unwrap()
+            .replace("|u1", "<f8");
+        bytes.splice(10..10 + header_len, header.bytes());
+        let err = decode_mask_npy(&bytes).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn mask_npy_rejects_non_2d_shape() {
+        // Reshape the header to a 3D shape; decode must reject it.
+        let mut bytes = encode_mask_npy(1, 1, &[0]);
+        let header_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        let header = std::str::from_utf8(&bytes[10..10 + header_len])
+            .unwrap()
+            .replace("(1, 1)", "(1, 1, 1)");
+        // Keep total length stable by trimming/padding spaces before newline.
+        let mut header = header;
+        while header.len() < header_len {
+            header.insert(header.len() - 1, ' ');
+        }
+        let header = &header[..header_len];
+        bytes.splice(10..10 + header_len, header.bytes());
+        let err = decode_mask_npy(&bytes).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]

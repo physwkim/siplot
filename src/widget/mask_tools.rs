@@ -723,135 +723,48 @@ impl MaskToolsWidget {
         let reader = io::BufReader::new(file);
         self.read_npy(reader)
     }
+
+    /// Save the current mask to a `.npy` file at the given in-app path string
+    /// (silx `MaskToolsWidget.save(filename, "npy")`).
+    ///
+    /// Takes a plain `&str` path entered in-app rather than opening a native
+    /// file dialog. The `.npy` bytes are produced by the single-owner codec
+    /// [`crate::render::save::encode_mask_npy`].
+    pub fn save_mask_npy(&self, path: &str) -> io::Result<()> {
+        self.save_npy(path)
+    }
+
+    /// Load a mask from a `.npy` file at the given in-app path string, cropping
+    /// or padding to the current image geometry (silx
+    /// `MaskToolsWidget.load(filename)`, npy branch).
+    ///
+    /// Takes a plain `&str` path entered in-app rather than opening a native
+    /// file dialog. Returns `Ok(true)` when the loaded shape differed from the
+    /// current image (a resize occurred). The bytes are decoded by the
+    /// single-owner codec [`crate::render::save::decode_mask_npy`].
+    pub fn load_mask_npy(&mut self, path: &str) -> io::Result<bool> {
+        self.load_npy(path)
+    }
 }
 
 /// Write a 2D `uint8` array `(height, width)` in NumPy `.npy` v1.0 format.
 ///
-/// The `.npy` format is self-describing: a `\x93NUMPY` magic, a `\x01\x00`
-/// version, a little-endian `u16` header length, then an ASCII header dict
-/// `{'descr': '|u1', 'fortran_order': False, 'shape': (h, w), }` padded with
-/// spaces so the total preamble length is a multiple of 64 and terminated by a
-/// newline, then the raw C-order bytes. See the NumPy format spec and silx
-/// `numpy.save`.
+/// Thin adapter over the single-owner codec [`crate::render::save::encode_mask_npy`]
+/// (which holds the byte-format details) for the streaming `impl Write` API.
 fn write_npy_u8(w: &mut impl Write, height: u32, width: u32, data: &[u8]) -> io::Result<()> {
-    const MAGIC: &[u8] = b"\x93NUMPY";
-    let header = format!(
-        "{{'descr': '|u1', 'fortran_order': False, 'shape': ({}, {}), }}",
-        height, width
-    );
-    // Preamble = magic(6) + version(2) + header-len(2) + header + '\n',
-    // padded with spaces so the whole preamble length is a multiple of 64.
-    let unpadded = MAGIC.len() + 2 + 2 + header.len() + 1;
-    let pad = (64 - (unpadded % 64)) % 64;
-    let header_len = header.len() + pad + 1; // padding + trailing newline
-    debug_assert!(header_len <= u16::MAX as usize);
-
-    w.write_all(MAGIC)?;
-    w.write_all(&[1u8, 0u8])?; // version 1.0
-    w.write_all(&(header_len as u16).to_le_bytes())?;
-    w.write_all(header.as_bytes())?;
-    for _ in 0..pad {
-        w.write_all(b" ")?;
-    }
-    w.write_all(b"\n")?;
-    w.write_all(data)?;
-    Ok(())
+    w.write_all(&crate::render::save::encode_mask_npy(height, width, data))
 }
 
 /// Read a 2D `uint8` array from NumPy `.npy` format, returning
 /// `(height, width, data)` in C (row-major) order.
 ///
-/// Accepts only `descr` of `|u1` / `<u1` / `>u1` / `u1` (uint8) with
-/// `fortran_order: False` and a 2D shape, matching what silx's mask save
-/// produces. Any other dtype, Fortran order, dimensionality, or a truncated
-/// body is an [`io::ErrorKind::InvalidData`] error.
+/// Thin adapter over the single-owner codec
+/// [`crate::render::save::decode_mask_npy`] for the streaming `impl Read` API:
+/// the bytes are slurped into memory (mask files are small) and decoded there.
 fn read_npy_u8(mut r: impl Read) -> io::Result<(u32, u32, Vec<u8>)> {
-    let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_string());
-
-    let mut magic = [0u8; 6];
-    r.read_exact(&mut magic)?;
-    if &magic != b"\x93NUMPY" {
-        return Err(invalid("not a .npy file (bad magic)"));
-    }
-
-    let mut version = [0u8; 2];
-    r.read_exact(&mut version)?;
-    // Header length is u16 (v1.0) or u32 (v2.0+); support both.
-    let header_len = if version[0] >= 2 {
-        let mut len = [0u8; 4];
-        r.read_exact(&mut len)?;
-        u32::from_le_bytes(len) as usize
-    } else {
-        let mut len = [0u8; 2];
-        r.read_exact(&mut len)?;
-        u16::from_le_bytes(len) as usize
-    };
-
-    let mut header_bytes = vec![0u8; header_len];
-    r.read_exact(&mut header_bytes)?;
-    let header =
-        std::str::from_utf8(&header_bytes).map_err(|_| invalid("npy header is not UTF-8"))?;
-
-    let descr =
-        parse_header_field(header, "descr").ok_or_else(|| invalid("npy header missing 'descr'"))?;
-    // uint8: '|u1' is canonical; tolerate explicit endianness markers.
-    if !matches!(descr.as_str(), "|u1" | "<u1" | ">u1" | "u1") {
-        return Err(invalid("npy mask must be uint8 ('|u1')"));
-    }
-
-    let fortran = parse_header_field(header, "fortran_order")
-        .ok_or_else(|| invalid("npy header missing 'fortran_order'"))?;
-    if fortran != "False" {
-        return Err(invalid("npy mask must be C-order (fortran_order: False)"));
-    }
-
-    let (height, width) = parse_shape_2d(header)?;
-
-    let count = (height as usize) * (width as usize);
-    let mut data = vec![0u8; count];
-    r.read_exact(&mut data)?;
-    Ok((height, width, data))
-}
-
-/// Extract the value of a `key` from a NumPy `.npy` header dict literal.
-///
-/// Returns the value with surrounding quotes stripped (so `'|u1'` becomes
-/// `|u1` and the bare literal `False` becomes `False`). Returns `None` if the
-/// key is absent.
-fn parse_header_field(header: &str, key: &str) -> Option<String> {
-    // Match `'key':` then take up to the next ',' or '}'.
-    let needle = format!("'{key}':");
-    let start = header.find(&needle)? + needle.len();
-    let rest = &header[start..];
-    let end = rest.find([',', '}'])?;
-    let value = rest[..end].trim();
-    Some(value.trim_matches(['\'', '"']).to_string())
-}
-
-/// Parse the `shape` tuple of a 2D NumPy `.npy` header into `(height, width)`.
-///
-/// Rejects shapes that are not exactly 2D, matching silx's mask load which
-/// only handles 2D image masks (`setSelectionMask` returns `None` otherwise).
-fn parse_shape_2d(header: &str) -> io::Result<(u32, u32)> {
-    let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_string());
-    let start = header
-        .find("'shape':")
-        .ok_or_else(|| invalid("npy header missing 'shape'"))?
-        + "'shape':".len();
-    let rest = &header[start..];
-    let open = rest.find('(').ok_or_else(|| invalid("malformed shape"))?;
-    let close = rest.find(')').ok_or_else(|| invalid("malformed shape"))?;
-    let dims: Vec<u32> = rest[open + 1..close]
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.parse::<u32>())
-        .collect::<Result<_, _>>()
-        .map_err(|_| invalid("non-integer shape dimension"))?;
-    if dims.len() != 2 {
-        return Err(invalid("npy mask must be 2D"));
-    }
-    Ok((dims[0], dims[1]))
+    let mut bytes = Vec::new();
+    r.read_to_end(&mut bytes)?;
+    crate::render::save::decode_mask_npy(&bytes)
 }
 
 /// Return a boolean fill mask (row-major, `height * width`) that is `true`
@@ -1547,6 +1460,35 @@ mod tests {
         dst.read_npy(buf.as_slice()).unwrap();
         assert_eq!(dst.mask, vec![1, 1]);
         assert!(dst.can_undo(), "load must commit to history");
+    }
+
+    #[test]
+    fn save_mask_npy_then_load_mask_npy_round_trips_via_path_string() {
+        // The in-app path-string API round-trips a small mask through a real
+        // file: save_mask_npy writes the .npy, load_mask_npy reads it back into
+        // a fresh same-shape widget bit-identically (no resize).
+        let mut src = MaskToolsWidget::new(3, 2); // width 3, height 2
+        src.mask = vec![0, 1, 2, 200, 254, 255];
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "egui_silx_mask_roundtrip_{}.npy",
+            std::process::id()
+        ));
+        let path_str = path.to_str().expect("utf-8 temp path").to_string();
+
+        src.save_mask_npy(&path_str).expect("save");
+        let mut dst = MaskToolsWidget::new(3, 2);
+        let resized = dst.load_mask_npy(&path_str).expect("load");
+        assert!(!resized, "same shape must not report a resize");
+        assert_eq!(dst.mask, vec![0, 1, 2, 200, 254, 255]);
+
+        // The on-disk bytes are exactly what the single-owner encoder produces.
+        let on_disk = std::fs::read(&path_str).expect("read back file");
+        let expected = crate::render::save::encode_mask_npy(2, 3, &src.mask);
+        assert_eq!(on_disk, expected);
+
+        let _ = std::fs::remove_file(&path_str);
     }
 
     #[test]
