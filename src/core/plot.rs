@@ -203,7 +203,18 @@ pub struct Plot {
     /// Maximum number of major ticks on the left Y axis.  `None` uses the
     /// default (6).
     pub y_max_ticks: Option<usize>,
+    /// Limits-history stack mirroring silx `LimitsHistory`. Each entry is a
+    /// full view snapshot `(x_min, x_max, y_min, y_max, y2)`. The widget pushes
+    /// before a zoom/box-zoom/pan; [`Self::zoom_back`] restores the most recent
+    /// entry. Like silx, the stack is unbounded (silx `LimitsHistory` is a plain
+    /// list with no depth cap).
+    limits_history: Vec<LimitsHistoryEntry>,
 }
+
+/// One snapshot in [`Plot::limits_history`]: the left-axes limits plus the
+/// optional right (y2) axis range, mirroring silx `LimitsHistory`'s
+/// `(xmin, xmax, ymin, ymax, y2min, y2max)` tuple.
+type LimitsHistoryEntry = ((f64, f64, f64, f64), Option<(f64, f64)>);
 
 impl Plot {
     /// Create a plot with the given id, a default dark background, unit limits,
@@ -238,7 +249,40 @@ impl Plot {
             y_constraints: AxisConstraints::default(),
             x_max_ticks: None,
             y_max_ticks: None,
+            limits_history: Vec::new(),
         }
+    }
+
+    /// Append the current view (left limits plus the y2 range) to the limits
+    /// history, mirroring silx `LimitsHistory.push`. The widget calls this
+    /// before applying a zoom/box-zoom/pan so [`Self::zoom_back`] can restore it.
+    pub fn push_limits(&mut self) {
+        self.limits_history.push((self.limits, self.y2));
+    }
+
+    /// Restore the most recently pushed view, mirroring silx
+    /// `LimitsHistory.pop`. Returns `true` if a stored view was restored, or
+    /// `false` if the history was empty (silx falls back to `resetZoom`; here
+    /// the caller decides, and `false` signals that nothing was restored).
+    pub fn zoom_back(&mut self) -> bool {
+        if let Some((limits, y2)) = self.limits_history.pop() {
+            self.limits = limits;
+            self.y2 = y2;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear the stored limits history, mirroring silx `LimitsHistory.clear`
+    /// (called on reset / zoom-mode change).
+    pub fn clear_limits_history(&mut self) {
+        self.limits_history.clear();
+    }
+
+    /// Number of stored history entries, mirroring `len(LimitsHistory)`.
+    pub fn limits_history_len(&self) -> usize {
+        self.limits_history.len()
     }
 
     /// Build the data↔screen transform for the given data-area rect, honoring
@@ -359,6 +403,67 @@ mod tests {
     fn transform_y2_is_none_without_y2_axis() {
         let plot = Plot::new(0);
         assert!(plot.transform_y2(area()).is_none());
+    }
+
+    #[test]
+    fn limits_history_starts_empty() {
+        let plot = Plot::new(0);
+        assert_eq!(plot.limits_history_len(), 0);
+    }
+
+    #[test]
+    fn limits_history_push_then_zoom_back_restores_previous() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 1.0, 0.0, 1.0);
+        plot.y2 = Some((0.0, 2.0));
+        // Push the initial view, then change the view (as a zoom would).
+        plot.push_limits();
+        assert_eq!(plot.limits_history_len(), 1);
+        plot.limits = (0.25, 0.75, 0.25, 0.75);
+        plot.y2 = Some((0.5, 1.5));
+        // zoom_back restores the pushed view (limits AND y2) and pops the entry.
+        assert!(plot.zoom_back());
+        assert_eq!(plot.limits, (0.0, 1.0, 0.0, 1.0));
+        assert_eq!(plot.y2, Some((0.0, 2.0)));
+        assert_eq!(plot.limits_history_len(), 0);
+    }
+
+    #[test]
+    fn zoom_back_on_empty_history_returns_false_and_keeps_view() {
+        // Boundary: empty stack -> zoom_back is a no-op returning false (silx
+        // pop() returns False on empty history).
+        let mut plot = Plot::new(0);
+        plot.limits = (1.0, 2.0, 3.0, 4.0);
+        assert!(!plot.zoom_back());
+        assert_eq!(plot.limits, (1.0, 2.0, 3.0, 4.0));
+    }
+
+    #[test]
+    fn limits_history_is_lifo_and_unbounded() {
+        // silx LimitsHistory is a plain list (no depth cap); pushes stack LIFO.
+        let mut plot = Plot::new(0);
+        for i in 0..1000 {
+            plot.limits = (i as f64, i as f64 + 1.0, 0.0, 1.0);
+            plot.push_limits();
+        }
+        assert_eq!(plot.limits_history_len(), 1000);
+        // Pop order is last-in-first-out.
+        assert!(plot.zoom_back());
+        assert_eq!(plot.limits, (999.0, 1000.0, 0.0, 1.0));
+        assert!(plot.zoom_back());
+        assert_eq!(plot.limits, (998.0, 999.0, 0.0, 1.0));
+        assert_eq!(plot.limits_history_len(), 998);
+    }
+
+    #[test]
+    fn clear_limits_history_empties_the_stack() {
+        let mut plot = Plot::new(0);
+        plot.push_limits();
+        plot.push_limits();
+        assert_eq!(plot.limits_history_len(), 2);
+        plot.clear_limits_history();
+        assert_eq!(plot.limits_history_len(), 0);
+        assert!(!plot.zoom_back());
     }
 
     #[test]

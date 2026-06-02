@@ -83,6 +83,14 @@ impl PlotView {
         self.show_with_interaction(ui, plot, PlotInteractionMode::Zoom)
     }
 
+    /// Restore the previously stored view from the limits history, mirroring
+    /// silx `ZoomBackAction` (`getLimitsHistory().pop()`). Returns `true` if a
+    /// stored view was restored, `false` if the history was empty. The toolbar
+    /// zoom-back button (a later wave) calls through this.
+    pub fn zoom_back(&self, plot: &mut Plot) -> bool {
+        plot.zoom_back()
+    }
+
     /// Render the plot with an explicit primary-pointer interaction mode.
     pub fn show_with_interaction(
         self,
@@ -292,17 +300,26 @@ fn apply_interaction(
     // aspect-ratio expansion), so pan/zoom act on exactly what is on screen.
     let base = (view.x.min, view.x.max, view.y.min, view.y.max);
 
-    // Reset: double-click restores the home view.
+    // Reset: double-click restores the home view (silx `resetZoom`) and clears
+    // the limits history.
     if response.double_clicked()
         && let Some(home) = plot.home_limits
     {
         plot.limits = home;
+        plot.clear_limits_history();
     }
 
     // Pan: secondary-drag always pans; pan mode also binds primary-drag to pan.
     let primary_pan =
         mode == PlotInteractionMode::Pan && response.dragged_by(PointerButton::Primary);
     if response.dragged_by(PointerButton::Secondary) || primary_pan {
+        // Push the pre-pan view once, at the start of the pan gesture, so
+        // zoom-back can restore it (silx pushes on box-zoom; here the limits
+        // history also captures pan gestures — push on drag-start, not every
+        // frame).
+        if response.drag_started() {
+            plot.push_limits();
+        }
         let delta = ui.input(|i| i.pointer.delta());
         if delta != egui::Vec2::ZERO {
             let next = interaction::pan(base, area, delta, plot.x_scale, plot.y_scale);
@@ -319,6 +336,8 @@ fn apply_interaction(
     {
         let (cx, cy) = view.pixel_to_data(p);
         let factor = interaction::wheel_zoom_factor(scroll);
+        // Push the pre-zoom view so zoom-back can step out of the wheel zoom.
+        plot.push_limits();
         let next = interaction::zoom_about(base, factor, cx, cy, plot.x_scale, plot.y_scale);
         commit(plot, next);
     }
@@ -379,6 +398,9 @@ fn apply_interaction(
             if let (Some(start), Some(end)) = (start, response.interact_pointer_pos()) {
                 // Ignore accidental click-sized drags.
                 if (start - end).length() > 4.0 {
+                    // Push the pre-zoom view before applying the box zoom (silx
+                    // `Zoom._zoom` pushes to the limits history here).
+                    plot.push_limits();
                     let (ax, ay) = view.pixel_to_data(start);
                     let (bx, by) = view.pixel_to_data(end);
                     let next = interaction::box_zoom(ax, ay, bx, by);
