@@ -53,6 +53,15 @@ pub enum PlotInteractionMode {
     /// [`PlotView::show`] behavior.
     #[default]
     Zoom,
+    /// Pencil / mask-draw mode: the primary drag is reserved for painting the
+    /// mask, so it must not pan, draw a box zoom, or start an ROI/box-select
+    /// (silx `MaskToolsWidget` activating the plot's pencil draw interaction,
+    /// `MaskToolsWidget.py:849-876`). Secondary-drag panning and wheel zoom are
+    /// left intact, matching silx's draw interaction. [`apply_interaction`]
+    /// suppresses pan (`== Pan`) and box-zoom (`== Zoom`) by mode comparison and
+    /// suppresses the ROI-edge grab explicitly, so no primary-drag plot gesture
+    /// fires in this mode.
+    MaskDraw,
 }
 
 /// What [`PlotView::show`] returns: the egui [`Response`](egui::Response) plus
@@ -459,6 +468,29 @@ fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
     ]
 }
 
+/// Whether `mode` may grab an ROI edge on a primary drag (and show the matching
+/// resize cursor on hover). Every mode except [`PlotInteractionMode::Pan`] and
+/// [`PlotInteractionMode::MaskDraw`] does: Pan binds the primary drag to panning,
+/// and MaskDraw reserves it for mask painting, so neither preempts the gesture by
+/// grabbing an ROI edge. Pure, so the gating is unit-testable without a `Ui`.
+fn mode_grabs_roi_edge(mode: PlotInteractionMode) -> bool {
+    mode != PlotInteractionMode::Pan && mode != PlotInteractionMode::MaskDraw
+}
+
+/// The set of primary-drag plot gestures [`apply_interaction`] runs in `mode`,
+/// surfaced for tests: `(pans, box_zooms, grabs_roi_edge)`. In
+/// [`PlotInteractionMode::MaskDraw`] all three are `false` — the primary drag is
+/// fully reserved for mask painting (silx's pencil draw interaction). Pure, so
+/// the per-mode gating is verifiable without a `Ui`/GPU.
+#[cfg(test)]
+fn primary_drag_gestures(mode: PlotInteractionMode) -> (bool, bool, bool) {
+    (
+        mode == PlotInteractionMode::Pan,  // primary-drag pan
+        mode == PlotInteractionMode::Zoom, // primary-drag box zoom
+        mode_grabs_roi_edge(mode),         // primary-drag ROI-edge grab
+    )
+}
+
 /// Apply the active pointer interaction to `plot.limits` (and, for an ROI edge
 /// drag, to `plot.rois`). `view` is the transform matching what is currently on
 /// screen, used to convert pointer pixels to data coordinates. Returns the
@@ -535,11 +567,12 @@ fn apply_interaction(
 
     // Left-drag start: select/zoom modes prefer grabbing an ROI edge under the
     // cursor. Zoom mode falls back to a box-zoom selection; select mode does
-    // not, so item/handle interactions are not preempted by zoom.
+    // not, so item/handle interactions are not preempted by zoom. MaskDraw
+    // reserves the primary drag for mask painting, so it grabs no ROI edge.
     let id = response.id;
     let roi_id = id.with("roi-drag");
     let mut roi_changed = None;
-    if mode != PlotInteractionMode::Pan
+    if mode_grabs_roi_edge(mode)
         && response.drag_started_by(PointerButton::Primary)
         && let Some(p) = response.interact_pointer_pos()
     {
@@ -604,8 +637,10 @@ fn apply_interaction(
     // Cursor shape: while hovering an ROI edge (and not box-zoom dragging), show
     // the matching resize/move cursor so a grabbable handle is discoverable,
     // mirroring silx `_setCursorForMarker` (`PlotInteraction.py:1165-1184`). Skip
-    // in pan mode (primary drag pans there) and while an edge drag is active.
-    if mode != PlotInteractionMode::Pan
+    // in pan mode (primary drag pans there), in MaskDraw mode (primary drag
+    // paints the mask, so the edge is not grabbable), and while an edge drag is
+    // active.
+    if mode_grabs_roi_edge(mode)
         && selection.is_none()
         && !response.dragged_by(PointerButton::Primary)
         && let Some(p) = response.hover_pos()
@@ -1090,5 +1125,43 @@ mod tests {
         let (resp, _area) = run_frame(&ctx, &mut plot, screen_input(egui::vec2(200.0, 200.0)));
         assert!(resp.draw_event.is_none());
         assert_eq!(resp.interaction_mode, PlotInteractionMode::Zoom);
+    }
+
+    #[test]
+    fn mask_draw_reserves_primary_drag_for_painting() {
+        // MaskDraw is its own pencil-draw mode, distinct from Pan and Zoom, and
+        // it reserves the primary drag entirely: apply_interaction must run no
+        // primary-drag pan, no box zoom, and no ROI-edge grab in MaskDraw (silx
+        // pencil draw interaction owns the drag). Assert the exact gating
+        // booleans apply_interaction computes for each mode at the boundary.
+        assert_ne!(PlotInteractionMode::MaskDraw, PlotInteractionMode::Pan);
+        assert_ne!(PlotInteractionMode::MaskDraw, PlotInteractionMode::Zoom);
+        assert_ne!(PlotInteractionMode::MaskDraw, PlotInteractionMode::Select);
+
+        // (pans, box_zooms, grabs_roi_edge) per mode.
+        assert_eq!(
+            primary_drag_gestures(PlotInteractionMode::MaskDraw),
+            (false, false, false),
+            "MaskDraw must fire no primary-drag plot gesture",
+        );
+        assert_eq!(
+            primary_drag_gestures(PlotInteractionMode::Pan),
+            (true, false, false),
+        );
+        assert_eq!(
+            primary_drag_gestures(PlotInteractionMode::Zoom),
+            (false, true, true),
+        );
+        assert_eq!(
+            primary_drag_gestures(PlotInteractionMode::Select),
+            (false, false, true),
+        );
+
+        // The ROI-edge-grab gate (also used for the hover resize cursor) skips
+        // Pan and MaskDraw, and only those.
+        assert!(!mode_grabs_roi_edge(PlotInteractionMode::MaskDraw));
+        assert!(!mode_grabs_roi_edge(PlotInteractionMode::Pan));
+        assert!(mode_grabs_roi_edge(PlotInteractionMode::Zoom));
+        assert!(mode_grabs_roi_edge(PlotInteractionMode::Select));
     }
 }
