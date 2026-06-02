@@ -9,6 +9,7 @@ pub mod items;
 pub mod marker;
 pub mod plot;
 pub mod roi;
+pub mod scatter_viz;
 pub mod shape;
 pub mod stats;
 pub mod transform;

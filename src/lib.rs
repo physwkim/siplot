@@ -43,6 +43,11 @@ pub use crate::core::plot::{
     resolved_axis_label,
 };
 pub use crate::core::roi::{Roi, RoiEdge};
+pub use crate::core::scatter_viz::{
+    BinnedStatistic, BinnedStatisticFunction, GridImage, GridMajorOrder, PointsViz, RegularGrid,
+    Triangulation, binned_statistic, delaunay, detect_regular_grid, interpolate,
+    irregular_grid_image, solid_triangles,
+};
 pub use crate::core::shape::{Line, Shape, ShapeKind};
 pub use crate::core::stats::{ComCoord, StatScope, Stats};
 pub use crate::core::transform::{Axis, Margins, Scale, Transform, YAxis};

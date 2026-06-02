@@ -1,0 +1,1207 @@
+//! Scatter visualization algorithms (silx `Scatter` / `ScatterVisualizationMixIn`).
+//!
+//! Pure, GPU-free transforms that turn unstructured `(x, y, value)` points into
+//! renderable structures that the existing render paths can later consume:
+//!
+//! - [`delaunay`] — Bowyer-Watson incremental Delaunay triangulation of 2D
+//!   points, the basis for silx's `SOLID` and `IRREGULAR_GRID` visualizations
+//!   (silx uses matplotlib's `Triangulation`; see
+//!   `gui/plot/items/scatter.py::_getTriangulationFuture`).
+//! - [`solid_triangles`] — `Visualization.SOLID`: per-vertex-colored
+//!   [`Triangles`] (silx `scatter.py:610-625`, `backend.addTriangles`).
+//! - [`irregular_grid_image`] — `Visualization.IRREGULAR_GRID`: the
+//!   triangulation rasterized to a value image by barycentric linear
+//!   interpolation (silx `LinearTriInterpolator`).
+//! - [`detect_regular_grid`] — `Visualization.REGULAR_GRID` auto-detection
+//!   (`scatter.py::_guess_grid` / `_guess_z_grid_shape`, `core.py:1303-1308`).
+//! - [`binned_statistic`] — `Visualization.BINNED_STATISTIC`: 2D binning with
+//!   per-bin mean/count/sum (`core.py:1325-1329`, `scatter.py::__getHistogramInfo`).
+//! - [`PointsViz`] — `Visualization.POINTS` data carrier with the optional
+//!   per-point alpha array (silx `scatter.py` per-point alpha).
+//!
+//! Faithful to the silx semantics; GPU wiring (feeding these into
+//! `backend_wgpu.rs` / `high_level.rs`) and scatter picking per mode are
+//! deferred to a later wave.
+
+use egui::Color32;
+
+use crate::core::triangles::Triangles;
+
+/// Major order of points in a regular grid (silx
+/// `VisualizationParameter.GRID_MAJOR_ORDER`, `core.py:1303-1308`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridMajorOrder {
+    /// `"row"`: X (column) is the fast dimension — points fill the first row
+    /// left-to-right, then the next row, etc.
+    Row,
+    /// `"column"`: Y (row) is the fast dimension — points fill the first
+    /// column, then the next column, etc.
+    Column,
+}
+
+/// The reduction function applied to each bin in a binned statistic (silx
+/// `VisualizationParameter.BINNED_STATISTIC_FUNCTION`, `core.py:1325-1329`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinnedStatisticFunction {
+    /// `"mean"` (default): per-bin `sum / count`, `NaN` for empty bins.
+    Mean,
+    /// `"count"`: number of points in the bin.
+    Count,
+    /// `"sum"`: sum of values in the bin.
+    Sum,
+}
+
+// ===========================================================================
+// 1. Delaunay triangulation (Bowyer-Watson)
+// ===========================================================================
+
+/// A planar Delaunay triangulation: `triangles[i]` holds three indices into the
+/// input point array (silx's matplotlib `Triangulation.triangles`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Triangulation {
+    /// Triangle vertex-index triples into the input `(x, y)` arrays.
+    pub triangles: Vec<[usize; 3]>,
+}
+
+impl Triangulation {
+    /// Number of triangles.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.triangles.len()
+    }
+
+    /// Whether the triangulation is empty (degenerate / collinear input).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.triangles.is_empty()
+    }
+}
+
+/// Twice the signed area of triangle `(a, b, c)`; positive when the vertices are
+/// counter-clockwise. Used for orientation and degeneracy tests.
+fn orient2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+/// Returns `true` when point `p` lies strictly inside the circumcircle of the
+/// triangle `(a, b, c)`, which is assumed counter-clockwise. This is the
+/// classic 3x3 in-circle determinant; with CCW orientation a positive
+/// determinant means `p` is inside.
+fn in_circumcircle(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> bool {
+    let ax = a[0] - p[0];
+    let ay = a[1] - p[1];
+    let bx = b[0] - p[0];
+    let by = b[1] - p[1];
+    let cx = c[0] - p[0];
+    let cy = c[1] - p[1];
+
+    let a2 = ax * ax + ay * ay;
+    let b2 = bx * bx + by * by;
+    let c2 = cx * cx + cy * cy;
+
+    let det = ax * (by * c2 - b2 * cy) - ay * (bx * c2 - b2 * cx) + a2 * (bx * cy - by * cx);
+    det > 0.0
+}
+
+/// Bowyer-Watson incremental Delaunay triangulation of 2D points.
+///
+/// Points are inserted one at a time into a super-triangle large enough to
+/// contain all of them; triangles whose circumcircle contains the new point are
+/// removed and the resulting cavity is re-triangulated. Triangles touching the
+/// super-triangle vertices are discarded at the end, leaving only triangles
+/// over the input points.
+///
+/// Returns an empty triangulation when fewer than 3 finite points are given or
+/// when all points are collinear/coincident (no triangle has nonzero area) —
+/// silx surfaces this as "Cannot get a triangulation" and skips the renderer.
+///
+/// `x` and `y` must have the same length. Non-finite points are ignored, as
+/// silx masks them out before triangulating
+/// (`scatter.py::_getTriangulationFuture`).
+#[must_use]
+pub fn delaunay(x: &[f64], y: &[f64]) -> Triangulation {
+    assert_eq!(x.len(), y.len(), "x and y must have the same length");
+
+    // Collect finite points, remembering their original indices so the output
+    // refers to the caller's arrays.
+    let pts: Vec<(usize, [f64; 2])> = x
+        .iter()
+        .zip(y)
+        .enumerate()
+        .filter(|&(_, (&xi, &yi))| xi.is_finite() && yi.is_finite())
+        .map(|(i, (&xi, &yi))| (i, [xi, yi]))
+        .collect();
+
+    if pts.len() < 3 {
+        return Triangulation { triangles: vec![] };
+    }
+
+    // Reject fully-degenerate input (all collinear/coincident): no triangle can
+    // have nonzero area, so a Delaunay triangulation does not exist.
+    let p0 = pts[0].1;
+    let has_area = pts.iter().enumerate().any(|(i, &(_, pi))| {
+        pts[i + 1..]
+            .iter()
+            .any(|&(_, pj)| orient2d(p0, pi, pj).abs() > 0.0)
+    });
+    if !has_area {
+        return Triangulation { triangles: vec![] };
+    }
+
+    // Build a super-triangle that strictly contains every point.
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for &(_, [px, py]) in &pts {
+        min_x = min_x.min(px);
+        min_y = min_y.min(py);
+        max_x = max_x.max(px);
+        max_y = max_y.max(py);
+    }
+    let dx = max_x - min_x;
+    let dy = max_y - min_y;
+    let d = dx.max(dy).max(f64::MIN_POSITIVE);
+    let mid_x = 0.5 * (min_x + max_x);
+    let mid_y = 0.5 * (min_y + max_y);
+    // Three vertices well outside the bounding box. The factor 20 gives ample
+    // margin so the super-triangle contains the whole point set.
+    let st0 = [mid_x - 20.0 * d, mid_y - d];
+    let st1 = [mid_x, mid_y + 20.0 * d];
+    let st2 = [mid_x + 20.0 * d, mid_y - d];
+
+    // Working vertex list: input points first, then the three super vertices.
+    let n = pts.len();
+    let mut verts: Vec<[f64; 2]> = pts.iter().map(|&(_, p)| p).collect();
+    verts.push(st0);
+    verts.push(st1);
+    verts.push(st2);
+    let s0 = n;
+    let s1 = n + 1;
+    let s2 = n + 2;
+
+    // Each triangle stored CCW.
+    let mut tris: Vec<[usize; 3]> = vec![ccw(&verts, [s0, s1, s2])];
+
+    for ip in 0..n {
+        let p = verts[ip];
+
+        // Find triangles whose circumcircle contains p ("bad" triangles).
+        let mut bad: Vec<usize> = Vec::new();
+        for (ti, t) in tris.iter().enumerate() {
+            if in_circumcircle(verts[t[0]], verts[t[1]], verts[t[2]], p) {
+                bad.push(ti);
+            }
+        }
+
+        // Collect the boundary of the cavity: edges that belong to exactly one
+        // bad triangle.
+        let mut boundary: Vec<[usize; 2]> = Vec::new();
+        for &bi in &bad {
+            let t = tris[bi];
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                // Is edge (a,b) shared with another bad triangle?
+                let shared = bad
+                    .iter()
+                    .any(|&oi| oi != bi && triangle_has_edge(&tris[oi], a, b));
+                if !shared {
+                    boundary.push([a, b]);
+                }
+            }
+        }
+
+        // Remove bad triangles (descending index order keeps indices valid).
+        bad.sort_unstable();
+        for &bi in bad.iter().rev() {
+            tris.swap_remove(bi);
+        }
+
+        // Re-triangulate the cavity by connecting p to each boundary edge.
+        for [a, b] in boundary {
+            tris.push(ccw(&verts, [a, b, ip]));
+        }
+    }
+
+    // Drop triangles that touch a super-triangle vertex and remap to original
+    // input indices.
+    let original: Vec<usize> = pts.iter().map(|&(i, _)| i).collect();
+    let triangles: Vec<[usize; 3]> = tris
+        .into_iter()
+        .filter(|t| t.iter().all(|&v| v < n))
+        .map(|t| [original[t[0]], original[t[1]], original[t[2]]])
+        .collect();
+
+    Triangulation { triangles }
+}
+
+/// Order a triangle's three vertices counter-clockwise (positive signed area).
+fn ccw(verts: &[[f64; 2]], t: [usize; 3]) -> [usize; 3] {
+    if orient2d(verts[t[0]], verts[t[1]], verts[t[2]]) < 0.0 {
+        [t[0], t[2], t[1]]
+    } else {
+        t
+    }
+}
+
+/// Whether triangle `t` has the undirected edge `(a, b)`.
+fn triangle_has_edge(t: &[usize; 3], a: usize, b: usize) -> bool {
+    let edges = [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])];
+    edges
+        .iter()
+        .any(|&(u, v)| (u == a && v == b) || (u == b && v == a))
+}
+
+// ===========================================================================
+// 2. SOLID / IRREGULAR_GRID
+// ===========================================================================
+
+/// Build the per-vertex-colored [`Triangles`] for `Visualization.SOLID`.
+///
+/// Each input point keeps its color (the caller maps `value` through a colormap
+/// before calling, as silx does in `__applyColormapToData`), and the Delaunay
+/// triangulation over the points provides the mesh
+/// (silx `scatter.py:610-625`, `backend.addTriangles`).
+///
+/// `x`, `y`, and `colors` must have equal length. Returns `None` when the
+/// points cannot be triangulated (fewer than 3 finite points or collinear),
+/// matching silx's "Cannot display as solid surface" early-out.
+#[must_use]
+pub fn solid_triangles(x: &[f64], y: &[f64], colors: &[Color32]) -> Option<Triangles> {
+    assert_eq!(x.len(), y.len(), "x and y must have the same length");
+    assert_eq!(
+        colors.len(),
+        x.len(),
+        "colors must have one entry per vertex"
+    );
+
+    let tri = delaunay(x, y);
+    if tri.is_empty() {
+        return None;
+    }
+
+    let indices: Vec<[u32; 3]> = tri
+        .triangles
+        .iter()
+        .map(|t| {
+            [
+                u32::try_from(t[0]).expect("vertex index fits in u32"),
+                u32::try_from(t[1]).expect("vertex index fits in u32"),
+                u32::try_from(t[2]).expect("vertex index fits in u32"),
+            ]
+        })
+        .collect();
+
+    Some(Triangles::new(
+        x.to_vec(),
+        y.to_vec(),
+        indices,
+        colors.to_vec(),
+    ))
+}
+
+/// Barycentric coordinates of point `p` within triangle `(a, b, c)`.
+///
+/// Returns `None` when `p` lies outside the triangle (any coordinate negative
+/// beyond `eps`) or the triangle is degenerate (zero area). Coordinates sum to
+/// `1` and weight `a`, `b`, `c` respectively.
+fn barycentric(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> Option<[f64; 3]> {
+    let det = orient2d(a, b, c);
+    if det == 0.0 {
+        return None;
+    }
+    // w_a uses (b, c), w_b uses (c, a), w_c uses (a, b); each is the sub-triangle
+    // signed area over the total, all divided by the same det.
+    let wa = orient2d(b, c, p) / det;
+    let wb = orient2d(c, a, p) / det;
+    let wc = orient2d(a, b, p) / det;
+    // Allow a tiny tolerance on edges so vertices/edges sample as inside.
+    let eps = -1e-9;
+    if wa >= eps && wb >= eps && wc >= eps {
+        Some([wa, wb, wc])
+    } else {
+        None
+    }
+}
+
+/// Linearly interpolate the value at `p` over a triangulation by barycentric
+/// weighting of the three triangle-vertex values (silx `LinearTriInterpolator`).
+///
+/// Returns `None` when `p` lies outside every triangle of the triangulation —
+/// matching `LinearTriInterpolator`, which yields masked (no) values outside the
+/// convex hull.
+///
+/// `values[i]` is the value at point `(x[i], y[i])`. The three arrays must have
+/// equal length and match the indices stored in `tri`.
+#[must_use]
+pub fn interpolate(
+    tri: &Triangulation,
+    x: &[f64],
+    y: &[f64],
+    values: &[f64],
+    px: f64,
+    py: f64,
+) -> Option<f64> {
+    let p = [px, py];
+    for t in &tri.triangles {
+        let a = [x[t[0]], y[t[0]]];
+        let b = [x[t[1]], y[t[1]]];
+        let c = [x[t[2]], y[t[2]]];
+        if let Some([wa, wb, wc]) = barycentric(a, b, c, p) {
+            return Some(wa * values[t[0]] + wb * values[t[1]] + wc * values[t[2]]);
+        }
+    }
+    None
+}
+
+/// An image grid of interpolated/binned values with an affine data placement
+/// (silx `addImage(data, origin, scale)`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridImage {
+    /// Row-major value grid, `shape.0` rows by `shape.1` columns. Cells with no
+    /// value hold `NaN`.
+    pub data: Vec<f64>,
+    /// `(rows, cols)` of `data` (silx `(height, width)`).
+    pub shape: (usize, usize),
+    /// Data coordinate of the lower-left pixel center origin `(x, y)`
+    /// (silx `origin`).
+    pub origin: (f64, f64),
+    /// Data-space size of one pixel `(sx, sy)` (silx `scale`).
+    pub scale: (f64, f64),
+}
+
+impl GridImage {
+    /// Value at row `r`, column `c` (row-major), or `None` if out of bounds.
+    #[must_use]
+    pub fn get(&self, r: usize, c: usize) -> Option<f64> {
+        if r < self.shape.0 && c < self.shape.1 {
+            Some(self.data[r * self.shape.1 + c])
+        } else {
+            None
+        }
+    }
+}
+
+/// Rasterize a triangulation to a `rows x cols` value image by barycentric
+/// linear interpolation, for `Visualization.IRREGULAR_GRID`.
+///
+/// The image covers the axis-aligned bounding box of the finite input points.
+/// Pixel `(r, c)` samples the value at the pixel center; pixels whose center
+/// falls outside the triangulated convex hull are left `NaN` (no value), like
+/// `LinearTriInterpolator`'s masked output.
+///
+/// Returns `None` when the points cannot be triangulated or `rows`/`cols` is 0.
+#[must_use]
+pub fn irregular_grid_image(
+    x: &[f64],
+    y: &[f64],
+    values: &[f64],
+    rows: usize,
+    cols: usize,
+) -> Option<GridImage> {
+    assert_eq!(x.len(), y.len(), "x and y must have the same length");
+    assert_eq!(
+        values.len(),
+        x.len(),
+        "values must have one entry per point"
+    );
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let tri = delaunay(x, y);
+    if tri.is_empty() {
+        return None;
+    }
+
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (&xi, &yi) in x.iter().zip(y) {
+        if xi.is_finite() && yi.is_finite() {
+            min_x = min_x.min(xi);
+            min_y = min_y.min(yi);
+            max_x = max_x.max(xi);
+            max_y = max_y.max(yi);
+        }
+    }
+
+    // Pixel size: span divided by the number of pixels.
+    let sx = if cols > 0 {
+        (max_x - min_x) / cols as f64
+    } else {
+        1.0
+    };
+    let sy = if rows > 0 {
+        (max_y - min_y) / rows as f64
+    } else {
+        1.0
+    };
+
+    let mut data = vec![f64::NAN; rows * cols];
+    for r in 0..rows {
+        // Pixel-center Y, row 0 at the bottom (data min).
+        let py = min_y + (r as f64 + 0.5) * sy;
+        for c in 0..cols {
+            let px = min_x + (c as f64 + 0.5) * sx;
+            if let Some(v) = interpolate(&tri, x, y, values, px, py) {
+                data[r * cols + c] = v;
+            }
+        }
+    }
+
+    Some(GridImage {
+        data,
+        shape: (rows, cols),
+        origin: (min_x, min_y),
+        scale: (sx, sy),
+    })
+}
+
+// ===========================================================================
+// 3. REGULAR_GRID detection
+// ===========================================================================
+
+/// The detected shape and ordering of a regular grid (silx `_guess_grid`
+/// result + `_RegularGridInfo.order`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegularGrid {
+    /// `(height, width)` = `(rows, cols)` of the grid (silx shape convention).
+    pub shape: (usize, usize),
+    /// Major order of the points (silx `GRID_MAJOR_ORDER`).
+    pub order: GridMajorOrder,
+}
+
+/// Length of one line of a Z-like (snake-free, same-direction) regular grid
+/// from a coordinate array, faithful to silx `_get_z_line_length`.
+///
+/// Looks at the sign of consecutive differences: a regular grid scanned the
+/// same way each line shows the fast coordinate stepping in one sign, then a
+/// single reversal (the opposite sign) at each line boundary. The line length
+/// is the constant spacing between those reversals. Returns 0 when no constant
+/// line length is found.
+fn get_z_line_length(array: &[f64]) -> usize {
+    if array.len() < 2 {
+        return 0;
+    }
+    let sign: Vec<i8> = array
+        .windows(2)
+        .map(|w| {
+            let d = w[1] - w[0];
+            if d > 0.0 {
+                1
+            } else if d < 0.0 {
+                -1
+            } else {
+                0
+            }
+        })
+        .collect();
+    // silx: if no diffs or the first diff is flat, give up.
+    if sign.is_empty() || sign[0] == 0 {
+        return 0;
+    }
+    let first = sign[0];
+    // Indices (in the original array) where the coordinate reverses direction:
+    // these mark the beginning of a new line. silx uses `where(sign == -sign[0]) + 1`.
+    let beginnings: Vec<usize> = sign
+        .iter()
+        .enumerate()
+        .filter(|&(_, &s)| s == -first)
+        .map(|(i, _)| i + 1)
+        .collect();
+    if beginnings.is_empty() {
+        return 0;
+    }
+    let length = beginnings[0];
+    // All inter-beginning gaps must equal the first line length.
+    let uniform = beginnings.windows(2).all(|w| w[1] - w[0] == length);
+    if uniform { length } else { 0 }
+}
+
+/// Guess a Z-like regular grid shape from `(x, y)` coordinates, faithful to silx
+/// `_guess_z_grid_shape`.
+///
+/// Tries X as the fast (row-major) dimension first; if X yields a line length,
+/// the grid is row-major with that width. Otherwise tries Y as the fast
+/// (column-major) dimension. Returns `None` when neither yields a line length.
+fn guess_z_grid_shape(x: &[f64], y: &[f64]) -> Option<RegularGrid> {
+    let n = x.len();
+    let width = get_z_line_length(x);
+    if width != 0 {
+        let height = n.div_ceil(width);
+        return Some(RegularGrid {
+            shape: (height, width),
+            order: GridMajorOrder::Row,
+        });
+    }
+    let height = get_z_line_length(y);
+    if height != 0 {
+        let width = n.div_ceil(height);
+        return Some(RegularGrid {
+            shape: (height, width),
+            order: GridMajorOrder::Column,
+        });
+    }
+    None
+}
+
+/// Whether `array` is monotonic: `1` increasing, `-1` decreasing, `0` neither
+/// (silx `is_monotonic`). Equal consecutive elements count as both directions.
+fn is_monotonic(array: &[f64]) -> i8 {
+    if array.len() < 2 {
+        // numpy.diff of length<2 is empty; all() of empty is True for both.
+        return 1;
+    }
+    let diffs: Vec<f64> = array.windows(2).map(|w| w[1] - w[0]).collect();
+    if diffs.iter().all(|&d| d >= 0.0) {
+        1
+    } else if diffs.iter().all(|&d| d <= 0.0) {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Auto-detect that the points lie on a regular grid, faithful to silx
+/// `_guess_grid` (`scatter.py:148-188`).
+///
+/// First tries a Z-like 2D grid via [`guess_z_grid_shape`]. Failing that, falls
+/// back to a single line when either coordinate is monotonic (the line runs
+/// along whichever axis varies more), reported as row-major. Returns `None`
+/// when the points form neither a grid nor a guessable line.
+///
+/// `x` and `y` must have equal length.
+#[must_use]
+pub fn detect_regular_grid(x: &[f64], y: &[f64]) -> Option<RegularGrid> {
+    assert_eq!(x.len(), y.len(), "x and y must have the same length");
+    if x.is_empty() {
+        return None;
+    }
+
+    if let Some(grid) = guess_z_grid_shape(x, y) {
+        return Some(grid);
+    }
+
+    // Fallback: a single line if either coordinate is monotonic.
+    let y_monotonic = is_monotonic(y) != 0;
+    let x_monotonic = is_monotonic(x) != 0;
+    if x_monotonic || y_monotonic {
+        let (x_min, x_max) = min_max(x);
+        let (y_min, y_max) = min_max(y);
+        let shape = if !y_monotonic || (x_max - x_min) >= (y_max - y_min) {
+            // line along X
+            (1, x.len())
+        } else {
+            // line along Y
+            (y.len(), 1)
+        };
+        Some(RegularGrid {
+            shape,
+            order: GridMajorOrder::Row, // order does not matter for a single line
+        })
+    } else {
+        None
+    }
+}
+
+/// Min and max of `array`, ignoring non-finite values (silx `min_max`).
+/// Returns `(NaN, NaN)` for an all-non-finite or empty array.
+fn min_max(array: &[f64]) -> (f64, f64) {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for &v in array {
+        if v.is_finite() {
+            min = min.min(v);
+            max = max.max(v);
+        }
+    }
+    if min > max {
+        (f64::NAN, f64::NAN)
+    } else {
+        (min, max)
+    }
+}
+
+// ===========================================================================
+// 4. BINNED_STATISTIC
+// ===========================================================================
+
+/// Per-bin statistics over a 2D binning of scatter points (silx
+/// `_HistogramInfo` / `Histogramnd`, `core.py:1325-1329`).
+///
+/// All three grids are row-major, `shape.0` rows (Y) by `shape.1` columns (X),
+/// matching silx's `(height, width)` convention.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BinnedStatistic {
+    /// Per-bin mean `sum / count`; `NaN` where `count == 0` (silx
+    /// `numpy.errstate(divide="ignore")` then `sums / counts`).
+    pub mean: Vec<f64>,
+    /// Per-bin point count.
+    pub count: Vec<u64>,
+    /// Per-bin value sum; `0.0` for an empty bin.
+    pub sum: Vec<f64>,
+    /// `(rows, cols)` = `(height, width)` of the binning (silx shape).
+    pub shape: (usize, usize),
+    /// Data coordinate of the lower-left bin-edge origin `(x, y)`
+    /// (silx `origin = xEdges[0], yEdges[0]`).
+    pub origin: (f64, f64),
+    /// Data-space bin width `(sx, sy)` (silx `scale`).
+    pub scale: (f64, f64),
+}
+
+impl BinnedStatistic {
+    /// The reduction grid selected by `func`, as `f64` (count promoted),
+    /// row-major (silx `getattr(histoInfo, function)`).
+    #[must_use]
+    pub fn select(&self, func: BinnedStatisticFunction) -> Vec<f64> {
+        match func {
+            BinnedStatisticFunction::Mean => self.mean.clone(),
+            BinnedStatisticFunction::Count => self.count.iter().map(|&c| c as f64).collect(),
+            BinnedStatisticFunction::Sum => self.sum.clone(),
+        }
+    }
+}
+
+/// Bin `(x, y, value)` points into a `rows x cols` grid over the data extent and
+/// compute per-bin mean/count/sum (silx `Visualization.BINNED_STATISTIC`,
+/// `scatter.py::__getHistogramInfo`).
+///
+/// The grid spans the finite-point bounding box of X and Y. A point is assigned
+/// to the bin `floor((coord - min) / binsize)`, with the upper edge clamped into
+/// the last bin so the maximum point is included (matching `Histogramnd`'s
+/// inclusive last edge). Non-finite points and points with a non-finite value
+/// are skipped.
+///
+/// Returns `None` when there are no finite points or `rows`/`cols` is 0.
+///
+/// `x`, `y`, and `values` must have equal length.
+#[must_use]
+pub fn binned_statistic(
+    x: &[f64],
+    y: &[f64],
+    values: &[f64],
+    rows: usize,
+    cols: usize,
+) -> Option<BinnedStatistic> {
+    assert_eq!(x.len(), y.len(), "x and y must have the same length");
+    assert_eq!(
+        values.len(),
+        x.len(),
+        "values must have one entry per point"
+    );
+    if rows == 0 || cols == 0 {
+        return None;
+    }
+
+    let (x_min, x_max) = min_max(x);
+    let (y_min, y_max) = min_max(y);
+    if !x_min.is_finite() || !y_min.is_finite() {
+        return None; // no finite points
+    }
+
+    // Bin sizes; degenerate (single-valued) ranges get a unit bin to avoid /0.
+    let sx = {
+        let span = x_max - x_min;
+        if span > 0.0 { span / cols as f64 } else { 1.0 }
+    };
+    let sy = {
+        let span = y_max - y_min;
+        if span > 0.0 { span / rows as f64 } else { 1.0 }
+    };
+
+    let mut count = vec![0u64; rows * cols];
+    let mut sum = vec![0.0f64; rows * cols];
+
+    for ((&xi, &yi), &vi) in x.iter().zip(y).zip(values) {
+        if !xi.is_finite() || !yi.is_finite() || !vi.is_finite() {
+            continue;
+        }
+        // Column from X, row from Y.
+        let mut c = ((xi - x_min) / sx).floor() as isize;
+        let mut r = ((yi - y_min) / sy).floor() as isize;
+        // Clamp the inclusive upper edge into the last bin.
+        if c >= cols as isize {
+            c = cols as isize - 1;
+        }
+        if r >= rows as isize {
+            r = rows as isize - 1;
+        }
+        if c < 0 || r < 0 {
+            continue; // outside the lower edge (only non-finite would do this)
+        }
+        let idx = r as usize * cols + c as usize;
+        count[idx] += 1;
+        sum[idx] += vi;
+    }
+
+    let mean: Vec<f64> = count
+        .iter()
+        .zip(&sum)
+        .map(|(&c, &s)| if c == 0 { f64::NAN } else { s / c as f64 })
+        .collect();
+
+    Some(BinnedStatistic {
+        mean,
+        count,
+        sum,
+        shape: (rows, cols),
+        origin: (x_min, y_min),
+        scale: (sx, sy),
+    })
+}
+
+// ===========================================================================
+// 5. Per-point alpha (POINTS-mode data carrier)
+// ===========================================================================
+
+/// `Visualization.POINTS` data carrier with optional per-point alpha (silx
+/// `Scatter` per-point alpha array, applied in `__applyColormapToData`).
+///
+/// Pure data only; GPU blending of the per-point alpha is deferred to a later
+/// wave. Colors are pre-mapped through the colormap by the caller, as in silx.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointsViz {
+    /// Point X coordinates.
+    pub x: Vec<f64>,
+    /// Point Y coordinates (same length as `x`).
+    pub y: Vec<f64>,
+    /// Per-point value (same length as `x`).
+    pub values: Vec<f64>,
+    /// Per-point colormap colors (same length as `x`).
+    pub colors: Vec<Color32>,
+    /// Optional per-point alpha in `[0, 1]` (silx `__alpha`), same length as `x`
+    /// when present. `None` means a uniform global alpha applies instead.
+    pub alpha: Option<Vec<f64>>,
+}
+
+impl PointsViz {
+    /// Build a POINTS carrier with no per-point alpha. Panics if `y`, `values`,
+    /// or `colors` do not match `x` in length.
+    #[must_use]
+    pub fn new(x: Vec<f64>, y: Vec<f64>, values: Vec<f64>, colors: Vec<Color32>) -> Self {
+        assert_eq!(x.len(), y.len(), "x and y must have the same length");
+        assert_eq!(
+            values.len(),
+            x.len(),
+            "values must have one entry per point"
+        );
+        assert_eq!(
+            colors.len(),
+            x.len(),
+            "colors must have one entry per point"
+        );
+        Self {
+            x,
+            y,
+            values,
+            colors,
+            alpha: None,
+        }
+    }
+
+    /// Attach a per-point alpha array (silx `setData(..., alpha=...)`), each
+    /// clamped to `[0, 1]`. Panics if `alpha` does not match `x` in length.
+    #[must_use]
+    pub fn with_alpha(mut self, alpha: Vec<f64>) -> Self {
+        assert_eq!(
+            alpha.len(),
+            self.x.len(),
+            "alpha must have one entry per point"
+        );
+        self.alpha = Some(alpha.into_iter().map(|a| a.clamp(0.0, 1.0)).collect());
+        self
+    }
+
+    /// Number of points.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.x.len()
+    }
+
+    /// Whether there are no points.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Delaunay triangulation ---------------------------------------------
+
+    #[test]
+    fn delaunay_three_points_one_triangle() {
+        let tri = delaunay(&[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]);
+        assert_eq!(tri.len(), 1);
+        // The single triangle references all three input points.
+        let mut refs = tri.triangles[0];
+        refs.sort_unstable();
+        assert_eq!(refs, [0, 1, 2]);
+    }
+
+    #[test]
+    fn delaunay_four_convex_points_two_triangles() {
+        // Unit square, convex position -> exactly two triangles.
+        let x = [0.0, 1.0, 1.0, 0.0];
+        let y = [0.0, 0.0, 1.0, 1.0];
+        let tri = delaunay(&x, &y);
+        assert_eq!(tri.len(), 2);
+        // Every input point is referenced by at least one triangle.
+        let mut seen = [false; 4];
+        for t in &tri.triangles {
+            for &v in t {
+                seen[v] = true;
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "every input point referenced");
+    }
+
+    #[test]
+    fn delaunay_collinear_points_empty() {
+        // All on the line y = x: no triangle has area.
+        let tri = delaunay(&[0.0, 1.0, 2.0, 3.0], &[0.0, 1.0, 2.0, 3.0]);
+        assert!(tri.is_empty(), "collinear input -> empty triangulation");
+    }
+
+    #[test]
+    fn delaunay_fewer_than_three_points_empty() {
+        assert!(delaunay(&[0.0, 1.0], &[0.0, 1.0]).is_empty());
+        assert!(delaunay(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn delaunay_ignores_non_finite_points() {
+        let x = [0.0, 1.0, 0.0, f64::NAN];
+        let y = [0.0, 0.0, 1.0, 5.0];
+        let tri = delaunay(&x, &y);
+        // The NaN point is dropped, leaving a single triangle over indices 0,1,2.
+        assert_eq!(tri.len(), 1);
+        for t in &tri.triangles {
+            assert!(
+                t.iter().all(|&v| v < 3),
+                "no triangle references the NaN point"
+            );
+        }
+    }
+
+    #[test]
+    fn delaunay_property_no_point_inside_circumcircle() {
+        // Fixed small set in general position.
+        let x = [0.0, 1.0, 2.0, 0.5, 1.5, 1.0];
+        let y = [0.0, 0.2, 0.0, 1.0, 1.1, 2.0];
+        let tri = delaunay(&x, &y);
+        assert!(!tri.is_empty());
+        // Delaunay property: no input point lies strictly inside any triangle's
+        // circumcircle (excluding the triangle's own vertices).
+        for t in &tri.triangles {
+            let a = [x[t[0]], y[t[0]]];
+            let b = [x[t[1]], y[t[1]]];
+            let c = [x[t[2]], y[t[2]]];
+            let (a, b, c) = if orient2d(a, b, c) < 0.0 {
+                (a, c, b)
+            } else {
+                (a, b, c)
+            };
+            for i in 0..x.len() {
+                if i == t[0] || i == t[1] || i == t[2] {
+                    continue;
+                }
+                let p = [x[i], y[i]];
+                assert!(
+                    !in_circumcircle(a, b, c, p),
+                    "point {i} inside circumcircle of triangle {t:?}"
+                );
+            }
+        }
+    }
+
+    // --- SOLID --------------------------------------------------------------
+
+    #[test]
+    fn solid_triangles_colors_each_vertex() {
+        let x = [0.0, 1.0, 0.0];
+        let y = [0.0, 0.0, 1.0];
+        let colors = [Color32::RED, Color32::GREEN, Color32::BLUE];
+        let t = solid_triangles(&x, &y, &colors).expect("triangulable");
+        assert_eq!(t.indices.len(), 1);
+        assert_eq!(t.colors, colors);
+        assert_eq!(t.x, x);
+        assert_eq!(t.y, y);
+    }
+
+    #[test]
+    fn solid_triangles_none_for_collinear() {
+        let x = [0.0, 1.0, 2.0];
+        let y = [0.0, 1.0, 2.0];
+        let colors = [Color32::RED; 3];
+        assert!(solid_triangles(&x, &y, &colors).is_none());
+    }
+
+    // --- Barycentric interpolation ------------------------------------------
+
+    #[test]
+    fn interpolate_at_vertices_returns_vertex_value() {
+        let x = [0.0, 1.0, 0.0];
+        let y = [0.0, 0.0, 1.0];
+        let values = [10.0, 20.0, 30.0];
+        let tri = delaunay(&x, &y);
+        for i in 0..3 {
+            let v = interpolate(&tri, &x, &y, &values, x[i], y[i]).expect("inside");
+            assert!((v - values[i]).abs() < 1e-9, "vertex {i}: {v}");
+        }
+    }
+
+    #[test]
+    fn interpolate_at_centroid_returns_mean() {
+        let x = [0.0, 1.0, 0.0];
+        let y = [0.0, 0.0, 1.0];
+        let values = [10.0, 20.0, 30.0];
+        let tri = delaunay(&x, &y);
+        let cx = (x[0] + x[1] + x[2]) / 3.0;
+        let cy = (y[0] + y[1] + y[2]) / 3.0;
+        let v = interpolate(&tri, &x, &y, &values, cx, cy).expect("inside");
+        let mean = (10.0 + 20.0 + 30.0) / 3.0;
+        assert!((v - mean).abs() < 1e-9, "centroid value {v} != mean {mean}");
+    }
+
+    #[test]
+    fn interpolate_outside_returns_none() {
+        let x = [0.0, 1.0, 0.0];
+        let y = [0.0, 0.0, 1.0];
+        let values = [10.0, 20.0, 30.0];
+        let tri = delaunay(&x, &y);
+        // Well outside the triangle.
+        assert!(interpolate(&tri, &x, &y, &values, 5.0, 5.0).is_none());
+        assert!(interpolate(&tri, &x, &y, &values, -1.0, -1.0).is_none());
+    }
+
+    // --- IRREGULAR_GRID image -----------------------------------------------
+
+    #[test]
+    fn irregular_grid_image_interpolates_inside_nan_outside() {
+        // Right triangle with a plane value field z = x (value equals x coord).
+        let x = [0.0, 4.0, 0.0];
+        let y = [0.0, 0.0, 4.0];
+        let values = [0.0, 4.0, 0.0];
+        let img = irregular_grid_image(&x, &y, &values, 4, 4).expect("triangulable");
+        assert_eq!(img.shape, (4, 4));
+        // Bottom-left pixel center (0.5, 0.5) is inside; value ~= x = 0.5.
+        let v = img.get(0, 0).unwrap();
+        assert!((v - 0.5).abs() < 1e-9, "interior value {v}");
+        // Top-right pixel center (3.5, 3.5) is outside the triangle -> NaN.
+        let outside = img.get(3, 3).unwrap();
+        assert!(
+            outside.is_nan(),
+            "exterior pixel should be NaN, got {outside}"
+        );
+        assert_eq!(img.origin, (0.0, 0.0));
+        assert_eq!(img.scale, (1.0, 1.0));
+    }
+
+    #[test]
+    fn irregular_grid_image_none_for_degenerate() {
+        assert!(
+            irregular_grid_image(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.0], &[1.0, 2.0, 3.0], 4, 4)
+                .is_none()
+        );
+        assert!(
+            irregular_grid_image(&[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0], &[1.0, 2.0, 3.0], 0, 4)
+                .is_none()
+        );
+    }
+
+    // --- REGULAR_GRID detection ---------------------------------------------
+
+    /// Build a 3 rows x 4 cols row-major grid (X fast).
+    fn grid_3x4_row_major() -> (Vec<f64>, Vec<f64>) {
+        let (rows, cols) = (3usize, 4usize);
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                x.push(c as f64);
+                y.push(r as f64);
+            }
+        }
+        (x, y)
+    }
+
+    #[test]
+    fn detect_regular_grid_row_major_3x4() {
+        let (x, y) = grid_3x4_row_major();
+        let grid = detect_regular_grid(&x, &y).expect("grid detected");
+        assert_eq!(grid.shape, (3, 4));
+        assert_eq!(grid.order, GridMajorOrder::Row);
+    }
+
+    #[test]
+    fn detect_regular_grid_column_major_3x4() {
+        // Y fast: fill column 0 top-to-bottom, then column 1, etc. (height=3).
+        let (rows, cols) = (3usize, 4usize);
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        for c in 0..cols {
+            for r in 0..rows {
+                x.push(c as f64);
+                y.push(r as f64);
+            }
+        }
+        let grid = detect_regular_grid(&x, &y).expect("grid detected");
+        assert_eq!(grid.shape, (3, 4));
+        assert_eq!(grid.order, GridMajorOrder::Column);
+    }
+
+    #[test]
+    fn detect_regular_grid_rejects_random_scatter() {
+        // Both coords have irregular direction reversals (no Z-grid line length)
+        // and neither is monotonic -> no grid, no line.
+        // x signs: + - + + -  (reversals at idx 2,5: gaps 2 then 3, non-uniform)
+        // y signs: - + + - +  (reversals at idx 1,5: gaps 1 then 4, non-uniform)
+        let x = [0.0, 1.0, 0.5, 2.0, 3.0, 1.0];
+        let y = [2.0, 0.0, 1.0, 3.0, 0.5, 4.0];
+        assert!(detect_regular_grid(&x, &y).is_none());
+    }
+
+    #[test]
+    fn detect_regular_grid_single_line_along_x() {
+        // X strictly increasing (monotonic, no Z-grid line length), Y has
+        // irregular reversals (no Z-grid, not monotonic) -> falls to the line
+        // branch; Y not monotonic forces the line along X -> shape (1, N).
+        let x = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = [2.0, 0.0, 1.0, 3.0, 0.5, 4.0];
+        let grid = detect_regular_grid(&x, &y).expect("line detected");
+        assert_eq!(grid.shape, (1, 6));
+    }
+
+    // --- BINNED_STATISTIC ---------------------------------------------------
+
+    #[test]
+    fn binned_statistic_2x2_mean_count_sum() {
+        // Points in [0,2]x[0,2], 2x2 bins -> bin size 1x1.
+        // Bin layout (row=Y, col=X):
+        //   (r0,c0): x in [0,1), y in [0,1)
+        //   (r0,c1): x in [1,2], y in [0,1)
+        //   (r1,c0): x in [0,1), y in [1,2]
+        //   (r1,c1): x in [1,2], y in [1,2]
+        // Place: two points in (r0,c0); one in (r1,c1); leave (r0,c1),(r1,c0) empty.
+        // (0,0) and (2,2) pin the data extent to [0,2]x[0,2] so bins are 1x1.
+        let x = [0.0, 0.5, 2.0];
+        let y = [0.0, 0.5, 2.0];
+        let v = [10.0, 30.0, 7.0];
+        let bs = binned_statistic(&x, &y, &v, 2, 2).expect("binned");
+        assert_eq!(bs.shape, (2, 2));
+
+        // (r0,c0) = index 0: count 2, sum 40, mean 20.
+        assert_eq!(bs.count[0], 2);
+        assert!((bs.sum[0] - 40.0).abs() < 1e-12);
+        assert!((bs.mean[0] - 20.0).abs() < 1e-12);
+
+        // (r0,c1) = index 1: empty.
+        assert_eq!(bs.count[1], 0);
+        assert_eq!(bs.sum[1], 0.0);
+        assert!(bs.mean[1].is_nan(), "empty bin mean is NaN");
+
+        // (r1,c0) = index 2: empty.
+        assert_eq!(bs.count[2], 0);
+
+        // (r1,c1) = index 3: count 1, sum 7, mean 7.
+        assert_eq!(bs.count[3], 1);
+        assert!((bs.sum[3] - 7.0).abs() < 1e-12);
+        assert!((bs.mean[3] - 7.0).abs() < 1e-12);
+
+        // Geometry.
+        assert_eq!(bs.origin, (0.0, 0.0));
+        assert_eq!(bs.scale, (1.0, 1.0));
+    }
+
+    #[test]
+    fn binned_statistic_max_point_clamped_into_last_bin() {
+        // Point exactly at the max edge must land in the last bin, not overflow.
+        let x = [0.0, 2.0];
+        let y = [0.0, 2.0];
+        let v = [1.0, 2.0];
+        let bs = binned_statistic(&x, &y, &v, 2, 2).expect("binned");
+        // (2,2) is the upper corner -> last bin (r1,c1) = index 3.
+        assert_eq!(bs.count[3], 1);
+        assert!((bs.sum[3] - 2.0).abs() < 1e-12);
+        // (0,0) -> first bin.
+        assert_eq!(bs.count[0], 1);
+    }
+
+    #[test]
+    fn binned_statistic_select_returns_chosen_grid() {
+        let x = [0.2, 1.5];
+        let y = [0.2, 1.5];
+        let v = [10.0, 7.0];
+        let bs = binned_statistic(&x, &y, &v, 2, 2).expect("binned");
+        let counts = bs.select(BinnedStatisticFunction::Count);
+        assert_eq!(counts, vec![1.0, 0.0, 0.0, 1.0]);
+        let sums = bs.select(BinnedStatisticFunction::Sum);
+        assert_eq!(sums, vec![10.0, 0.0, 0.0, 7.0]);
+        let means = bs.select(BinnedStatisticFunction::Mean);
+        assert!((means[0] - 10.0).abs() < 1e-12);
+        assert!(means[1].is_nan());
+    }
+
+    #[test]
+    fn binned_statistic_none_for_empty_or_zero_shape() {
+        assert!(binned_statistic(&[], &[], &[], 2, 2).is_none());
+        assert!(binned_statistic(&[0.0], &[0.0], &[1.0], 0, 2).is_none());
+    }
+
+    #[test]
+    fn binned_statistic_skips_non_finite_value() {
+        let x = [0.2, 0.4];
+        let y = [0.2, 0.4];
+        let v = [10.0, f64::NAN];
+        let bs = binned_statistic(&x, &y, &v, 2, 2).expect("binned");
+        // Only the finite-valued point is counted in bin 0.
+        assert_eq!(bs.count[0], 1);
+        assert!((bs.sum[0] - 10.0).abs() < 1e-12);
+    }
+
+    // --- Per-point alpha ----------------------------------------------------
+
+    #[test]
+    fn points_viz_default_no_alpha() {
+        let p = PointsViz::new(
+            vec![0.0, 1.0],
+            vec![0.0, 1.0],
+            vec![5.0, 6.0],
+            vec![Color32::RED, Color32::BLUE],
+        );
+        assert_eq!(p.len(), 2);
+        assert!(p.alpha.is_none());
+    }
+
+    #[test]
+    fn points_viz_with_alpha_clamps() {
+        let p = PointsViz::new(
+            vec![0.0, 1.0],
+            vec![0.0, 1.0],
+            vec![5.0, 6.0],
+            vec![Color32::RED, Color32::BLUE],
+        )
+        .with_alpha(vec![-0.5, 2.0]);
+        assert_eq!(p.alpha, Some(vec![0.0, 1.0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "alpha must have one entry per point")]
+    fn points_viz_alpha_length_mismatch_panics() {
+        let _ = PointsViz::new(
+            vec![0.0, 1.0],
+            vec![0.0, 1.0],
+            vec![5.0, 6.0],
+            vec![Color32::RED, Color32::BLUE],
+        )
+        .with_alpha(vec![0.5]);
+    }
+}
