@@ -90,6 +90,19 @@ impl eframe::App for RoiApp {
                         "ellipse #{i}  c=({:.2}, {:.2})  r=({:.2}, {:.2})",
                         center.0, center.1, radii.0, radii.1
                     ),
+                    Roi::Arc {
+                        center,
+                        inner_radius,
+                        outer_radius,
+                        ..
+                    } => format!(
+                        "arc #{i}  c=({:.2}, {:.2})  r=[{inner_radius:.2}, {outer_radius:.2}]",
+                        center.0, center.1
+                    ),
+                    Roi::Band { begin, end, width } => format!(
+                        "band #{i}  ({:.2}, {:.2}) → ({:.2}, {:.2})  w={width:.2}",
+                        begin.0, begin.1, end.0, end.1
+                    ),
                 };
                 ui.painter().text(
                     pos2(ui.max_rect().left() + 12.0, ui.max_rect().top() + 12.0),

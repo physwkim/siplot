@@ -4412,6 +4412,20 @@ fn roi_description(roi: &Roi) -> String {
             "Ellipse  c=({:.3}, {:.3})  r=({:.3}, {:.3})",
             center.0, center.1, radii.0, radii.1
         ),
+        Roi::Arc {
+            center,
+            inner_radius,
+            outer_radius,
+            start_angle,
+            end_angle,
+        } => format!(
+            "Arc  c=({:.3}, {:.3})  r=[{:.3}, {:.3}]  θ=[{:.3}, {:.3}]",
+            center.0, center.1, inner_radius, outer_radius, start_angle, end_angle
+        ),
+        Roi::Band { begin, end, width } => format!(
+            "Band  ({:.3},{:.3}) → ({:.3},{:.3})  w={width:.3}",
+            begin.0, begin.1, end.0, end.1
+        ),
     }
 }
 

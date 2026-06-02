@@ -511,6 +511,60 @@ pub fn draw_rois(painter: &Painter, t: &Transform, rois: &[Roi], style: &Style) 
     }
 }
 
+/// The four data-space corners of a band ROI (silx `BandGeometry.corners`):
+/// `begin±offset, end±offset` with `offset = 0.5·width·normal`, `normal =
+/// (-vy/len, vx/len)`. A zero-length band yields a degenerate quad at the point.
+fn band_corners_data(begin: (f64, f64), end: (f64, f64), width: f64) -> [(f64, f64); 4] {
+    let (vx, vy) = (end.0 - begin.0, end.1 - begin.1);
+    let len = (vx * vx + vy * vy).sqrt();
+    let n = if len == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (-vy / len, vx / len)
+    };
+    let off = (0.5 * width * n.0, 0.5 * width * n.1);
+    [
+        (begin.0 - off.0, begin.1 - off.1),
+        (begin.0 + off.0, begin.1 + off.1),
+        (end.0 + off.0, end.1 + off.1),
+        (end.0 - off.0, end.1 - off.1),
+    ]
+}
+
+/// Boundary polygon (data space) of an annular sector for drawing (silx
+/// `ArcROI._createShapeFromGeometry`): the outer arc from `start` to `end`
+/// followed by the inner arc back (or the center, when `inner_radius == 0`,
+/// giving a "camembert" wedge). A full `2π` sweep yields the outer circle.
+fn arc_outline(
+    center: (f64, f64),
+    inner_radius: f64,
+    outer_radius: f64,
+    start_angle: f64,
+    end_angle: f64,
+) -> Vec<(f64, f64)> {
+    let sweep = end_angle - start_angle;
+    // Match silx: at most ~100 angular samples, at least a couple.
+    let steps = ((sweep.abs() / std::f64::consts::TAU * 100.0).ceil() as usize).clamp(2, 100);
+    let at = |r: f64, a: f64| (center.0 + r * a.cos(), center.1 + r * a.sin());
+    let mut pts = Vec::with_capacity(steps * 2 + 2);
+    // Outer arc start -> end.
+    for i in 0..=steps {
+        let a = start_angle + sweep * (i as f64 / steps as f64);
+        pts.push(at(outer_radius, a));
+    }
+    if inner_radius <= 0.0 {
+        // Camembert wedge: close through the center.
+        pts.push(center);
+    } else {
+        // Inner arc end -> start.
+        for i in 0..=steps {
+            let a = end_angle - sweep * (i as f64 / steps as f64);
+            pts.push(at(inner_radius, a));
+        }
+    }
+    pts
+}
+
 /// Draw the handle glyphs of a ROI in `color`, one per [`RoiHandle`] from
 /// [`Roi::handles`]. Mirrors the silx handle markers (`items/_roi_base.py`
 /// `addHandle`/`addTranslateHandle`): a translate or center handle is a `+`
@@ -608,6 +662,47 @@ pub fn draw_roi(
                 .collect();
             painter.add(egui::Shape::convex_polygon(pts, fill, border));
             Some(egui::pos2(c.x, c.y - ry))
+        }
+        Roi::Arc {
+            center,
+            inner_radius,
+            outer_radius,
+            start_angle,
+            end_angle,
+        } => {
+            // Annular-sector outline in data space, then mapped to pixels (the
+            // transform may scale axes differently, so sample in data space —
+            // silx samples the arc with up to ~100 angular steps).
+            let mut pts: Vec<Pos2> = arc_outline(
+                *center,
+                *inner_radius,
+                *outer_radius,
+                *start_angle,
+                *end_angle,
+            )
+            .into_iter()
+            .map(|(x, y)| t.data_to_pixel(x, y))
+            .collect();
+            // The annular sector is non-convex, so draw the closed outline only
+            // (silx draws the arc shape with `setFill(False)`).
+            if let Some(&first) = pts.first() {
+                pts.push(first);
+                painter.add(egui::Shape::line(pts, border));
+            }
+            // Label anchor at the top of the outer circle.
+            let cp = t.data_to_pixel(center.0, center.1 + outer_radius);
+            Some(cp)
+        }
+        Roi::Band { begin, end, width } => {
+            // The four band corners form a convex quadrilateral (rotated rect).
+            let corners = band_corners_data(*begin, *end, *width);
+            let pts: Vec<Pos2> = corners
+                .iter()
+                .map(|&(x, y)| t.data_to_pixel(x, y))
+                .collect();
+            painter.add(egui::Shape::convex_polygon(pts.clone(), fill, border));
+            // Label anchor at the begin corner.
+            pts.first().copied()
         }
         _ => {
             // Rect, HRange, VRange

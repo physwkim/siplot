@@ -55,6 +55,25 @@ pub enum Roi {
         center: (f64, f64),
         radii: (f64, f64),
     },
+    /// An annular sector (silx `ArcROI`): the ring between `inner_radius` and
+    /// `outer_radius` around `center`, swept from `start_angle` to `end_angle`
+    /// (radians; if `start_angle > end_angle` the sweep is the other way). A
+    /// full `2π` sweep is a circle/donut.
+    Arc {
+        center: (f64, f64),
+        inner_radius: f64,
+        outer_radius: f64,
+        start_angle: f64,
+        end_angle: f64,
+    },
+    /// A rotatable rectangle (silx `BandROI`): the band of full `width` swept
+    /// along the segment `begin → end`. `width` is the band's extent across the
+    /// segment direction.
+    Band {
+        begin: (f64, f64),
+        end: (f64, f64),
+        width: f64,
+    },
 }
 
 /// What a [`RoiHandle`] manipulates, mirroring the silx handle roles
@@ -143,6 +162,28 @@ impl Roi {
                 let b = t.data_to_pixel(center.0 + radii.0, center.1 + radii.1);
                 Rect::from_two_pos(a, b)
             }
+            Roi::Arc {
+                center,
+                outer_radius,
+                ..
+            } => {
+                // Bounding box of the outer circle, mapped to screen.
+                let a = t.data_to_pixel(center.0 - outer_radius, center.1 - outer_radius);
+                let b = t.data_to_pixel(center.0 + outer_radius, center.1 + outer_radius);
+                Rect::from_two_pos(a, b)
+            }
+            Roi::Band { .. } => {
+                let mut rect = Rect::NOTHING;
+                for &(x, y) in &band_corners(self).unwrap_or_default() {
+                    let p = t.data_to_pixel(x, y);
+                    if rect.is_negative() {
+                        rect = Rect::from_center_size(p, egui::vec2(1.0, 1.0));
+                    } else {
+                        rect = rect.union(Rect::from_center_size(p, egui::vec2(1.0, 1.0)));
+                    }
+                }
+                if rect.is_negative() { area } else { rect }
+            }
         }
     }
 
@@ -164,6 +205,13 @@ impl Roi {
             Roi::Ellipse { .. } => {
                 vec![RoiEdge::Vertex(0), RoiEdge::Vertex(1), RoiEdge::Vertex(2)]
             }
+            // Arc: mid (0) + outer/weight (1) + start (2) + end (3) — silx ArcROI
+            // shape handles (mid/weight/start/end). Index order matches
+            // [`Roi::vertex_pixel`].
+            Roi::Arc { .. } => (0..4).map(RoiEdge::Vertex).collect(),
+            // Band: begin (0) + end (1) + width-up (2) + width-down (3) — silx
+            // BandROI handles.
+            Roi::Band { .. } => (0..4).map(RoiEdge::Vertex).collect(),
         }
     }
 
@@ -194,6 +242,10 @@ impl Roi {
                 2 => (center.0, center.1 + radii.1),
                 _ => return None,
             },
+            // Arc shape vertices: 0=mid, 1=outer/weight, 2=start, 3=end.
+            Roi::Arc { .. } => arc_vertex_pos(self, index)?,
+            // Band shape vertices: 0=begin, 1=end, 2=width-up, 3=width-down.
+            Roi::Band { .. } => band_vertex_pos(self, index)?,
             _ => return None,
         };
         Some(t.data_to_pixel(x, y))
@@ -224,7 +276,9 @@ impl Roi {
             | Roi::Polygon { .. }
             | Roi::Cross { .. }
             | Roi::Circle { .. }
-            | Roi::Ellipse { .. } => {
+            | Roi::Ellipse { .. }
+            | Roi::Arc { .. }
+            | Roi::Band { .. } => {
                 let mut best: Option<(RoiEdge, f32)> = None;
                 for edge in self.edges() {
                     if let RoiEdge::Vertex(n) = edge
@@ -345,6 +399,10 @@ impl Roi {
                 RoiEdge::Vertex(2) => radii.1 = (dy - center.1).abs(),
                 _ => {}
             },
+            // Arc/Band per-handle drag editing (silx `handleDragUpdated`) is
+            // owned by the on-plot interaction wave, not this pure-geometry
+            // layer; the whole-shape move is exposed via [`Roi::translate`].
+            Roi::Arc { .. } | Roi::Band { .. } => {}
         }
     }
 
@@ -363,6 +421,10 @@ impl Roi {
     /// - `Circle`: `dist(pos, center) <= radius` (`CircleROI`).
     /// - `Ellipse`: `(dx/major)² + (dy/minor)² <= 1` with `major = max(radii)`,
     ///   `minor = min(radii)` (`EllipseROI` at orientation 0).
+    /// - `Arc`: inside the `[inner, outer]` radius ring AND within the angular
+    ///   sweep (`ArcROI._arc_roi.py`).
+    /// - `Band`: point-in-the-rotated-rectangle of the four band corners
+    ///   (`BandROI` via `Polygon.is_inside`).
     pub fn contains(&self, pos: (f64, f64)) -> bool {
         let (x, y) = pos;
         match self {
@@ -390,6 +452,26 @@ impl Roi {
                 let (dx, dy) = (x - center.0, y - center.1);
                 (dx * dx) / (major * major) + (dy * dy) / (minor * minor) <= 1.0
             }
+            Roi::Arc {
+                center,
+                inner_radius,
+                outer_radius,
+                start_angle,
+                end_angle,
+            } => arc_contains(
+                *center,
+                *inner_radius,
+                *outer_radius,
+                *start_angle,
+                *end_angle,
+                pos,
+            ),
+            // Band containment is point-in-the-rotated-rectangle of the four
+            // corners (silx `BandGeometry.contains` → `Polygon.is_inside`).
+            Roi::Band { .. } => match band_corners(self) {
+                Some(corners) => point_in_polygon(&corners, pos),
+                None => false,
+            },
         }
     }
 
@@ -469,6 +551,28 @@ impl Roi {
                 v((c.0, c.1 + radii.1)),
                 translate(*c),
             ],
+            // ArcROI: mid/outer/start/end shape vertices + a translate move
+            // handle at the circle center (silx mid/weight/start/end +
+            // `addTranslateHandle`).
+            Roi::Arc { center: c, .. } => {
+                let mut hs: Vec<RoiHandle> = (0..4)
+                    .filter_map(|i| arc_vertex_pos(self, i).map(v))
+                    .collect();
+                hs.push(translate(*c));
+                hs
+            }
+            // BandROI: begin/end vertices + two width vertices (silx `"d"`
+            // handles) + a translate center.
+            Roi::Band { begin, end, .. } => {
+                let mut hs: Vec<RoiHandle> = (0..4)
+                    .filter_map(|i| band_vertex_pos(self, i).map(v))
+                    .collect();
+                hs.push(translate((
+                    (begin.0 + end.0) * 0.5,
+                    (begin.1 + end.1) * 0.5,
+                )));
+                hs
+            }
         }
     }
 
@@ -512,8 +616,124 @@ impl Roi {
             }
             Roi::Circle { center, .. } => shift(center),
             Roi::Ellipse { center, .. } => shift(center),
+            Roi::Arc { center, .. } => shift(center),
+            Roi::Band { begin, end, .. } => {
+                shift(begin);
+                shift(end);
+            }
         }
     }
+}
+
+/// Data-space position of arc shape-vertex `index`, mirroring silx `ArcROI`'s
+/// handle layout: 0 = mid (at the mid-radius `(inner+outer)/2`, mid angle),
+/// 1 = outer/weight (the outer radius at the mid angle), 2 = start point,
+/// 3 = end point. Returns `None` for any other index or a non-arc ROI.
+fn arc_vertex_pos(roi: &Roi, index: usize) -> Option<(f64, f64)> {
+    let Roi::Arc {
+        center,
+        inner_radius,
+        outer_radius,
+        start_angle,
+        end_angle,
+    } = roi
+    else {
+        return None;
+    };
+    let radius = (inner_radius + outer_radius) * 0.5;
+    let mid_angle = (start_angle + end_angle) * 0.5;
+    let at = |r: f64, a: f64| (center.0 + r * a.cos(), center.1 + r * a.sin());
+    Some(match index {
+        0 => at(radius, mid_angle),
+        1 => at(*outer_radius, mid_angle),
+        2 => at(radius, *start_angle),
+        3 => at(radius, *end_angle),
+        _ => return None,
+    })
+}
+
+/// Data-space position of band shape-vertex `index`, mirroring silx `BandROI`'s
+/// handle layout: 0 = begin, 1 = end, 2 = width-up (`center + 0.5·width·normal`),
+/// 3 = width-down (`center − 0.5·width·normal`). Returns `None` otherwise.
+fn band_vertex_pos(roi: &Roi, index: usize) -> Option<(f64, f64)> {
+    let Roi::Band { begin, end, width } = roi else {
+        return None;
+    };
+    let center = ((begin.0 + end.0) * 0.5, (begin.1 + end.1) * 0.5);
+    let n = band_normal(*begin, *end);
+    let off = (0.5 * width * n.0, 0.5 * width * n.1);
+    Some(match index {
+        0 => *begin,
+        1 => *end,
+        2 => (center.0 + off.0, center.1 + off.1),
+        3 => (center.0 - off.0, center.1 - off.1),
+        _ => return None,
+    })
+}
+
+/// Unit normal to the band's `begin → end` direction (silx `BandGeometry.normal`:
+/// `(-vy/len, vx/len)`). A zero-length band has a zero normal.
+fn band_normal(begin: (f64, f64), end: (f64, f64)) -> (f64, f64) {
+    let (vx, vy) = (end.0 - begin.0, end.1 - begin.1);
+    let len = (vx * vx + vy * vy).sqrt();
+    if len == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (-vy / len, vx / len)
+    }
+}
+
+/// The four data-space corners of a band ROI, in silx order
+/// (`begin−offset, begin+offset, end+offset, end−offset`), where `offset =
+/// 0.5·width·normal` (silx `BandGeometry.corners`). `None` for a non-band ROI.
+fn band_corners(roi: &Roi) -> Option<Vec<(f64, f64)>> {
+    let Roi::Band { begin, end, width } = roi else {
+        return None;
+    };
+    let n = band_normal(*begin, *end);
+    let off = (0.5 * width * n.0, 0.5 * width * n.1);
+    Some(vec![
+        (begin.0 - off.0, begin.1 - off.1),
+        (begin.0 + off.0, begin.1 + off.1),
+        (end.0 + off.0, end.1 + off.1),
+        (end.0 - off.0, end.1 - off.1),
+    ])
+}
+
+/// Whether the data point `pos` lies in the annular sector (silx
+/// `ArcROI.contains`, `items/_arc_roi.py:915`): inside the `[inner, outer]`
+/// radius ring AND within the angular sweep `[start, end]`. The sweep is
+/// normalized so the test works for either rotation direction.
+fn arc_contains(
+    center: (f64, f64),
+    inner_radius: f64,
+    outer_radius: f64,
+    start_angle: f64,
+    end_angle: f64,
+    pos: (f64, f64),
+) -> bool {
+    let (dx, dy) = (pos.0 - center.0, pos.1 - center.1);
+    let distance = dx.hypot(dy);
+    if distance < inner_radius || distance > outer_radius {
+        return false;
+    }
+    // arctan2(dy, dx) in [-pi, pi].
+    let mut angle = dy.atan2(dx);
+
+    // Make the azimuth range positive, swapping start/end conceptually.
+    let (mut start, azim_range) = if end_angle - start_angle < 0.0 {
+        (end_angle, start_angle - end_angle)
+    } else {
+        (start_angle, end_angle - start_angle)
+    };
+    // Normalize start into [-pi, pi) (silx `numpy.mod(start + pi, 2pi) - pi`).
+    let two_pi = std::f64::consts::TAU;
+    start = (start + std::f64::consts::PI).rem_euclid(two_pi) - std::f64::consts::PI;
+    // Bring the query angle into the same branch as start.
+    if angle < start {
+        angle += two_pi;
+    }
+    angle >= start && angle <= start + azim_range
 }
 
 /// Even-odd ray-cast point-in-polygon test, mirroring silx
@@ -959,6 +1179,140 @@ mod tests {
             },
         ];
         let (dx, dy) = (1.5, -0.5);
+        for roi in rois {
+            let before = roi.handles();
+            let mut moved = roi.clone();
+            moved.translate(dx, dy);
+            let after = moved.handles();
+            assert_eq!(before.len(), after.len());
+            for (b, a) in before.iter().zip(&after) {
+                assert_eq!(a.kind, b.kind);
+                assert!((a.pos[0] - (b.pos[0] + dx)).abs() < 1e-9, "{roi:?}");
+                assert!((a.pos[1] - (b.pos[1] + dy)).abs() < 1e-9, "{roi:?}");
+            }
+        }
+    }
+
+    // --- Arc / Band contains() and handle tests ---
+
+    #[test]
+    fn arc_contains_inside_outside_ring_and_sweep() {
+        // Quarter ring in the first quadrant: r in [1, 2], theta in [0, pi/2].
+        let arc = Roi::Arc {
+            center: (0.0, 0.0),
+            inner_radius: 1.0,
+            outer_radius: 2.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::FRAC_PI_2,
+        };
+        // Inside the ring and inside the sweep.
+        assert!(arc.contains((1.5, 0.0))); // on the +x ray, mid radius
+        assert!(arc.contains((0.0, 1.5))); // on the +y ray (end angle, inclusive)
+        let d = std::f64::consts::FRAC_1_SQRT_2 * 1.5;
+        assert!(arc.contains((d, d))); // 45 deg, mid radius
+        // Outside the radius ring.
+        assert!(!arc.contains((0.5, 0.0))); // inside inner radius
+        assert!(!arc.contains((2.5, 0.0))); // beyond outer radius
+        // Outside the angular sweep (third quadrant ray, in-radius).
+        assert!(!arc.contains((-1.5, 0.0))); // theta = pi
+        assert!(!arc.contains((0.0, -1.5))); // theta = -pi/2
+    }
+
+    #[test]
+    fn arc_contains_handles_the_pi_branch_wrap() {
+        // Left-side sweep crossing the +/-pi branch: theta in [3pi/4, 5pi/4].
+        let arc = Roi::Arc {
+            center: (0.0, 0.0),
+            inner_radius: 1.0,
+            outer_radius: 2.0,
+            start_angle: 3.0 * std::f64::consts::FRAC_PI_4,
+            end_angle: 5.0 * std::f64::consts::FRAC_PI_4,
+        };
+        assert!(arc.contains((-1.5, 0.0))); // theta = pi, within the sweep
+        assert!(!arc.contains((1.5, 0.0))); // theta = 0, outside
+        assert!(!arc.contains((0.0, -1.5))); // theta = -pi/2, outside
+    }
+
+    #[test]
+    fn band_contains_axis_aligned_inside_edge_outside() {
+        // Horizontal band along y=0 from x=0..4 with width 2: rect x∈[0,4], y∈[-1,1].
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (4.0, 0.0),
+            width: 2.0,
+        };
+        assert!(band.contains((2.0, 0.0))); // strictly inside
+        assert!(band.contains((2.0, 0.5))); // inside across the width
+        assert!(!band.contains((2.0, 1.5))); // past the upper band edge
+        assert!(!band.contains((2.0, -1.5))); // past the lower band edge
+        assert!(!band.contains((5.0, 0.0))); // past the end along the segment
+        assert!(!band.contains((-0.5, 0.0))); // before the begin along the segment
+    }
+
+    #[test]
+    fn band_contains_rotated_band() {
+        // Vertical band begin=(0,0) end=(0,4) width 2: rect x∈[-1,1], y∈[0,4].
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (0.0, 4.0),
+            width: 2.0,
+        };
+        assert!(band.contains((0.0, 2.0))); // inside
+        assert!(!band.contains((1.5, 2.0))); // past the band edge (normal is x)
+        assert!(!band.contains((0.0, 5.0))); // past the end
+    }
+
+    #[test]
+    fn arc_and_band_handle_counts() {
+        use HandleKind::*;
+        // Arc: 4 shape vertices (mid/outer/start/end) + a translate center.
+        let arc = Roi::Arc {
+            center: (0.0, 0.0),
+            inner_radius: 1.0,
+            outer_radius: 2.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::FRAC_PI_2,
+        };
+        assert_eq!(
+            kinds(&arc.handles()),
+            vec![Vertex, Vertex, Vertex, Vertex, Translate]
+        );
+        // The translate handle is at the arc center.
+        assert_eq!(arc.handles().last().unwrap().pos, [0.0, 0.0]);
+
+        // Band: begin/end + 2 width vertices + a translate center.
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (4.0, 0.0),
+            width: 2.0,
+        };
+        assert_eq!(
+            kinds(&band.handles()),
+            vec![Vertex, Vertex, Vertex, Vertex, Translate]
+        );
+        // begin/end handles are at the endpoints; center at the midpoint.
+        assert_eq!(band.handles()[0].pos, [0.0, 0.0]);
+        assert_eq!(band.handles()[1].pos, [4.0, 0.0]);
+        assert_eq!(band.handles().last().unwrap().pos, [2.0, 0.0]);
+    }
+
+    #[test]
+    fn arc_and_band_translate_move_every_handle() {
+        let (dx, dy) = (2.0, -1.0);
+        let rois = [
+            Roi::Arc {
+                center: (1.0, 1.0),
+                inner_radius: 1.0,
+                outer_radius: 2.0,
+                start_angle: 0.0,
+                end_angle: std::f64::consts::FRAC_PI_2,
+            },
+            Roi::Band {
+                begin: (0.0, 0.0),
+                end: (4.0, 2.0),
+                width: 1.5,
+            },
+        ];
         for roi in rois {
             let before = roi.handles();
             let mut moved = roi.clone();

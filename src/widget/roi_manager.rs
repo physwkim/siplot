@@ -298,6 +298,24 @@ impl RoiManagerWidget {
                     radii: (dx.abs(), dy.abs()),
                 });
             }
+            if ui.button("+ Arc").clicked() {
+                // A quarter-ring centered on the view (silx ArcROI).
+                let r = dx.abs().max(dy.abs()).max(f64::EPSILON);
+                self.add_roi(Roi::Arc {
+                    center: (cx, cy),
+                    inner_radius: r * 0.5,
+                    outer_radius: r,
+                    start_angle: 0.0,
+                    end_angle: std::f64::consts::FRAC_PI_2,
+                });
+            }
+            if ui.button("+ Band").clicked() {
+                self.add_roi(Roi::Band {
+                    begin: (cx - dx, cy),
+                    end: (cx + dx, cy),
+                    width: dy.abs(),
+                });
+            }
         });
 
         if !self.rois.is_empty() && ui.button("Clear all").clicked() {
@@ -319,6 +337,8 @@ fn roi_kind(roi: &Roi) -> &'static str {
         Roi::Polygon { .. } => "polygon",
         Roi::Circle { .. } => "circle",
         Roi::Ellipse { .. } => "ellipse",
+        Roi::Arc { .. } => "arc",
+        Roi::Band { .. } => "band",
     }
 }
 
