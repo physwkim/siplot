@@ -1017,6 +1017,19 @@ fn retained_data_to_stats_input(
     }
 }
 
+/// Borrow a [`RetainedItemData`]'s curve `(x, y)` arrays for a live
+/// [`FitWidget`] target (silx `FitWidget.setData`), or `None` when the item is
+/// not a curve. Split out so the data→fit feed is unit-testable without a GPU
+/// backend.
+///
+/// [`FitWidget`]: crate::widget::fit_widget::FitWidget
+fn retained_curve_xy(data: &RetainedItemData) -> Option<(&[f64], &[f64])> {
+    match data {
+        RetainedItemData::Curve { x, y } => Some((x, y)),
+        RetainedItemData::Image { .. } => None,
+    }
+}
+
 /// Capture a scalar image spec's raw pixels and geometry for live consumers, or
 /// `None` for an RGBA image (no scalar field to retain).
 fn image_spec_retained_data(spec: &ImageSpec<'_>) -> Option<RetainedItemData> {
@@ -2911,6 +2924,33 @@ impl PlotWidget {
                 false
             }
         }
+    }
+
+    /// Feed an item's retained curve `(x, y)` into a [`FitWidget`] as its fit
+    /// target, so a fit runs against the live curve (silx `FitWidget.setData`
+    /// bound to a plot curve). Returns `true` when the item is a curve with
+    /// retained data; `false` for an unknown handle or a non-curve item (the fit
+    /// widget is left unchanged in that case).
+    pub fn set_fit_target(
+        &self,
+        fit: &mut crate::widget::fit_widget::FitWidget,
+        handle: ItemHandle,
+    ) -> bool {
+        match self.retained_data(handle).and_then(retained_curve_xy) {
+            Some((x, y)) => {
+                fit.set_data(x, y);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Feed the active item's retained curve `(x, y)` into a [`FitWidget`] as its
+    /// fit target (silx `FitWidget` bound to the active curve). Returns `true`
+    /// when the active item is a curve with retained data.
+    pub fn set_active_fit_target(&self, fit: &mut crate::widget::fit_widget::FitWidget) -> bool {
+        self.active_item
+            .is_some_and(|handle| self.set_fit_target(fit, handle))
     }
 
     /// Feed the active item's retained data into a [`StatsWidget`] and render
@@ -6242,6 +6282,31 @@ mod tests {
             crate::core::stats::StatScope::All,
         );
         assert_eq!(rows[0].1, core);
+    }
+
+    #[test]
+    fn fit_target_feeds_curve_xy_not_image() {
+        // Item 5: the fit target feed extracts the live curve's (x, y) (the data
+        // FitWidget.set_data receives), and refuses a non-curve item.
+        let xs = vec![1.0, 2.0, 3.0, 4.0];
+        let ys = vec![10.0, 20.0, 30.0, 40.0];
+        let curve = RetainedItemData::Curve {
+            x: xs.clone(),
+            y: ys.clone(),
+        };
+        let (fx, fy) = retained_curve_xy(&curve).expect("curve feeds its xy");
+        assert_eq!(fx, xs.as_slice());
+        assert_eq!(fy, ys.as_slice());
+
+        // An image item is not a fit target.
+        let image = RetainedItemData::Image {
+            data: vec![1.0, 2.0, 3.0, 4.0],
+            width: 2,
+            height: 2,
+            origin: (0.0, 0.0),
+            scale: (1.0, 1.0),
+        };
+        assert!(retained_curve_xy(&image).is_none());
     }
 
     #[test]
