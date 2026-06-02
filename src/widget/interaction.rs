@@ -283,6 +283,112 @@ pub fn clamp_limits(limits: Limits, x_log: bool, y_log: bool) -> Limits {
     (nx0, nx1, ny0, ny1)
 }
 
+/// Which mouse button a [`PlotPointerEvent`] carries, mirroring silx's
+/// `"left" | "middle" | "right"` button strings (`PlotEvents.py:58-71`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+impl MouseButton {
+    /// Map an egui [`egui::PointerButton`] to the silx button identity. egui's
+    /// extra buttons collapse to the nearest silx button (silx has only three).
+    pub fn from_egui(button: egui::PointerButton) -> Self {
+        match button {
+            egui::PointerButton::Primary => MouseButton::Left,
+            egui::PointerButton::Middle => MouseButton::Middle,
+            _ => MouseButton::Right,
+        }
+    }
+}
+
+/// A structured pointer event over the plot data area, mirroring silx's
+/// `prepareMouseSignal` (`PlotEvents.py:58-71`) and `prepareLimitsChangedSignal`
+/// (`PlotEvents.py:176-184`). Each pointer variant carries the button (where a
+/// button applies), the data-space position, and the pixel-space position so
+/// application code has both without re-projecting.
+///
+/// This is the structured low-level pointer event produced by [`PlotView`]
+/// interaction; it is distinct from the high-level item-lifecycle
+/// `PlotEvent` queue owned by `PlotWidget`.
+///
+/// [`PlotView`]: crate::PlotView
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlotPointerEvent {
+    /// A single click (silx `"mouseClicked"`).
+    Clicked {
+        button: MouseButton,
+        /// Data-space `(x, y)` under the cursor.
+        data: (f64, f64),
+        /// Pixel-space `(x, y)` of the cursor.
+        pixel: (f32, f32),
+    },
+    /// A double click (silx `"mouseDoubleClicked"`). silx only emits this for
+    /// the left button, at the position of the first click.
+    DoubleClicked {
+        button: MouseButton,
+        data: (f64, f64),
+        pixel: (f32, f32),
+    },
+    /// The cursor moved over the data area (silx `"mouseMoved"` hover).
+    Moved {
+        /// `None` for a bare move (silx leaves the button unset when no button
+        /// is held); `Some` when a button is held during the move.
+        button: Option<MouseButton>,
+        data: (f64, f64),
+        pixel: (f32, f32),
+    },
+    /// The display limits changed (silx `"limitsChanged"`), carrying the new
+    /// left-X, left-Y, and (optional) right-Y2 ranges as `(min, max)` tuples.
+    LimitsChanged {
+        x: (f64, f64),
+        y: (f64, f64),
+        y2: Option<(f64, f64)>,
+    },
+}
+
+impl PlotPointerEvent {
+    /// Build a [`PlotPointerEvent::Clicked`] from a cursor pixel position and
+    /// the display [`Transform`], projecting the pixel to data space (silx
+    /// `prepareMouseSignal("mouseClicked", ...)`).
+    pub fn clicked(button: MouseButton, transform: &Transform, pixel: Pos2) -> Self {
+        PlotPointerEvent::Clicked {
+            button,
+            data: transform.pixel_to_data(pixel),
+            pixel: (pixel.x, pixel.y),
+        }
+    }
+
+    /// Build a [`PlotPointerEvent::DoubleClicked`] from a cursor pixel position
+    /// (silx `prepareMouseSignal("mouseDoubleClicked", ...)`).
+    pub fn double_clicked(button: MouseButton, transform: &Transform, pixel: Pos2) -> Self {
+        PlotPointerEvent::DoubleClicked {
+            button,
+            data: transform.pixel_to_data(pixel),
+            pixel: (pixel.x, pixel.y),
+        }
+    }
+
+    /// Build a [`PlotPointerEvent::Moved`] hover event from a cursor pixel
+    /// position (silx `prepareMouseSignal("mouseMoved", ...)`). `button` is the
+    /// held button, if any.
+    pub fn moved(button: Option<MouseButton>, transform: &Transform, pixel: Pos2) -> Self {
+        PlotPointerEvent::Moved {
+            button,
+            data: transform.pixel_to_data(pixel),
+            pixel: (pixel.x, pixel.y),
+        }
+    }
+
+    /// Build a [`PlotPointerEvent::LimitsChanged`] (silx
+    /// `prepareLimitsChangedSignal`).
+    pub fn limits_changed(x: (f64, f64), y: (f64, f64), y2: Option<(f64, f64)>) -> Self {
+        PlotPointerEvent::LimitsChanged { x, y, y2 }
+    }
+}
+
 /// A picked polyline vertex: its index and data coordinates, plus the pixel
 /// distance from the cursor (`doc/design.md` §13 C2).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -536,6 +642,94 @@ mod tests {
     // 100×100 px area mapping data [0,10]×[0,10]; 1 data unit = 10 px.
     fn pick_transform() -> Transform {
         Transform::new(0.0, 10.0, 0.0, 10.0, area_100())
+    }
+
+    #[test]
+    fn mouse_button_maps_from_egui() {
+        assert_eq!(
+            MouseButton::from_egui(egui::PointerButton::Primary),
+            MouseButton::Left
+        );
+        assert_eq!(
+            MouseButton::from_egui(egui::PointerButton::Middle),
+            MouseButton::Middle
+        );
+        assert_eq!(
+            MouseButton::from_egui(egui::PointerButton::Secondary),
+            MouseButton::Right
+        );
+        // egui's extra buttons collapse to Right (silx has only three buttons).
+        assert_eq!(
+            MouseButton::from_egui(egui::PointerButton::Extra1),
+            MouseButton::Right
+        );
+    }
+
+    #[test]
+    fn pointer_event_maps_pixel_to_data() {
+        // 100x100 px over data [0,10]: center pixel (50,50) -> data (5,5).
+        let t = pick_transform();
+        let ev = PlotPointerEvent::clicked(MouseButton::Left, &t, pos2(50.0, 50.0));
+        match ev {
+            PlotPointerEvent::Clicked {
+                button,
+                data,
+                pixel,
+            } => {
+                assert_eq!(button, MouseButton::Left);
+                assert!(
+                    (data.0 - 5.0).abs() <= 1e-9 && (data.1 - 5.0).abs() <= 1e-9,
+                    "{data:?}"
+                );
+                assert_eq!(pixel, (50.0, 50.0));
+            }
+            other => panic!("expected Clicked, got {other:?}"),
+        }
+        // Corner: bottom-left pixel (0,100) -> data (0,0).
+        let ev = PlotPointerEvent::double_clicked(MouseButton::Left, &t, pos2(0.0, 100.0));
+        match ev {
+            PlotPointerEvent::DoubleClicked { data, pixel, .. } => {
+                assert!(data.0.abs() <= 1e-9 && data.1.abs() <= 1e-9, "{data:?}");
+                assert_eq!(pixel, (0.0, 100.0));
+            }
+            other => panic!("expected DoubleClicked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pointer_event_moved_carries_optional_button() {
+        let t = pick_transform();
+        // Bare hover: no held button.
+        let ev = PlotPointerEvent::moved(None, &t, pos2(50.0, 50.0));
+        assert!(matches!(ev, PlotPointerEvent::Moved { button: None, .. }));
+        // Held button during a move.
+        let ev = PlotPointerEvent::moved(Some(MouseButton::Left), &t, pos2(50.0, 50.0));
+        assert!(matches!(
+            ev,
+            PlotPointerEvent::Moved {
+                button: Some(MouseButton::Left),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn limits_changed_carries_ranges() {
+        let ev = PlotPointerEvent::limits_changed((0.0, 10.0), (1.0, 5.0), Some((2.0, 8.0)));
+        assert_eq!(
+            ev,
+            PlotPointerEvent::LimitsChanged {
+                x: (0.0, 10.0),
+                y: (1.0, 5.0),
+                y2: Some((2.0, 8.0)),
+            }
+        );
+        // No y2 axis -> None.
+        let ev = PlotPointerEvent::limits_changed((0.0, 10.0), (1.0, 5.0), None);
+        assert!(matches!(
+            ev,
+            PlotPointerEvent::LimitsChanged { y2: None, .. }
+        ));
     }
 
     #[test]
