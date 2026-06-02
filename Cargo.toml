@@ -23,6 +23,10 @@ rfd = "0.17"
 # System clipboard for the toolbar Copy action (set_image with the wgpu readback RGBA).
 # Default features; the `image` crate it pulls is already in the tree via egui-winit.
 arboard = "3.6"
+# Submit the rasterized figure PNG to the default system printer for the
+# toolbar Print action (mirrors silx PrintAction printing a PNG bitmap via
+# QPrinter). Wraps CUPS on unix / winspool on windows.
+printers = "2.3.0"
 
 # Only the example (an eframe app) needs a window + RenderState.
 [dev-dependencies]
