@@ -29,6 +29,102 @@ pub enum ThresholdMode {
     Above,
 }
 
+/// Default maximum number of mask snapshots kept for undo, matching silx
+/// `BaseMask.historyDepth`.
+const DEFAULT_HISTORY_DEPTH: usize = 10;
+
+/// Bounded undo/redo history of mask snapshots, mirroring the silx
+/// `BaseMask` history machinery (`_history` / `_redo` lists, `historyDepth`,
+/// `commit` / `undo` / `redo`).
+///
+/// The `history` stack always holds at least one baseline snapshot once
+/// [`reset`](Self::reset) has run; `undo` is possible only when more than one
+/// snapshot is stored.
+struct MaskHistory {
+    history: Vec<Vec<u8>>,
+    redo: Vec<Vec<u8>>,
+    depth: usize,
+}
+
+impl MaskHistory {
+    /// Create a history seeded with `mask` as the single baseline snapshot.
+    ///
+    /// Mirrors silx `resetHistory` after construction: `_history = [mask]`,
+    /// `_redo = []`.
+    fn new(mask: &[u8]) -> Self {
+        Self {
+            history: vec![mask.to_vec()],
+            redo: Vec::new(),
+            depth: DEFAULT_HISTORY_DEPTH,
+        }
+    }
+
+    /// Reset the history to a single baseline snapshot of `mask`.
+    ///
+    /// Mirrors silx `BaseMask.resetHistory`.
+    fn reset(&mut self, mask: &[u8]) {
+        self.history = vec![mask.to_vec()];
+        self.redo.clear();
+    }
+
+    /// Append `mask` to the history if it represents a new state.
+    ///
+    /// Mirrors silx `BaseMask.commit`: commits when the redo stack is
+    /// non-empty (a new action invalidates redo) or when `mask` differs from
+    /// the last snapshot. The redo stack is cleared on commit, and the
+    /// history is trimmed from the front to at most `depth` snapshots.
+    fn commit(&mut self, mask: &[u8]) {
+        let differs = self.history.last().map(|last| last != mask).unwrap_or(true);
+        if self.history.is_empty() || !self.redo.is_empty() || differs {
+            self.redo.clear();
+            // silx pops from the front while len >= depth, then appends, so
+            // the post-append length is at most `depth`.
+            while self.history.len() >= self.depth {
+                self.history.remove(0);
+            }
+            self.history.push(mask.to_vec());
+        }
+    }
+
+    /// Restore the previous snapshot, returning it, if any.
+    ///
+    /// Mirrors silx `BaseMask.undo`: requires more than one snapshot; the
+    /// popped state is pushed onto the redo stack and the new last snapshot
+    /// is returned.
+    fn undo(&mut self) -> Option<Vec<u8>> {
+        if self.history.len() > 1 {
+            let popped = self.history.pop().expect("len > 1");
+            self.redo.push(popped);
+            Some(self.history.last().expect("len >= 1").clone())
+        } else {
+            None
+        }
+    }
+
+    /// Restore the most recently undone snapshot, returning it, if any.
+    ///
+    /// Mirrors silx `BaseMask.redo`: pops the redo stack, pushes it back onto
+    /// the history and returns it.
+    fn redo(&mut self) -> Option<Vec<u8>> {
+        if let Some(snapshot) = self.redo.pop() {
+            self.history.push(snapshot.clone());
+            Some(snapshot)
+        } else {
+            None
+        }
+    }
+
+    /// Whether an undo is currently possible (silx `sigUndoable`).
+    fn can_undo(&self) -> bool {
+        self.history.len() > 1
+    }
+
+    /// Whether a redo is currently possible (silx `sigRedoable`).
+    fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+}
+
 /// A widget for interactively drawing a multi-level mask over a 2D image.
 ///
 /// The mask mirrors silx `ImageMask`: a `uint8` array the same shape as the
@@ -52,6 +148,7 @@ pub struct MaskToolsWidget {
     pub active_tool: MaskTool,
     pub brush_size: u32,
 
+    history: MaskHistory,
     mask_handle: Option<ItemHandle>,
     is_dirty: bool,
 }
@@ -59,24 +156,30 @@ pub struct MaskToolsWidget {
 impl MaskToolsWidget {
     /// Create a new MaskToolsWidget for an image of the given dimensions.
     pub fn new(width: u32, height: u32) -> Self {
+        let mask = vec![0; (width * height) as usize];
+        let history = MaskHistory::new(&mask);
         Self {
-            mask: vec![0; (width * height) as usize],
+            mask,
             width,
             height,
             color: Color32::from_rgba_unmultiplied(255, 0, 0, 128), // Default semi-transparent red
             level: 1,
             active_tool: MaskTool::None,
             brush_size: 1,
+            history,
             mask_handle: None,
             is_dirty: true, // Force initial upload
         }
     }
 
     /// Reset the mask to the given dimensions and clear it.
+    ///
+    /// Mirrors silx `reset(shape)`: a shape change resets the undo history.
     pub fn reset_geometry(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
         self.mask = vec![0; (width * height) as usize];
+        self.history.reset(&self.mask);
         self.is_dirty = true;
     }
 
@@ -117,6 +220,58 @@ impl MaskToolsWidget {
             }
         }
         self.is_dirty = true;
+    }
+
+    /// Commit the current mask to the undo history.
+    ///
+    /// Mirrors silx `BaseMask.commit`: call once per completed mask
+    /// operation. A snapshot is stored only if the mask changed (or a redo
+    /// was pending), and the history is bounded to the default depth (10).
+    pub fn commit(&mut self) {
+        self.history.commit(&self.mask);
+    }
+
+    /// Restore the previous mask snapshot, if any.
+    ///
+    /// Mirrors silx `BaseMask.undo`. Returns `true` if an undo was applied.
+    pub fn undo(&mut self) -> bool {
+        if let Some(snapshot) = self.history.undo() {
+            self.mask = snapshot;
+            self.is_dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Restore the most recently undone mask snapshot, if any.
+    ///
+    /// Mirrors silx `BaseMask.redo`. Returns `true` if a redo was applied.
+    pub fn redo(&mut self) -> bool {
+        if let Some(snapshot) = self.history.redo() {
+            self.mask = snapshot;
+            self.is_dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reset the undo history to the current mask as the only baseline.
+    ///
+    /// Mirrors silx `BaseMask.resetHistory`.
+    pub fn reset_history(&mut self) {
+        self.history.reset(&self.mask);
+    }
+
+    /// Whether an undo is currently possible (silx `sigUndoable`).
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Whether a redo is currently possible (silx `sigRedoable`).
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
     }
 
     /// Apply the mask onto a `Plot2D`.
@@ -195,14 +350,29 @@ impl MaskToolsWidget {
                 ui.add(egui::Slider::new(&mut self.brush_size, 1..=50).text("Brush size"));
             }
 
+            if ui
+                .add_enabled(self.can_undo(), egui::Button::new("Undo"))
+                .clicked()
+            {
+                self.undo();
+            }
+            if ui
+                .add_enabled(self.can_redo(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                self.redo();
+            }
             if ui.button("Invert").clicked() {
                 self.invert();
+                self.commit();
             }
             if ui.button("Clear").clicked() {
                 self.clear();
+                self.commit();
             }
             if ui.button("Clear All").clicked() {
                 self.clear_all();
+                self.commit();
             }
         });
     }
@@ -607,6 +777,81 @@ mod tests {
         w.mask = vec![1, 2, 255, 0];
         w.clear_all();
         assert_eq!(w.mask, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn undo_is_noop_with_only_baseline() {
+        // silx undo requires len(history) > 1: a fresh widget cannot undo.
+        let mut w = MaskToolsWidget::new(2, 2);
+        assert!(!w.can_undo());
+        assert!(!w.undo());
+    }
+
+    #[test]
+    fn commit_without_change_adds_no_snapshot() {
+        // silx commit only stores when the mask differs from the last snapshot.
+        let mut w = MaskToolsWidget::new(2, 2);
+        w.commit(); // mask unchanged from baseline
+        assert!(!w.can_undo());
+    }
+
+    #[test]
+    fn undo_then_redo_round_trips_one_change() {
+        let mut w = MaskToolsWidget::new(2, 2);
+        w.mask = vec![1, 0, 0, 0];
+        w.commit();
+        assert!(w.can_undo());
+
+        assert!(w.undo());
+        assert_eq!(w.mask, vec![0, 0, 0, 0]); // back to baseline
+        assert!(!w.can_undo());
+        assert!(w.can_redo());
+
+        assert!(w.redo());
+        assert_eq!(w.mask, vec![1, 0, 0, 0]); // change restored
+        assert!(!w.can_redo());
+    }
+
+    #[test]
+    fn new_commit_after_undo_clears_redo() {
+        // silx commit resets the redo stack when a new action is performed.
+        let mut w = MaskToolsWidget::new(2, 2);
+        w.mask = vec![1, 0, 0, 0];
+        w.commit();
+        assert!(w.undo());
+        assert!(w.can_redo());
+
+        // A different change committed after the undo invalidates redo.
+        w.mask = vec![2, 0, 0, 0];
+        w.commit();
+        assert!(!w.can_redo());
+        assert!(!w.redo());
+    }
+
+    #[test]
+    fn history_is_bounded_to_depth() {
+        // silx historyDepth=10: history holds at most `depth` snapshots, so
+        // the oldest are trimmed and undo walks back depth-1 states.
+        let depth = DEFAULT_HISTORY_DEPTH;
+        let mut w = MaskToolsWidget::new(1, 1);
+
+        // Commit `depth + 5` distinct states (level 1..=depth+5).
+        for level in 1..=(depth + 5) as u8 {
+            w.mask = vec![level];
+            w.commit();
+        }
+        let last = (depth + 5) as u8;
+        assert_eq!(w.mask, vec![last]);
+
+        // Undo as far as possible: exactly depth-1 steps remain in history.
+        let mut undos = 0;
+        while w.undo() {
+            undos += 1;
+        }
+        assert_eq!(undos, depth - 1);
+        // The oldest retained snapshot is `last - (depth - 1)`, not the
+        // original baseline (which was trimmed off the front).
+        assert_eq!(w.mask, vec![last - (depth as u8 - 1)]);
     }
 
     #[test]
