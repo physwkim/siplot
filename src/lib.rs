@@ -74,6 +74,7 @@ pub use crate::widget::position_info::{PositionInfo, format_value};
 pub use crate::widget::profile_window::ProfileWindow;
 pub use crate::widget::roi_manager::{ManagedRoi, RoiManagerWidget};
 pub use crate::widget::roi_stats::{RoiStats, curve_roi_stats, image_roi_stats, roi_x_span};
+pub use crate::widget::scatter_mask::{ScatterMaskWidget, point_in_polygon};
 pub use crate::widget::stats_widget::{
     StatsInput, StatsWidget, UpdateMode, format_significant, format_stat,
 };

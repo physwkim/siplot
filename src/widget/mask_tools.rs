@@ -42,7 +42,11 @@ const DEFAULT_HISTORY_DEPTH: usize = 10;
 /// The `history` stack always holds at least one baseline snapshot once
 /// [`reset`](Self::reset) has run; `undo` is possible only when more than one
 /// snapshot is stored.
-struct MaskHistory {
+///
+/// Shared with the scatter mask (1D per-point buffer) via crate visibility;
+/// the snapshot type is an opaque `Vec<u8>` so the same machinery serves both
+/// the 2D image mask and the 1D scatter mask.
+pub(crate) struct MaskHistory {
     history: Vec<Vec<u8>>,
     redo: Vec<Vec<u8>>,
     depth: usize,
@@ -53,7 +57,7 @@ impl MaskHistory {
     ///
     /// Mirrors silx `resetHistory` after construction: `_history = [mask]`,
     /// `_redo = []`.
-    fn new(mask: &[u8]) -> Self {
+    pub(crate) fn new(mask: &[u8]) -> Self {
         Self {
             history: vec![mask.to_vec()],
             redo: Vec::new(),
@@ -64,7 +68,7 @@ impl MaskHistory {
     /// Reset the history to a single baseline snapshot of `mask`.
     ///
     /// Mirrors silx `BaseMask.resetHistory`.
-    fn reset(&mut self, mask: &[u8]) {
+    pub(crate) fn reset(&mut self, mask: &[u8]) {
         self.history = vec![mask.to_vec()];
         self.redo.clear();
     }
@@ -75,7 +79,7 @@ impl MaskHistory {
     /// non-empty (a new action invalidates redo) or when `mask` differs from
     /// the last snapshot. The redo stack is cleared on commit, and the
     /// history is trimmed from the front to at most `depth` snapshots.
-    fn commit(&mut self, mask: &[u8]) {
+    pub(crate) fn commit(&mut self, mask: &[u8]) {
         let differs = self.history.last().map(|last| last != mask).unwrap_or(true);
         if self.history.is_empty() || !self.redo.is_empty() || differs {
             self.redo.clear();
@@ -93,7 +97,7 @@ impl MaskHistory {
     /// Mirrors silx `BaseMask.undo`: requires more than one snapshot; the
     /// popped state is pushed onto the redo stack and the new last snapshot
     /// is returned.
-    fn undo(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn undo(&mut self) -> Option<Vec<u8>> {
         if self.history.len() > 1 {
             let popped = self.history.pop().expect("len > 1");
             self.redo.push(popped);
@@ -107,7 +111,7 @@ impl MaskHistory {
     ///
     /// Mirrors silx `BaseMask.redo`: pops the redo stack, pushes it back onto
     /// the history and returns it.
-    fn redo(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn redo(&mut self) -> Option<Vec<u8>> {
         if let Some(snapshot) = self.redo.pop() {
             self.history.push(snapshot.clone());
             Some(snapshot)
@@ -117,12 +121,12 @@ impl MaskHistory {
     }
 
     /// Whether an undo is currently possible (silx `sigUndoable`).
-    fn can_undo(&self) -> bool {
+    pub(crate) fn can_undo(&self) -> bool {
         self.history.len() > 1
     }
 
     /// Whether a redo is currently possible (silx `sigRedoable`).
-    fn can_redo(&self) -> bool {
+    pub(crate) fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
 }

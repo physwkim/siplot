@@ -21,5 +21,6 @@ pub mod position_info;
 pub mod profile_window;
 pub mod roi_manager;
 pub mod roi_stats;
+pub mod scatter_mask;
 pub mod stats_widget;
 pub mod sync;
