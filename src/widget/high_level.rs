@@ -4023,6 +4023,17 @@ fn image_view_colorbar(colormap: &Colormap) -> crate::widget::colorbar::ColorBar
     crate::widget::colorbar::ColorBarWidget::new(colormap.clone())
 }
 
+/// Build the [`ScatterView`] side colorbar from its retained value colormap
+/// (silx `ScatterView.getColorBarWidget`, ScatterView.py:83-88). Returns `None`
+/// when no data has been uploaded yet (`colormap` is `None`). Split out from
+/// [`ScatterView::colorbar`] so the colormap→colorbar mapping is unit-testable
+/// without a GPU backend.
+fn scatter_view_colorbar(
+    colormap: Option<&Colormap>,
+) -> Option<crate::widget::colorbar::ColorBarWidget> {
+    colormap.map(image_view_colorbar)
+}
+
 /// Extract cursor data coordinates `[x, y]` from a pointer event for the
 /// PositionInfo readout (silx `PositionInfo._updateStatusBar`, fed by
 /// `sigMouseMoved`). A move (hover), click, or double-click over the data area
@@ -4716,6 +4727,11 @@ impl ImageView {
 pub struct ScatterView {
     inner: PlotWidget,
     scatter_handle: Option<ItemHandle>,
+    /// Colormap that maps the per-point `values` to marker colors, retained so
+    /// the side colorbar (silx `ScatterView` `getColorBarWidget`,
+    /// ScatterView.py:83-88) reflects the current value limits. `None` until
+    /// [`Self::set_data`] has been called.
+    colormap: Option<Colormap>,
 }
 
 impl ScatterView {
@@ -4726,6 +4742,7 @@ impl ScatterView {
         Self {
             inner,
             scatter_handle: None,
+            colormap: None,
         }
     }
 
@@ -4773,7 +4790,26 @@ impl ScatterView {
             self.scatter_handle = Some(h);
             self.inner.set_item_legend(h, "scatter");
         }
+        self.colormap = Some(colormap);
         Ok(())
+    }
+
+    /// The value colormap that drives the marker colors, retained from the last
+    /// [`Self::set_data`] (silx `ScatterView.getColormap`). `None` before any
+    /// data has been uploaded.
+    pub fn colormap(&self) -> Option<&Colormap> {
+        self.colormap.as_ref()
+    }
+
+    /// A [`ColorBarWidget`] for the scatter's value colormap, used by
+    /// [`Self::show`] to render the side colorbar (silx
+    /// `ScatterView.getColorBarWidget`, ScatterView.py:83-88). The bar's value
+    /// limits track the colormap's `vmin`/`vmax`. Returns `None` before any data
+    /// has been uploaded.
+    ///
+    /// [`ColorBarWidget`]: crate::widget::colorbar::ColorBarWidget
+    pub fn colorbar(&self) -> Option<crate::widget::colorbar::ColorBarWidget> {
+        scatter_view_colorbar(self.colormap.as_ref())
     }
 
     /// Show the standard toolbar.
@@ -4781,9 +4817,30 @@ impl ScatterView {
         self.inner.show_toolbar(ui)
     }
 
-    /// Render the scatter plot.
+    /// Render the scatter plot with the value colorbar beside it.
+    ///
+    /// The colorbar occupies a fixed-width column on the right, synced to the
+    /// value colormap's limits (silx `ScatterView` grid colorbar,
+    /// ScatterView.py:83-88). Before any data is uploaded no colorbar is drawn.
     pub fn show(&mut self, ui: &mut egui::Ui) -> PlotResponse {
-        self.inner.show(ui)
+        let avail = ui.available_size();
+        let colorbar = self.colorbar();
+        let colorbar_w = if colorbar.is_some() {
+            COLORBAR_WIDTH
+        } else {
+            0.0
+        };
+        ui.horizontal(|ui| {
+            let plot_w = avail.x - colorbar_w;
+            let response = ui
+                .allocate_ui(egui::vec2(plot_w, avail.y), |ui| self.inner.show(ui))
+                .inner;
+            if let Some(bar) = colorbar {
+                bar.ui(ui, egui::vec2(colorbar_w, avail.y));
+            }
+            response
+        })
+        .inner
     }
 }
 
@@ -5319,6 +5376,25 @@ mod tests {
         let bar = image_view_colorbar(&cmap);
         assert_eq!(bar.colormap.vmin, -3.0);
         assert_eq!(bar.colormap.vmax, 9.5);
+        assert_eq!(
+            bar.orientation,
+            crate::widget::colorbar::ColorBarOrientation::Vertical
+        );
+    }
+
+    #[test]
+    fn scatter_view_colorbar_tracks_value_colormap_limits() {
+        // Item 1: the ScatterView side colorbar is synced to the value
+        // colormap's limits, and is absent before any data is uploaded (silx
+        // ScatterView.getColorBarWidget).
+        assert!(
+            scatter_view_colorbar(None).is_none(),
+            "no colorbar before set_data"
+        );
+        let cmap = Colormap::viridis(2.5, 41.0);
+        let bar = scatter_view_colorbar(Some(&cmap)).expect("colorbar after set_data");
+        assert_eq!(bar.colormap.vmin, 2.5);
+        assert_eq!(bar.colormap.vmax, 41.0);
         assert_eq!(
             bar.orientation,
             crate::widget::colorbar::ColorBarOrientation::Vertical
