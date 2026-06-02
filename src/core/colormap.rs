@@ -6,7 +6,7 @@
 //! LUT (`doc/design.md` §5). A small catalog of perceptually-sensible maps is
 //! provided via [`ColormapName`] (`doc/design.md` §13 E2).
 //!
-//! Scope: linear / log10 / sqrt / gamma normalization (mirrors silx
+//! Scope: linear / log10 / sqrt / gamma / arcsinh normalization (mirrors silx
 //! `GLPlotImage`). NaN sentinel handling and autoscale (`vmin`/`vmax = None`)
 //! arrive in later steps.
 
@@ -29,23 +29,30 @@ pub enum Normalization {
     /// `t = ((v - vmin) / (vmax - vmin)) ^ gamma` (the linear ratio raised to
     /// the [`Colormap::gamma`] power; silx applies the exponent directly).
     Gamma,
+    /// `t = (asinh(v) - asinh(vmin)) / (asinh(vmax) - asinh(vmin))` (silx
+    /// `ARCSINH`). `asinh` is finite and monotonic for every finite value, so
+    /// unlike log/sqrt there is no invalid domain to guard.
+    Arcsinh,
 }
 
 impl Normalization {
     /// Shader normalization code (must match the `if`-chain in `image.wgsl`,
-    /// and silx `GLPlotImage` `normID`: linear 0, log 1, sqrt 2, gamma 3).
+    /// and silx `GLPlotImage` `normID`: linear 0, log 1, sqrt 2, gamma 3,
+    /// arcsinh 4).
     pub(crate) fn code(self) -> u32 {
         match self {
             Normalization::Linear => 0,
             Normalization::Log => 1,
             Normalization::Sqrt => 2,
             Normalization::Gamma => 3,
+            Normalization::Arcsinh => 4,
         }
     }
 
     /// The monotonic transform applied to a value before the linear `[0, 1]`
     /// scaling: `log10` for [`Log`](Normalization::Log), `sqrt` for
-    /// [`Sqrt`](Normalization::Sqrt), identity otherwise. [`Gamma`] scales
+    /// [`Sqrt`](Normalization::Sqrt), `asinh` for
+    /// [`Arcsinh`](Normalization::Arcsinh), identity otherwise. [`Gamma`] scales
     /// linearly here; its exponent is applied to the ratio afterwards, matching
     /// silx `GLPlotImage`.
     fn transform(self, v: f64) -> f64 {
@@ -53,6 +60,7 @@ impl Normalization {
             Normalization::Linear | Normalization::Gamma => v,
             Normalization::Log => v.log10(),
             Normalization::Sqrt => v.sqrt(),
+            Normalization::Arcsinh => v.asinh(),
         }
     }
 }
@@ -512,6 +520,7 @@ mod tests {
         assert_eq!(Normalization::Log.code(), 1);
         assert_eq!(Normalization::Sqrt.code(), 2);
         assert_eq!(Normalization::Gamma.code(), 3);
+        assert_eq!(Normalization::Arcsinh.code(), 4);
     }
 
     #[test]
@@ -579,6 +588,38 @@ mod tests {
         let (cmin, oor) = sqrt.norm_bounds();
         assert_eq!(cmin, 0.0); // sqrt(0)
         assert!((oor - 0.5).abs() < 1e-6); // 1 / (sqrt(4) - sqrt(0)) = 1/2
+    }
+
+    // --- Arcsinh normalization -------------------------------------------
+
+    #[test]
+    fn normalize_arcsinh_endpoints_and_monotonic() {
+        // asinh is monotonic over all reals, so vmin/vmax pin the [0, 1] ends
+        // and the mapping is strictly increasing in between.
+        let cm = Colormap::viridis(-10.0, 10.0).with_normalization(Normalization::Arcsinh);
+        assert_eq!(cm.normalize(-10.0), 0.0); // vmin -> low
+        assert_eq!(cm.normalize(10.0), 1.0); // vmax -> high
+
+        // asinh(0) = 0 is the midpoint of asinh(-10)..asinh(10) (odd function).
+        assert!((cm.normalize(0.0) - 0.5).abs() < 1e-6);
+
+        // Strictly increasing across a swept range.
+        let mut prev = cm.normalize(-10.0);
+        for i in 1..=40 {
+            let v = -10.0 + (i as f64) * 0.5;
+            let cur = cm.normalize(v);
+            assert!(cur >= prev, "arcsinh not monotonic at v={v}");
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn norm_bounds_arcsinh_transforms_with_asinh() {
+        let cm = Colormap::viridis(-10.0, 10.0).with_normalization(Normalization::Arcsinh);
+        let (cmin, oor) = cm.norm_bounds();
+        assert!((cmin as f64 - (-10.0f64).asinh()).abs() < 1e-6);
+        let expected_oor = 1.0 / (10.0f64.asinh() - (-10.0f64).asinh());
+        assert!((oor as f64 - expected_oor).abs() < 1e-6);
     }
 
     // --- Catalog LUTs ----------------------------------------------------

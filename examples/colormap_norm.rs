@@ -44,6 +44,7 @@ fn norm_label(norm: Normalization) -> &'static str {
         Normalization::Log => "log10",
         Normalization::Sqrt => "sqrt",
         Normalization::Gamma => "gamma 2.0",
+        Normalization::Arcsinh => "arcsinh",
     }
 }
 
