@@ -6339,6 +6339,34 @@ mod tests {
     }
 
     #[test]
+    fn colorbar_toggle_frees_and_restores_the_column() {
+        // image_colorbar_toggle / scatter_colorbar_toggle (actions::control) are
+        // `set_show_colorbar(!show_colorbar())` on an ImageView/ScatterView, which
+        // require a RenderState to construct. Their observable effect — whether the
+        // side colorbar column is reserved — is the show_colorbar transition fed to
+        // colorbar_column_width, exercised here without a GPU (the analog of
+        // show_axis_toggle_flips_axes_displayed driving the bare Plot model).
+        let mut show = true;
+        assert_eq!(
+            colorbar_column_width(show, true),
+            COLORBAR_WIDTH,
+            "shown reserves the column"
+        );
+        show = !show; // toggle hides
+        assert_eq!(
+            colorbar_column_width(show, true),
+            0.0,
+            "toggling off frees the column"
+        );
+        show = !show; // toggle shows again
+        assert_eq!(
+            colorbar_column_width(show, true),
+            COLORBAR_WIDTH,
+            "toggling back on reserves it again"
+        );
+    }
+
+    #[test]
     fn finite_bounds_ignores_non_finite_values() {
         let bounds = finite_bounds(&[f64::NAN, 2.0, -1.0, f64::INFINITY]).unwrap();
         assert_eq!(bounds.as_non_degenerate(), (-1.0, 2.0));
