@@ -13,7 +13,7 @@ use crate::core::colormap::{Colormap, Normalization};
 use crate::core::items::LineStyle;
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::plot::GraphGrid;
-use crate::core::roi::Roi;
+use crate::core::roi::{HandleKind, Roi};
 use crate::core::shape::{Shape, ShapeKind};
 use crate::core::transform::{Axis, Scale, Transform, YAxis};
 use crate::core::triangles::Triangles;
@@ -511,6 +511,30 @@ pub fn draw_rois(painter: &Painter, t: &Transform, rois: &[Roi], style: &Style) 
     }
 }
 
+/// Draw the handle glyphs of a ROI in `color`, one per [`RoiHandle`] from
+/// [`Roi::handles`]. Mirrors the silx handle markers (`items/_roi_base.py`
+/// `addHandle`/`addTranslateHandle`): a translate or center handle is a `+`
+/// (silx `"+"`), every other handle (shape vertex / band edge) is a small filled
+/// square (silx default `"s"`).
+fn draw_roi_handles(painter: &Painter, t: &Transform, roi: &Roi, color: Color32) {
+    for handle in roi.handles() {
+        let p = t.data_to_pixel(handle.pos[0], handle.pos[1]);
+        match handle.kind {
+            HandleKind::Translate | HandleKind::Center => {
+                // '+' glyph (silx translate handle symbol).
+                let r = 4.0;
+                let stroke = Stroke::new(1.5, color);
+                painter.line_segment([pos2(p.x - r, p.y), pos2(p.x + r, p.y)], stroke);
+                painter.line_segment([pos2(p.x, p.y - r), pos2(p.x, p.y + r)], stroke);
+            }
+            HandleKind::Vertex | HandleKind::Edge => {
+                let h = Rect::from_center_size(p, vec2(6.0, 6.0));
+                painter.rect_filled(h, egui::CornerRadius::ZERO, color);
+            }
+        }
+    }
+}
+
 /// Draw one ROI honoring `appearance`: the override color recolors the outline,
 /// fill, and handles; a selected ROI uses a thicker border (silx highlight
 /// `linewidth=2`); and a non-empty name is drawn as a label near the ROI.
@@ -546,10 +570,6 @@ pub fn draw_roi(
             let a = t.data_to_pixel(start.0, start.1);
             let b = t.data_to_pixel(end.0, end.1);
             painter.line_segment([a, b], border);
-            for &p in &[a, b] {
-                let h = Rect::from_center_size(p, egui::vec2(6.0, 6.0));
-                painter.rect_filled(h, egui::CornerRadius::ZERO, color);
-            }
             Some(a)
         }
         Roi::Polygon { vertices } if !vertices.is_empty() => {
@@ -558,10 +578,6 @@ pub fn draw_roi(
                 .map(|&(x, y)| t.data_to_pixel(x, y))
                 .collect();
             painter.add(egui::Shape::convex_polygon(pts.clone(), fill, border));
-            for p in &pts {
-                let h = Rect::from_center_size(*p, egui::vec2(6.0, 6.0));
-                painter.rect_filled(h, egui::CornerRadius::ZERO, color);
-            }
             pts.first().copied()
         }
         Roi::Polygon { .. } => None, // empty polygon, skip
@@ -573,11 +589,6 @@ pub fn draw_roi(
             let rpx = (edge.x - c.x).abs();
             painter.circle_filled(c, rpx, fill);
             painter.circle_stroke(c, rpx, border);
-            let handles = [c, edge];
-            for &p in &handles {
-                let h = Rect::from_center_size(p, egui::vec2(6.0, 6.0));
-                painter.rect_filled(h, egui::CornerRadius::ZERO, color);
-            }
             Some(egui::pos2(c.x, c.y - rpx))
         }
         Roi::Ellipse { center, radii } => {
@@ -596,11 +607,6 @@ pub fn draw_roi(
                 })
                 .collect();
             painter.add(egui::Shape::convex_polygon(pts, fill, border));
-            let handles = [c, ex, ey];
-            for &p in &handles {
-                let h = Rect::from_center_size(p, egui::vec2(6.0, 6.0));
-                painter.rect_filled(h, egui::CornerRadius::ZERO, color);
-            }
             Some(egui::pos2(c.x, c.y - ry))
         }
         _ => {
@@ -613,13 +619,16 @@ pub fn draw_roi(
                 border,
                 egui::StrokeKind::Inside,
             );
-            for c in roi.handle_centers(t) {
-                let h = Rect::from_center_size(c, egui::vec2(6.0, 6.0));
-                painter.rect_filled(h, egui::CornerRadius::ZERO, color);
-            }
             Some(egui::pos2(r.center().x, r.top()))
         }
     };
+
+    // Handle glyphs (silx `HandleBasedROI` markers): one per `roi.handles()`.
+    // A PointROI's own symbol doubles as its handle (silx `PointROI` is a single
+    // marker, not a `HandleBasedROI`), so it is not drawn over again.
+    if !matches!(roi, Roi::Point { .. }) {
+        draw_roi_handles(painter, t, roi, color);
+    }
 
     if let (Some(name), Some(anchor)) = (appearance.name.filter(|s| !s.is_empty()), label_anchor) {
         draw_marker_label(

@@ -57,6 +57,35 @@ pub enum Roi {
     },
 }
 
+/// What a [`RoiHandle`] manipulates, mirroring the silx handle roles
+/// (`items/_roi_base.py` `addHandle`/`addTranslateHandle`): a shape-editing
+/// vertex (silx `"default"`, drawn as a filled square `"s"`), an edge limit on a
+/// band, the shape center, or a translate-only handle (silx `"translate"`, drawn
+/// as a `"+"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleKind {
+    /// A vertex that edits the shape when dragged (silx default `"s"` handle).
+    Vertex,
+    /// A band limit handle (the bottom/top of an `HRange`, left/right of a
+    /// `VRange`).
+    Edge,
+    /// The shape center used as a label/anchor point.
+    Center,
+    /// A translate-only handle: dragging it moves the whole ROI (silx
+    /// `addTranslateHandle`, `"+"`).
+    Translate,
+}
+
+/// One draggable handle of a ROI in data space, with the role it plays (silx
+/// `HandleBasedROI` markers). Pure geometry: no pointer/event state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoiHandle {
+    /// Data-space position of the handle.
+    pub pos: [f64; 2],
+    /// What the handle manipulates.
+    pub kind: HandleKind,
+}
+
 impl Roi {
     /// The screen rectangle this ROI draws into. Bands span the data area on
     /// their free axis.
@@ -361,6 +390,128 @@ impl Roi {
                 let (dx, dy) = (x - center.0, y - center.1);
                 (dx * dx) / (major * major) + (dy * dy) / (minor * minor) <= 1.0
             }
+        }
+    }
+
+    /// The draggable handles this ROI exposes, in data space (silx
+    /// `HandleBasedROI` markers; `items/_roi_base.py`). Pure geometry: no
+    /// pointer/event state. Handle roles mirror silx (`addHandle` "default"
+    /// vertices, `addTranslateHandle` "+" translate handles).
+    pub fn handles(&self) -> Vec<RoiHandle> {
+        let v = |p: (f64, f64)| RoiHandle {
+            pos: [p.0, p.1],
+            kind: HandleKind::Vertex,
+        };
+        let center = |p: (f64, f64)| RoiHandle {
+            pos: [p.0, p.1],
+            kind: HandleKind::Center,
+        };
+        let translate = |p: (f64, f64)| RoiHandle {
+            pos: [p.0, p.1],
+            kind: HandleKind::Translate,
+        };
+        let edge = |p: (f64, f64)| RoiHandle {
+            pos: [p.0, p.1],
+            kind: HandleKind::Edge,
+        };
+        match self {
+            // RectangleROI: 4 corner vertices + a translate center
+            // (silx `addHandle` ×4 + `addTranslateHandle`).
+            Roi::Rect {
+                x: (x0, x1),
+                y: (y0, y1),
+            } => vec![
+                v((*x0, *y0)),
+                v((*x1, *y0)),
+                v((*x0, *y1)),
+                v((*x1, *y1)),
+                translate(((x0 + x1) * 0.5, (y0 + y1) * 0.5)),
+            ],
+            // HorizontalRangeROI: min/max edge handles + a center handle.
+            Roi::HRange { y: (y0, y1) } => vec![
+                edge((0.0, *y0)),
+                edge((0.0, *y1)),
+                center((0.0, (y0 + y1) * 0.5)),
+            ],
+            // VerticalRangeROI analogue.
+            Roi::VRange { x: (x0, x1) } => vec![
+                edge((*x0, 0.0)),
+                edge((*x1, 0.0)),
+                center(((x0 + x1) * 0.5, 0.0)),
+            ],
+            // PointROI: a single vertex handle.
+            Roi::Point { x, y } => vec![v((*x, *y))],
+            // CrossROI: a single center handle.
+            Roi::Cross { center: c } => vec![center(*c)],
+            // LineROI: 2 endpoint vertices + a translate center handle.
+            Roi::Line { start, end } => vec![
+                v(*start),
+                v(*end),
+                translate(((start.0 + end.0) * 0.5, (start.1 + end.1) * 0.5)),
+            ],
+            // PolygonROI: N vertices + a translate center handle (silx places
+            // the translate handle at the first vertex; empty polygon has none).
+            Roi::Polygon { vertices } => {
+                let mut hs: Vec<RoiHandle> = vertices.iter().map(|&p| v(p)).collect();
+                if let Some(&first) = vertices.first() {
+                    hs.push(translate(first));
+                }
+                hs
+            }
+            // CircleROI: a perimeter vertex (silx `addHandle`) + a translate
+            // center (`addTranslateHandle`).
+            Roi::Circle { center: c, radius } => {
+                vec![v((c.0 + radius, c.1)), translate(*c)]
+            }
+            // EllipseROI: two axis vertices + a translate center.
+            Roi::Ellipse { center: c, radii } => vec![
+                v((c.0 + radii.0, c.1)),
+                v((c.0, c.1 + radii.1)),
+                translate(*c),
+            ],
+        }
+    }
+
+    /// Translate the whole ROI by `(dx, dy)` in data space, moving every handle
+    /// by the same delta (silx `RegionOfInterest`/`HandleBasedROI.translate`).
+    pub fn translate(&mut self, dx: f64, dy: f64) {
+        let shift = |p: &mut (f64, f64)| {
+            p.0 += dx;
+            p.1 += dy;
+        };
+        match self {
+            Roi::Rect { x, y } => {
+                x.0 += dx;
+                x.1 += dx;
+                y.0 += dy;
+                y.1 += dy;
+            }
+            // A band moves only on its spanned axis (silx ranges translate the
+            // bounded axis; the spanned axis is unbounded).
+            Roi::HRange { y } => {
+                y.0 += dy;
+                y.1 += dy;
+            }
+            Roi::VRange { x } => {
+                x.0 += dx;
+                x.1 += dx;
+            }
+            Roi::Point { x, y } => {
+                *x += dx;
+                *y += dy;
+            }
+            Roi::Cross { center } => shift(center),
+            Roi::Line { start, end } => {
+                shift(start);
+                shift(end);
+            }
+            Roi::Polygon { vertices } => {
+                for v in vertices.iter_mut() {
+                    shift(v);
+                }
+            }
+            Roi::Circle { center, .. } => shift(center),
+            Roi::Ellipse { center, .. } => shift(center),
         }
     }
 }
@@ -683,5 +834,154 @@ mod tests {
         assert!(!roi.contains((4.0, 6.0)));
         // Corner far to the right in x: square x in [9, 10], past the segment end.
         assert!(!roi.contains((9.0, 4.5)));
+    }
+
+    // --- handle geometry tests (counts per ROI kind, translate invariant) ---
+
+    fn kinds(handles: &[RoiHandle]) -> Vec<HandleKind> {
+        handles.iter().map(|h| h.kind).collect()
+    }
+
+    #[test]
+    fn handle_counts_and_roles_per_kind() {
+        use HandleKind::*;
+        // Rect: 4 corner vertices + a translate center.
+        let rect = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        assert_eq!(
+            kinds(&rect.handles()),
+            vec![Vertex, Vertex, Vertex, Vertex, Translate]
+        );
+        // The 4 vertices are exactly the 4 corners.
+        let corners: Vec<[f64; 2]> = rect.handles()[..4].iter().map(|h| h.pos).collect();
+        assert!(corners.contains(&[2.0, 3.0]));
+        assert!(corners.contains(&[8.0, 7.0]));
+        assert_eq!(rect.handles()[4].pos, [5.0, 5.0]); // center
+
+        // HRange / VRange: two edge limits + a center.
+        assert_eq!(
+            kinds(&Roi::HRange { y: (3.0, 7.0) }.handles()),
+            vec![Edge, Edge, Center]
+        );
+        assert_eq!(
+            kinds(&Roi::VRange { x: (2.0, 8.0) }.handles()),
+            vec![Edge, Edge, Center]
+        );
+
+        // Point: one vertex. Cross: one center.
+        assert_eq!(
+            kinds(&Roi::Point { x: 1.0, y: 2.0 }.handles()),
+            vec![Vertex]
+        );
+        assert_eq!(
+            kinds(&Roi::Cross { center: (1.0, 2.0) }.handles()),
+            vec![Center]
+        );
+
+        // Line: 2 endpoint vertices + translate center.
+        assert_eq!(
+            kinds(
+                &Roi::Line {
+                    start: (0.0, 0.0),
+                    end: (4.0, 2.0),
+                }
+                .handles()
+            ),
+            vec![Vertex, Vertex, Translate]
+        );
+
+        // Polygon: N vertices + translate; empty polygon has no handles.
+        let poly = Roi::Polygon {
+            vertices: vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)],
+        };
+        assert_eq!(
+            kinds(&poly.handles()),
+            vec![Vertex, Vertex, Vertex, Translate]
+        );
+        assert!(
+            Roi::Polygon {
+                vertices: Vec::new()
+            }
+            .handles()
+            .is_empty()
+        );
+
+        // Circle: perimeter vertex + translate center.
+        assert_eq!(
+            kinds(
+                &Roi::Circle {
+                    center: (5.0, 5.0),
+                    radius: 2.0,
+                }
+                .handles()
+            ),
+            vec![Vertex, Translate]
+        );
+        // Ellipse: two axis vertices + translate center.
+        assert_eq!(
+            kinds(
+                &Roi::Ellipse {
+                    center: (5.0, 5.0),
+                    radii: (4.0, 2.0),
+                }
+                .handles()
+            ),
+            vec![Vertex, Vertex, Translate]
+        );
+    }
+
+    #[test]
+    fn translate_moves_every_2d_handle_by_the_same_delta() {
+        // Shapes with genuine 2D positions: every handle shifts by (dx, dy).
+        let rois = [
+            Roi::Rect {
+                x: (2.0, 8.0),
+                y: (3.0, 7.0),
+            },
+            Roi::Point { x: 1.0, y: 2.0 },
+            Roi::Cross { center: (1.0, 2.0) },
+            Roi::Line {
+                start: (0.0, 0.0),
+                end: (4.0, 2.0),
+            },
+            Roi::Polygon {
+                vertices: vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)],
+            },
+            Roi::Circle {
+                center: (5.0, 5.0),
+                radius: 2.0,
+            },
+            Roi::Ellipse {
+                center: (5.0, 5.0),
+                radii: (4.0, 2.0),
+            },
+        ];
+        let (dx, dy) = (1.5, -0.5);
+        for roi in rois {
+            let before = roi.handles();
+            let mut moved = roi.clone();
+            moved.translate(dx, dy);
+            let after = moved.handles();
+            assert_eq!(before.len(), after.len());
+            for (b, a) in before.iter().zip(&after) {
+                assert_eq!(a.kind, b.kind);
+                assert!((a.pos[0] - (b.pos[0] + dx)).abs() < 1e-9, "{roi:?}");
+                assert!((a.pos[1] - (b.pos[1] + dy)).abs() < 1e-9, "{roi:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn translate_band_rois_move_only_the_bounded_axis() {
+        // A horizontal band has no x position; translate moves only its y limits.
+        let mut h = Roi::HRange { y: (3.0, 7.0) };
+        h.translate(1.5, -0.5);
+        assert_eq!(h, Roi::HRange { y: (2.5, 6.5) });
+        // A vertical band moves only its x limits.
+        let mut v = Roi::VRange { x: (2.0, 8.0) };
+        v.translate(1.5, -0.5);
+        assert_eq!(v, Roi::VRange { x: (3.5, 9.5) });
     }
 }
