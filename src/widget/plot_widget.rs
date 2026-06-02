@@ -235,7 +235,7 @@ impl PlotView {
         // axes are hidden the frame/ticks/labels are not drawn (silx
         // setAxesDisplayed(False) hides the axes and zeroes their margins).
         if axes_displayed {
-            chrome::draw_axes_with_tick_modes(
+            chrome::draw_axes_with_x_tick_mode(
                 painter,
                 &transform,
                 &style,
@@ -243,7 +243,6 @@ impl PlotView {
                 plot.x_max_ticks,
                 plot.y_max_ticks,
                 plot.x_tick_mode(),
-                plot.y_tick_mode(),
             );
             if let Some(t_right) = &transform_right {
                 chrome::draw_y2_ticks(painter, t_right, &style);

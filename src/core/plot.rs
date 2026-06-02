@@ -99,10 +99,12 @@ impl AxisConstraints {
 /// current steps handle a single plot, so no separation map exists yet.
 pub type PlotId = u64;
 
-/// Whether an axis lays out regular numeric ticks or date-time ticks, mirroring
-/// silx `items.axis.TickMode` (`items/axis.py:43-47`). silx exposes this per
-/// axis via `Axis.getTickMode` / `Axis.setTickMode`; the X axis is the usual
-/// time axis (`getXAxisTimeZone`), but the field is per-axis here as in silx.
+/// Whether the X axis lays out regular numeric ticks or date-time ticks,
+/// mirroring silx `items.axis.TickMode` (`items/axis.py:43-47`). In silx only
+/// `XAxis` overrides `getTickMode` / `setTickMode` (`items/axis.py:391-403`),
+/// backed by `setXAxisTimeSeries`; `YAxis` inherits the base
+/// `Axis.setTickMode`, which raises `NotImplementedError` — there is no
+/// `setYAxisTimeSeries`. So the time-series tick mode is an X-axis-only concept.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TickMode {
     /// Ticks are regular numbers (silx `TickMode.DEFAULT = 0`). Zero behavior
@@ -349,11 +351,10 @@ pub struct Plot {
     autoreplot: bool,
     /// X-axis tick mode (silx `getXAxis().getTickMode`). Defaults to
     /// [`TickMode::Numeric`] (zero behavior change). When [`TickMode::TimeSeries`]
-    /// the chrome formats the X tick labels as date-times.
+    /// the chrome formats the X tick labels as date-times. silx supports the
+    /// time-series mode on the X axis only (see [`TickMode`]), so there is no
+    /// Y-axis counterpart.
     x_tick_mode: TickMode,
-    /// Left-Y-axis tick mode (silx `getYAxis().getTickMode`). Defaults to
-    /// [`TickMode::Numeric`].
-    y_tick_mode: TickMode,
     /// Infinite line items drawn over the data area (silx `Line`,
     /// `items/shape.py:289`). Each is clipped to the current viewport and drawn
     /// every frame.
@@ -408,7 +409,6 @@ impl Plot {
             dirty: DirtyState::Clean,
             autoreplot: true,
             x_tick_mode: TickMode::Numeric,
-            y_tick_mode: TickMode::Numeric,
             lines: Vec::new(),
         }
     }
@@ -579,16 +579,6 @@ impl Plot {
     /// date-times (the data values are epoch seconds, UTC).
     pub fn set_x_tick_mode(&mut self, mode: TickMode) {
         self.x_tick_mode = mode;
-    }
-
-    /// The left-Y-axis tick mode (silx `getYAxis().getTickMode`).
-    pub fn y_tick_mode(&self) -> TickMode {
-        self.y_tick_mode
-    }
-
-    /// Set the left-Y-axis tick mode (silx `getYAxis().setTickMode`).
-    pub fn set_y_tick_mode(&mut self, mode: TickMode) {
-        self.y_tick_mode = mode;
     }
 
     /// Append an infinite line item (silx `addItem` of a `Line`). The widget
@@ -1155,16 +1145,13 @@ mod tests {
     }
 
     #[test]
-    fn tick_mode_defaults_numeric_and_sets_per_axis() {
+    fn tick_mode_defaults_numeric_and_sets_x_only() {
         let mut plot = Plot::new(0);
         assert_eq!(plot.x_tick_mode(), TickMode::Numeric);
-        assert_eq!(plot.y_tick_mode(), TickMode::Numeric);
         plot.set_x_tick_mode(TickMode::TimeSeries);
         assert_eq!(plot.x_tick_mode(), TickMode::TimeSeries);
-        // Y axis is independent and still Numeric.
-        assert_eq!(plot.y_tick_mode(), TickMode::Numeric);
-        plot.set_y_tick_mode(TickMode::TimeSeries);
-        assert_eq!(plot.y_tick_mode(), TickMode::TimeSeries);
+        plot.set_x_tick_mode(TickMode::Numeric);
+        assert_eq!(plot.x_tick_mode(), TickMode::Numeric);
     }
 
     #[test]

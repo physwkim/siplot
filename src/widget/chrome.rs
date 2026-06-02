@@ -367,7 +367,7 @@ pub fn draw_axes(
     x_max_ticks: Option<usize>,
     y_max_ticks: Option<usize>,
 ) {
-    draw_axes_with_tick_modes(
+    draw_axes_with_x_tick_mode(
         painter,
         t,
         style,
@@ -375,17 +375,17 @@ pub fn draw_axes(
         x_max_ticks,
         y_max_ticks,
         TickMode::Numeric,
-        TickMode::Numeric,
     );
 }
 
-/// As [`draw_axes`] but honoring a per-axis [`TickMode`]: with
-/// [`TickMode::TimeSeries`] that axis' tick positions and labels are produced
-/// by [`dtime_ticks`] (epoch-seconds data values, UTC), mirroring silx's
+/// As [`draw_axes`] but honoring the X-axis [`TickMode`]: with
+/// [`TickMode::TimeSeries`] the X tick positions and labels are produced by
+/// [`dtime_ticks`] (epoch-seconds data values, UTC), mirroring silx's
 /// `NiceDateLocator` time-axis path (`backends/BackendMatplotlib.py:153-242`).
-/// The default `Numeric`/`Numeric` matches [`draw_axes`] exactly.
+/// silx supports the time-series mode on the X axis only, so the Y axis always
+/// uses numeric ticks. The default `Numeric` matches [`draw_axes`] exactly.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_axes_with_tick_modes(
+pub fn draw_axes_with_x_tick_mode(
     painter: &Painter,
     t: &Transform,
     style: &Style,
@@ -393,7 +393,6 @@ pub fn draw_axes_with_tick_modes(
     x_max_ticks: Option<usize>,
     y_max_ticks: Option<usize>,
     x_tick_mode: TickMode,
-    y_tick_mode: TickMode,
 ) {
     let area = t.area;
     let axis = Stroke::new(1.0, style.axis);
@@ -411,7 +410,7 @@ pub fn draw_axes_with_tick_modes(
     let tick_len = 4.0;
 
     let xticks = axis_ticks_with_mode(&t.x, x_max_ticks.unwrap_or(8), x_tick_mode);
-    let yticks = axis_ticks_with_mode(&t.y, y_max_ticks.unwrap_or(6), y_tick_mode);
+    let yticks = axis_ticks_with_mode(&t.y, y_max_ticks.unwrap_or(6), TickMode::Numeric);
 
     if grid_mode.minor() {
         for xv in minor_ticks(&t.x, &xticks) {
