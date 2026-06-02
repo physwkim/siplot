@@ -1,4 +1,6 @@
-use crate::core::colormap::{Colormap, ColormapName, Normalization};
+use crate::core::colormap::{
+    AutoscaleMode, Colormap, ColormapName, DEFAULT_PERCENTILES, Normalization,
+};
 use crate::widget::high_level::Plot2D;
 
 /// A widget for interactively configuring the colormap of a Plot2D.
@@ -8,6 +10,13 @@ pub struct ColormapDialog {
     pub vmin: f64,
     pub vmax: f64,
     pub autoscale: bool,
+
+    /// How autoscale derives the range from the image data (silx
+    /// `Colormap.setAutoscaleMode`).
+    pub autoscale_mode: AutoscaleMode,
+    /// `(low, high)` percentiles for [`AutoscaleMode::Percentile`] (silx
+    /// `Colormap.setAutoscalePercentiles`).
+    pub percentiles: (f64, f64),
 
     // Gamma for Gamma normalization
     pub gamma: f32,
@@ -24,6 +33,8 @@ impl Default for ColormapDialog {
             vmin: 0.0,
             vmax: 1.0,
             autoscale: true,
+            autoscale_mode: AutoscaleMode::MinMax,
+            percentiles: DEFAULT_PERCENTILES,
             gamma: 2.0,
             window_id: egui::Id::new("colormap_dialog"),
             open: false,
@@ -93,6 +104,11 @@ impl ColormapDialog {
                                 Normalization::Gamma,
                                 "Gamma",
                             );
+                            ui.selectable_value(
+                                &mut self.normalization,
+                                Normalization::Arcsinh,
+                                "Arcsinh",
+                            );
                         });
                     if self.normalization != prev_norm {
                         changed = true;
@@ -123,6 +139,47 @@ impl ColormapDialog {
                 }
 
                 if self.autoscale {
+                    ui.horizontal(|ui| {
+                        ui.label("Mode:");
+                        let prev_mode = self.autoscale_mode;
+                        egui::ComboBox::from_id_salt("cmap_autoscale_mode")
+                            .selected_text(self.autoscale_mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in AutoscaleMode::ALL {
+                                    ui.selectable_value(
+                                        &mut self.autoscale_mode,
+                                        mode,
+                                        mode.label(),
+                                    );
+                                }
+                            });
+                        if self.autoscale_mode != prev_mode {
+                            changed = true;
+                        }
+                    });
+
+                    if self.autoscale_mode == AutoscaleMode::Percentile {
+                        ui.horizontal(|ui| {
+                            ui.label("Percentiles:");
+                            let (prev_lo, prev_hi) = self.percentiles;
+                            ui.add(
+                                egui::DragValue::new(&mut self.percentiles.0)
+                                    .prefix("Low: ")
+                                    .speed(0.5)
+                                    .range(0.0..=100.0),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.percentiles.1)
+                                    .prefix("High: ")
+                                    .speed(0.5)
+                                    .range(0.0..=100.0),
+                            );
+                            if self.percentiles.0 != prev_lo || self.percentiles.1 != prev_hi {
+                                changed = true;
+                            }
+                        });
+                    }
+
                     ui.add_enabled(false, egui::DragValue::new(&mut self.vmin).prefix("Min: "));
                     ui.add_enabled(false, egui::DragValue::new(&mut self.vmax).prefix("Max: "));
                 } else {
@@ -157,10 +214,13 @@ impl ColormapDialog {
         let mut final_vmax = self.vmax;
 
         if self.autoscale {
-            // Very naive autoscale: use [0.0, 1.0] if no images, otherwise try to get stats.
-            // Since we can't easily query image stats globally here without iterating items,
-            // we will just assume Plot2D handles it, or just use 0..1 for now.
-            // Ideally we'd query the stats of the main image.
+            // Autoscale uses the first image's scalar stats. Plot2D exposes only
+            // aggregated stats (min/max/mean), not the raw pixel array, so only
+            // AutoscaleMode::MinMax can be computed here — it maps to the stats
+            // min/max exactly. Stddev3 / Percentile need the raw data and are
+            // computed by the public AutoscaleMode::range; until Plot2D exposes
+            // the scalar array, the dialog falls back to the min/max range for
+            // those modes.
             let mut found_stats = false;
             if let Some(&handle) = plot.get_all_images().first()
                 && let Some(stats) = plot.image_stats(handle)
