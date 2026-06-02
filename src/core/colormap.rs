@@ -376,6 +376,29 @@ fn quantize_float_channel(value: f64) -> u8 {
     (value * 256.0).clamp(0.0, 255.0) as u8
 }
 
+/// Resample an arbitrary-length RGBA color list to a 256-entry LUT by
+/// nearest-neighbour over `[0, 1]`: LUT index `i` reads source row
+/// `round(i / 255 * (N - 1))`. `N == 256` is an exact copy; `N == 1` fills the
+/// whole LUT with the single color. Returns `None` for an empty input (silx
+/// `setColormapLUT` asserts `len(colors) != 0`).
+fn resample_lut(colors: &[[u8; 4]]) -> Option<[[u8; 4]; 256]> {
+    let n = colors.len();
+    if n == 0 {
+        return None;
+    }
+    let mut lut = [[0u8; 4]; 256];
+    for (i, entry) in lut.iter_mut().enumerate() {
+        let src = if n == 1 {
+            0
+        } else {
+            // round(i / 255 * (N - 1)); i in 0..=255 keeps src in 0..=N-1.
+            (i as f64 / 255.0 * (n - 1) as f64).round() as usize
+        };
+        *entry = colors[src.min(n - 1)];
+    }
+    Some(lut)
+}
+
 /// silx's default gamma-normalization exponent (`Colormap.__gamma`).
 const DEFAULT_GAMMA: f32 = 2.0;
 
@@ -401,6 +424,20 @@ pub struct Colormap {
     /// RGBA color used for Not-A-Number values (silx `Colormap.setNaNColor`);
     /// fully transparent white by default.
     pub nan_color: [u8; 4],
+    /// `(low, high)` percentiles for [`AutoscaleMode::Percentile`] (silx
+    /// `Colormap._percentiles`); defaults to [`DEFAULT_PERCENTILES`]. Both are
+    /// in `[0, 100]`.
+    pub autoscale_percentiles: (f64, f64),
+    /// Whether the editable-aware setters may change the colormap (silx
+    /// `Colormap._editable`, a plain instance attribute; default `true`).
+    ///
+    /// silx enforces editability inside the mutating *methods*
+    /// (`setColormapLUT`, `setVMin`, … raise `NotEditableError`), not by hiding
+    /// the attribute — this field is public for the same reason and the guard
+    /// lives in [`Self::set_lut`], [`Self::set_autoscale_percentiles`], and
+    /// [`Self::set_from`]. Read/write it via [`Self::is_editable`] /
+    /// [`Self::set_editable`].
+    pub editable: bool,
 }
 
 impl Colormap {
@@ -414,6 +451,8 @@ impl Colormap {
             normalization: Normalization::Linear,
             gamma: DEFAULT_GAMMA,
             nan_color: DEFAULT_NAN_COLOR,
+            autoscale_percentiles: DEFAULT_PERCENTILES,
+            editable: true,
         }
     }
 
@@ -446,6 +485,98 @@ impl Colormap {
     pub fn with_nan_color(mut self, nan_color: [u8; 4]) -> Self {
         self.nan_color = nan_color;
         self
+    }
+
+    /// Replace the LUT with an explicit 256-entry RGBA table (silx
+    /// `Colormap.setColormapLUT` for a length-256 array). Builder form; pairs
+    /// with [`Self::set_lut`] for the editable-guarded setter.
+    pub fn with_lut(mut self, lut: [[u8; 4]; 256]) -> Self {
+        self.lut = lut;
+        self
+    }
+
+    /// Build a colormap from an arbitrary `colors` array resampled to 256 LUT
+    /// entries (silx `Colormap(colors=...)` / `setColormapLUT`).
+    ///
+    /// `colors` is a list of RGB (`[r, g, b]`) or RGBA (`[r, g, b, a]`) `u8`
+    /// rows of any length `N >= 1`; RGB rows gain an opaque alpha. The N rows
+    /// are resampled to 256 by nearest-neighbour over `[0, 1]` (LUT index `i`
+    /// reads source row `round(i / 255 * (N - 1))`), mirroring how silx samples
+    /// a stored LUT regularly. `N == 256` is an identity copy. Returns a linear
+    /// colormap over `[vmin, vmax]` with the default gamma.
+    ///
+    /// Returns `None` when `colors` is empty (silx asserts a non-empty array).
+    pub fn from_colors(colors: &[[u8; 4]], vmin: f64, vmax: f64) -> Option<Self> {
+        let lut = resample_lut(colors)?;
+        Some(Self {
+            lut,
+            vmin,
+            vmax,
+            normalization: Normalization::Linear,
+            gamma: DEFAULT_GAMMA,
+            nan_color: DEFAULT_NAN_COLOR,
+            autoscale_percentiles: DEFAULT_PERCENTILES,
+            editable: true,
+        })
+    }
+
+    /// Whether the editable-guarded setters may mutate this colormap (silx
+    /// `Colormap.isEditable`).
+    pub fn is_editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Set the editable flag (silx `Colormap.setEditable`). When `false` the
+    /// editable-guarded setters ([`Self::set_lut`],
+    /// [`Self::set_autoscale_percentiles`], [`Self::set_from`]) become no-ops
+    /// returning `false`. Builder/`with_*` constructors are unaffected, matching
+    /// silx where `copy()` and the constructor bypass the guard.
+    pub fn set_editable(&mut self, editable: bool) {
+        self.editable = editable;
+    }
+
+    /// Replace the LUT with an explicit 256-entry table if editable (silx
+    /// `Colormap.setColormapLUT`, which raises `NotEditableError` otherwise).
+    /// Returns `true` when applied, `false` when blocked by the editable guard.
+    pub fn set_lut(&mut self, lut: [[u8; 4]; 256]) -> bool {
+        if !self.editable {
+            return false;
+        }
+        self.lut = lut;
+        true
+    }
+
+    /// Set the `(low, high)` autoscale percentiles if editable (silx
+    /// `Colormap.setAutoscalePercentiles`). Each value is clamped into `[0, 100]`
+    /// and the pair is ordered so `low <= high`. Returns `true` when applied,
+    /// `false` when blocked by the editable guard.
+    pub fn set_autoscale_percentiles(&mut self, low: f64, high: f64) -> bool {
+        if !self.editable {
+            return false;
+        }
+        let lo = low.clamp(0.0, 100.0);
+        let hi = high.clamp(0.0, 100.0);
+        self.autoscale_percentiles = if lo <= hi { (lo, hi) } else { (hi, lo) };
+        true
+    }
+
+    /// Copy `self` (silx `Colormap.copy`): a value clone that always carries
+    /// over every field, including the editable flag, regardless of its value.
+    pub fn copy(&self) -> Self {
+        self.clone()
+    }
+
+    /// Set every field of `self` from `other` if editable (silx
+    /// `Colormap.setFromColormap`, which raises `NotEditableError` otherwise).
+    /// Mirrors silx: the editable flag is itself overwritten from `other` on
+    /// success. Returns `true` when applied, `false` when blocked by the
+    /// editable guard.
+    pub fn set_from(&mut self, other: &Self) -> bool {
+        if !self.editable {
+            return false;
+        }
+        *self = other.clone();
+        true
     }
 
     /// The `(cmap_min, one_over_range)` the image shader needs: the
@@ -962,5 +1093,146 @@ mod tests {
             AutoscaleMode::Stddev3.range(&all_nan, DEFAULT_PERCENTILES),
             (0.0, 1.0)
         );
+    }
+
+    // --- Custom LUT registration -----------------------------------------
+
+    #[test]
+    fn with_lut_replaces_the_table_exactly() {
+        let mut table = [[1u8, 2, 3, 4]; 256];
+        table[0] = [9, 8, 7, 6];
+        table[255] = [10, 11, 12, 13];
+        let cm = Colormap::viridis(0.0, 1.0).with_lut(table);
+        assert_eq!(cm.lut, table);
+        // Range and other fields are untouched.
+        assert_eq!((cm.vmin, cm.vmax), (0.0, 1.0));
+        assert_eq!(cm.normalization, Normalization::Linear);
+    }
+
+    #[test]
+    fn from_colors_resamples_to_256_entries() {
+        // Two endpoints -> a LUT whose first half is the low color and second
+        // half the high color (nearest-neighbour rounds at the midpoint).
+        let cm = Colormap::from_colors(&[[0, 0, 0, 255], [255, 255, 255, 255]], 0.0, 1.0)
+            .expect("non-empty");
+        assert_eq!(cm.lut.len(), 256);
+        assert_eq!(cm.lut[0], [0, 0, 0, 255]);
+        assert_eq!(cm.lut[255], [255, 255, 255, 255]);
+        // round(127/255 * 1) = 0 -> low; round(128/255 * 1) = 1 -> high.
+        assert_eq!(cm.lut[127], [0, 0, 0, 255]);
+        assert_eq!(cm.lut[128], [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn from_colors_identity_for_length_256() {
+        let mut src = vec![[0u8; 4]; 256];
+        for (i, c) in src.iter_mut().enumerate() {
+            *c = [i as u8, 0, 0, 255];
+        }
+        let cm = Colormap::from_colors(&src, 0.0, 1.0).expect("non-empty");
+        for (i, (&out, &want)) in cm.lut.iter().zip(src.iter()).enumerate() {
+            assert_eq!(out, want, "entry {i}");
+        }
+    }
+
+    #[test]
+    fn from_colors_single_color_fills_whole_lut() {
+        let cm = Colormap::from_colors(&[[7, 8, 9, 255]], 0.0, 1.0).expect("non-empty");
+        assert!(cm.lut.iter().all(|&c| c == [7, 8, 9, 255]));
+    }
+
+    #[test]
+    fn from_colors_empty_is_none() {
+        assert!(Colormap::from_colors(&[], 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn resample_lut_endpoints_and_length() {
+        // N = 3: index 0 -> row 0, 255 -> row 2, midpoint 128 -> row 1.
+        let lut =
+            resample_lut(&[[0, 0, 0, 255], [128, 0, 0, 255], [255, 0, 0, 255]]).expect("non-empty");
+        assert_eq!(lut.len(), 256);
+        assert_eq!(lut[0], [0, 0, 0, 255]);
+        assert_eq!(lut[255], [255, 0, 0, 255]);
+        // round(128/255 * 2) = round(1.004) = 1 -> middle row.
+        assert_eq!(lut[128], [128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn resample_lut_empty_is_none() {
+        assert!(resample_lut(&[]).is_none());
+    }
+
+    // --- Autoscale percentiles field -------------------------------------
+
+    #[test]
+    fn autoscale_percentiles_default_and_clamp() {
+        let mut cm = Colormap::viridis(0.0, 1.0);
+        assert_eq!(cm.autoscale_percentiles, DEFAULT_PERCENTILES);
+        // In-range values are kept verbatim.
+        assert!(cm.set_autoscale_percentiles(5.0, 95.0));
+        assert_eq!(cm.autoscale_percentiles, (5.0, 95.0));
+        // Out-of-range values clamp into [0, 100].
+        assert!(cm.set_autoscale_percentiles(-10.0, 150.0));
+        assert_eq!(cm.autoscale_percentiles, (0.0, 100.0));
+    }
+
+    #[test]
+    fn autoscale_percentiles_orders_low_below_high() {
+        let mut cm = Colormap::viridis(0.0, 1.0);
+        // Inverted pair is reordered after clamping.
+        assert!(cm.set_autoscale_percentiles(90.0, 10.0));
+        assert_eq!(cm.autoscale_percentiles, (10.0, 90.0));
+    }
+
+    // --- Editable guard --------------------------------------------------
+
+    #[test]
+    fn editable_defaults_true_and_guards_mutating_setters() {
+        let mut cm = Colormap::viridis(0.0, 1.0);
+        assert!(cm.is_editable());
+
+        cm.set_editable(false);
+        assert!(!cm.is_editable());
+
+        // Each editable-guarded setter is a no-op returning false.
+        let before = cm.clone();
+        assert!(!cm.set_lut([[1, 2, 3, 4]; 256]));
+        assert!(!cm.set_autoscale_percentiles(5.0, 95.0));
+        let other = Colormap::new(ColormapName::Jet, 2.0, 3.0);
+        assert!(!cm.set_from(&other));
+        assert_eq!(cm, before);
+
+        // Re-enabling lets the same setters through.
+        cm.set_editable(true);
+        assert!(cm.set_autoscale_percentiles(5.0, 95.0));
+        assert_eq!(cm.autoscale_percentiles, (5.0, 95.0));
+    }
+
+    #[test]
+    fn set_from_copies_all_fields_including_editable_flag() {
+        let source = Colormap::new(ColormapName::Jet, 2.0, 8.0)
+            .with_normalization(Normalization::Log)
+            .with_gamma(3.0)
+            .with_nan_color([1, 2, 3, 4]);
+        let mut source = source;
+        assert!(source.set_autoscale_percentiles(2.0, 98.0));
+        source.set_editable(false); // source is no longer editable
+
+        let mut dst = Colormap::viridis(0.0, 1.0);
+        assert!(dst.set_from(&source)); // dst is still editable here
+        assert_eq!(dst, source);
+        // The editable flag was overwritten from source (now false).
+        assert!(!dst.is_editable());
+    }
+
+    #[test]
+    fn copy_carries_editable_flag_unguarded() {
+        // copy() bypasses the editable guard (mirrors silx Colormap.copy).
+        let mut cm = Colormap::new(ColormapName::Gray, 0.0, 1.0);
+        cm.set_editable(false);
+        let dup = cm.copy();
+        assert_eq!(dup, cm);
+        assert!(!dup.is_editable());
     }
 }
