@@ -15,7 +15,7 @@ struct Params {
     cmap_min: f32,             // normalization transform of vmin
     cmap_one_over_range: f32,  // 1 / (norm(vmax) - norm(vmin)), or 0 if degenerate
     gamma: f32,                // exponent for norm == 3 (gamma)
-    norm: u32,                 // normalization code: 0 linear, 1 log, 2 sqrt, 3 gamma
+    norm: u32,                 // normalization code: 0 linear, 1 log, 2 sqrt, 3 gamma, 4 arcsinh
 };
 
 // 1 / ln(10), to turn the natural log into log10.
@@ -90,6 +90,11 @@ fn normalize_value(raw: f32) -> f32 {
         return 0.0;
     } else if (params.norm == 3u) { // gamma
         return pow(clamp(params.cmap_one_over_range * (raw - params.cmap_min), 0.0, 1.0), params.gamma);
+    } else if (params.norm == 4u) { // arcsinh
+        // asinh is defined for all values, so there is no domain guard (silx
+        // ArcsinhNormalization). cmap_min = asinh(vmin) is pre-transformed on
+        // the CPU, matching log/sqrt.
+        return clamp(params.cmap_one_over_range * (asinh(raw) - params.cmap_min), 0.0, 1.0);
     }
     // linear + fallback
     return clamp(params.cmap_one_over_range * (raw - params.cmap_min), 0.0, 1.0);

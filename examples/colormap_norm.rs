@@ -1,7 +1,8 @@
 //! Colormap normalization: the same wide-dynamic-range field rendered under
-//! linear / log10 / sqrt / gamma normalization (silx `Colormap.normalization`).
+//! linear / log10 / sqrt / gamma / arcsinh normalization (silx
+//! `Colormap.normalization`).
 //!
-//! Press 1·2·3·4 to switch normalization; the image and its colorbar update
+//! Press 1·2·3·4·5 to switch normalization; the image and its colorbar update
 //! together (the colorbar ticks move to where the image colors those values).
 //! The field spans ~[1, 1000], so log/sqrt pull the low end up and gamma
 //! darkens the midtones, all visibly different from linear.
@@ -71,7 +72,7 @@ impl NormApp {
         plot.limits = (0.0, WIDTH as f64, 0.0, HEIGHT as f64);
         plot.colormap = image.colormap().cloned();
         plot.title = Some(format!(
-            "colormap normalization · {} (1·2·3·4)",
+            "colormap normalization · {} (1·2·3·4·5)",
             norm_label(norm)
         ));
 
@@ -88,7 +89,7 @@ impl NormApp {
         set_image(render_state, 0, &image);
         self.plot.colormap = image.colormap().cloned();
         self.plot.title = Some(format!(
-            "colormap normalization · {} (1·2·3·4)",
+            "colormap normalization · {} (1·2·3·4·5)",
             norm_label(norm)
         ));
     }
@@ -108,6 +109,8 @@ impl eframe::App for NormApp {
                 Some(Normalization::Sqrt)
             } else if i.key_pressed(Key::Num4) {
                 Some(Normalization::Gamma)
+            } else if i.key_pressed(Key::Num5) {
+                Some(Normalization::Arcsinh)
             } else {
                 None
             }

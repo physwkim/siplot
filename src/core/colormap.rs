@@ -721,6 +721,29 @@ mod tests {
     }
 
     #[test]
+    fn normalize_arcsinh_matches_asinh_ratio_with_no_domain_guard() {
+        // asinh is defined for all reals, so there is no low-color guard (unlike
+        // log/sqrt). bounds: asinh(0) = 0, asinh(sinh(1)) = 1.
+        let vmax = 1.0_f64.sinh();
+        let cm = Colormap::viridis(0.0, vmax).with_normalization(Normalization::Arcsinh);
+        assert_eq!(cm.normalize(0.0), 0.0); // asinh(0) = 0 -> vmin
+        assert!((cm.normalize(vmax) - 1.0).abs() < 1e-6); // asinh(vmax) -> 1
+        // A negative value below vmin clamps to the low color rather than being
+        // rejected: asinh(-x) is finite, the clamp does the flooring.
+        assert_eq!(cm.normalize(-5.0), 0.0);
+    }
+
+    #[test]
+    fn norm_bounds_transform_arcsinh_bounds() {
+        // 1 / (asinh(vmax) - asinh(vmin)) with vmin = 0, vmax = sinh(2) -> 1/2.
+        let vmax = 2.0_f64.sinh();
+        let cm = Colormap::viridis(0.0, vmax).with_normalization(Normalization::Arcsinh);
+        let (cmin, oor) = cm.norm_bounds();
+        assert_eq!(cmin, 0.0); // asinh(0)
+        assert!((oor - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn norm_bounds_degenerate_or_invalid_range_collapses() {
         // vmax == vmin -> one_over_range 0 (maps everything to the low color).
         assert_eq!(Colormap::viridis(3.0, 3.0).norm_bounds(), (0.0, 0.0));
