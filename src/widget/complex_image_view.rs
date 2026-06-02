@@ -15,7 +15,7 @@
 use egui_wgpu::RenderState;
 
 use crate::core::backend::{ImageSpec, ItemHandle};
-use crate::core::colormap::{Colormap, Normalization};
+use crate::core::colormap::{Colormap, ColormapName};
 use crate::core::plot::PlotId;
 use crate::widget::high_level::{Plot2D, PlotDataError};
 use crate::widget::plot_widget::PlotResponse;
@@ -148,12 +148,16 @@ pub fn phase_hsv_lut() -> [[u8; 4]; 256] {
 /// Used by [`ComplexMode::Phase`] (and the phase channel of the composite),
 /// matching silx `Colormap(name="hsv", vmin=-numpy.pi, vmax=numpy.pi)`.
 pub fn phase_colormap() -> Colormap {
+    // Build through the constructor so colormap fields (gamma, nan_color, and
+    // any added later) take their defaults, then install the bespoke phase hsv
+    // LUT over the fixed [-pi, pi] range.
     Colormap {
         lut: phase_hsv_lut(),
-        vmin: -std::f64::consts::PI,
-        vmax: std::f64::consts::PI,
-        normalization: Normalization::Linear,
-        gamma: 2.0,
+        ..Colormap::new(
+            ColormapName::Hsv,
+            -std::f64::consts::PI,
+            std::f64::consts::PI,
+        )
     }
 }
 
