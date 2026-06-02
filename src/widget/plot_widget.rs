@@ -309,6 +309,22 @@ fn apply_interaction(
         plot.clear_limits_history();
     }
 
+    // Arrow-key pan: when the plot area has keyboard focus, arrow keys pan by a
+    // fraction of the view (silx `PanWithArrowKeysAction` -> `PlotWidget.pan`
+    // with factor 0.1). One press is one pan step.
+    if response.has_focus() {
+        for (key, dir) in [
+            (egui::Key::ArrowLeft, interaction::PanDirection::Left),
+            (egui::Key::ArrowRight, interaction::PanDirection::Right),
+            (egui::Key::ArrowUp, interaction::PanDirection::Up),
+            (egui::Key::ArrowDown, interaction::PanDirection::Down),
+        ] {
+            if ui.input(|i| i.key_pressed(key)) {
+                arrow_pan(plot, dir);
+            }
+        }
+    }
+
     // Pan: secondary-drag always pans; pan mode also binds primary-drag to pan.
     let primary_pan =
         mode == PlotInteractionMode::Pan && response.dragged_by(PointerButton::Primary);
@@ -413,6 +429,42 @@ fn apply_interaction(
     Interaction {
         selection,
         roi_changed,
+    }
+}
+
+/// Pan the plot by one arrow-key step in `dir`, mirroring silx
+/// `PlotWidget.pan(direction, factor=0.1)`. Left/right pan the X axis; up/down
+/// pan the left Y axis and (if present) the y2 axis by the same factor, with the
+/// sign flipped when the Y axis is inverted. The shift is log-aware per axis
+/// (silx `applyPan`). Like silx's arrow-key path, this does not push to the
+/// limits history.
+fn arrow_pan(plot: &mut Plot, dir: interaction::PanDirection) {
+    use interaction::PanDirection::*;
+    const FACTOR: f64 = 0.1;
+    let x_is_log = plot.x_scale == Scale::Log10;
+    let y_is_log = plot.y_scale == Scale::Log10;
+    let (x_min, x_max, y_min, y_max) = plot.limits;
+
+    match dir {
+        Left | Right => {
+            let x_factor = if dir == Right { FACTOR } else { -FACTOR };
+            let (nx0, nx1) = interaction::apply_pan(x_min, x_max, x_factor, x_is_log);
+            commit(plot, (nx0, nx1, y_min, y_max));
+        }
+        Up | Down => {
+            // silx flips the sign when the Y axis is displayed inverted.
+            let sign = if plot.y_inverted { -1.0 } else { 1.0 };
+            let y_factor = sign * if dir == Up { FACTOR } else { -FACTOR };
+            let (ny0, ny1) = interaction::apply_pan(y_min, y_max, y_factor, y_is_log);
+            commit(plot, (x_min, x_max, ny0, ny1));
+            // y2 pans with the same factor (silx pans the right axis too).
+            if let Some((y2_min, y2_max)) = plot.y2 {
+                let (n2_0, n2_1) = interaction::apply_pan(y2_min, y2_max, y_factor, y_is_log);
+                if interaction::is_valid((x_min, x_max, n2_0, n2_1)) {
+                    plot.y2 = Some((n2_0, n2_1));
+                }
+            }
+        }
     }
 }
 
