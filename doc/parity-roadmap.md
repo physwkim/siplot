@@ -34,6 +34,32 @@ Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/
   ColormapDialog Stddev3/Percentile need Plot2D raw-pixel access; Heart glyph SDF;
   mask on-plot drawing (Plot2D wiring) + Bresenham `draw_line` + mask file I/O.
 
+### Wave 2 — Image render / ROI / Interaction / Complex view (parallel, worktree-isolated)
+- **Image render** (`0494dc8`,`c6344d1`,`595c68e`): arcsinh image normalization
+  (shader code-4 branch + `Normalization::Arcsinh`); `InterpolationMode`
+  Nearest(default)/Linear (manual bilinear on scalar data before colormap, since
+  R32Float is non-filterable); `AggregationMode` None/Max/Mean/Min + `aggregate_blocks()`
+  (NaN-ignoring, remainder dropped, scale scaled by block — silx ImageDataAggregated).
+- **ROI** (`bbd28ed`,`b909dbe`,`26e3fdc`): `Roi::contains()` for every variant; new
+  Cross/Circle/Ellipse variants; chrome draws ROI color/name label/selected highlight;
+  `RoiManagerWidget` per-ROI color/name, current-ROI tracking, add buttons.
+- **Interaction** (`3030edd`,`4efac2d`,`122f7f1`): log-aware pan/zoom (silx `panzoom`);
+  limits-history undo/redo stack (silx `LimitsHistory`); arrow-key pan (silx
+  `PanWithArrowKeysAction`).
+- **Complex view** (`ee3d82e`): `ComplexImageView` composite — ComplexMode
+  Absolute/Phase/Real/Imaginary/SquareAmplitude/Log10Amplitude/AmplitudePhase, phase
+  hsv LUT, amplitude×phase compositing.
+- Gate: clippy `--workspace` clean, **239 tests pass** (+54), doctests ok.
+- **Integration fix** (`3430ef5`): the complex-view cluster predated Wave 1's
+  `Colormap::nan_color`, so its raw `Colormap {}` literal stopped compiling once both
+  waves landed. Rebuilt `phase_colormap()` through `Colormap::new` + functional-update
+  so future field additions no longer break the call site. Root cause: worktrees were
+  cut from session-start HEAD, not current `main` — later waves must
+  `git checkout -b waveN/<cluster> main` to inherit prior waves.
+- **Deferred follow-ups** (cross-cluster wiring): interpolation/aggregation toolbar
+  toggles; ROI creation-mode toolbar + on-plot draw; limits-history undo/redo buttons;
+  ComplexImageView mode selector wired into a toolbar/menu (widget is self-contained).
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
