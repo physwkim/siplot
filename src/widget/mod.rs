@@ -5,6 +5,7 @@
 //! data area. Chrome drawing and interaction land in later milestones
 //! (`doc/design.md` §8).
 
+pub mod alpha_slider;
 pub mod chrome;
 pub mod colorbar;
 pub mod colormap_dialog;
