@@ -101,6 +101,24 @@ impl MaskToolsWidget {
         self.is_dirty = true;
     }
 
+    /// Invert the current mask level over the image.
+    ///
+    /// `0` pixels become the current level and current-level pixels become
+    /// `0`; pixels at other levels are left untouched. Mirrors silx
+    /// `BaseMask.invert(level)`: it captures the `level` pixels first, then
+    /// turns unmasked pixels into `level`, then clears the captured ones.
+    pub fn invert(&mut self) {
+        let level = self.level;
+        for cell in &mut self.mask {
+            if *cell == 0 {
+                *cell = level;
+            } else if *cell == level {
+                *cell = 0;
+            }
+        }
+        self.is_dirty = true;
+    }
+
     /// Apply the mask onto a `Plot2D`.
     ///
     /// This should be called every frame after handling interaction,
@@ -177,6 +195,9 @@ impl MaskToolsWidget {
                 ui.add(egui::Slider::new(&mut self.brush_size, 1..=50).text("Brush size"));
             }
 
+            if ui.button("Invert").clicked() {
+                self.invert();
+            }
             if ui.button("Clear").clicked() {
                 self.clear();
             }
@@ -586,6 +607,17 @@ mod tests {
         w.mask = vec![1, 2, 255, 0];
         w.clear_all();
         assert_eq!(w.mask, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn invert_swaps_zero_and_current_level_only() {
+        // silx BaseMask.invert(level): 0 <-> level, other levels untouched.
+        let mut w = MaskToolsWidget::new(4, 1);
+        w.mask = vec![0, 1, 2, 0];
+        w.level = 1;
+        w.invert();
+        // 0 -> 1, original 1 -> 0, level 2 stays.
+        assert_eq!(w.mask, vec![1, 0, 2, 1]);
     }
 
     /// Render a mask buffer as a `height * width` grid of 0/1 for comparison.
