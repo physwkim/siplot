@@ -310,6 +310,8 @@ pub struct ToolbarResponse {
     pub y_inverted_changed: bool,
     /// Show-axis toggle was clicked (silx `ShowAxisAction`).
     pub show_axis_changed: bool,
+    /// Curve-style cycle button was clicked (silx `CurveStyleAction`).
+    pub curve_style_changed: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
@@ -342,6 +344,7 @@ enum ToolbarIcon {
     InvertX,
     InvertY,
     ShowAxis,
+    CurveStyle,
 }
 
 impl ToolbarIcon {
@@ -426,6 +429,29 @@ fn draw_toolbar_icon(painter: &egui::Painter, rect: egui::Rect, icon: ToolbarIco
         ToolbarIcon::InvertX => draw_axis_icon(painter, rect, "X", false, stroke),
         ToolbarIcon::InvertY => draw_axis_icon(painter, rect, "Y", true, stroke),
         ToolbarIcon::ShowAxis => draw_show_axis_icon(painter, rect, stroke),
+        ToolbarIcon::CurveStyle => draw_curve_style_icon(painter, rect, stroke),
+    }
+}
+
+/// Draw a short dashed line over a dotted line for the [`ToolbarIcon::CurveStyle`]
+/// cycle button.
+fn draw_curve_style_icon(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let y_top = rect.top() + rect.height() * 0.35;
+    let y_bot = rect.top() + rect.height() * 0.65;
+    let left = rect.left() + 1.0;
+    let right = rect.right() - 1.0;
+    // Dashed segment on top.
+    let mut x = left;
+    while x < right {
+        let seg_end = (x + 3.0).min(right);
+        painter.line_segment([egui::pos2(x, y_top), egui::pos2(seg_end, y_top)], stroke);
+        x += 5.0;
+    }
+    // Dotted segment below.
+    let mut x = left;
+    while x < right {
+        painter.line_segment([egui::pos2(x, y_bot), egui::pos2(x + 1.0, y_bot)], stroke);
+        x += 3.0;
     }
 }
 
@@ -1011,6 +1037,60 @@ fn curve_spec_retained_data(spec: &CurveSpec<'_>) -> RetainedItemData {
     }
 }
 
+/// Premultiply `color`'s alpha channel by `alpha` (clamped to `[0, 1]`),
+/// mirroring the backend's `apply_alpha`.
+fn apply_curve_alpha(color: Color32, alpha: f32) -> Color32 {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let a = ((color.a() as f32) * alpha).round() as u8;
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
+}
+
+/// Build a [`CurveData`] from a [`CurveSpec`], mirroring the backend's
+/// `curve_data_from_spec`. Retained in the [`ItemRecord`] so the curve-style
+/// cycle action can clone, edit the line style, and re-apply the full curve
+/// (preserving color, symbol, width, error bars, fill). Owning the conversion
+/// here keeps the retained copy faithful to what the backend renders.
+fn curve_data_from_spec_hl(spec: &CurveSpec<'_>) -> CurveData {
+    let color = match &spec.color {
+        CurveColor::Uniform(color) => apply_curve_alpha(*color, spec.alpha),
+        CurveColor::PerVertex(colors) => colors
+            .first()
+            .copied()
+            .map(|color| apply_curve_alpha(color, spec.alpha))
+            .unwrap_or(Color32::WHITE),
+    };
+    let mut curve = CurveData::new(spec.x.to_vec(), spec.y.to_vec(), color)
+        .with_width(spec.line_width)
+        .with_line_style(spec.line_style.clone())
+        .with_marker_size(spec.symbol_size)
+        .with_y_axis(spec.y_axis);
+    if let CurveColor::PerVertex(colors) = &spec.color {
+        curve = curve.with_colors(
+            colors
+                .iter()
+                .copied()
+                .map(|color| apply_curve_alpha(color, spec.alpha))
+                .collect(),
+        );
+    }
+    if let Some(gap_color) = spec.gap_color {
+        curve = curve.with_gap_color(apply_curve_alpha(gap_color, spec.alpha));
+    }
+    if let Some(symbol) = spec.symbol {
+        curve = curve.with_symbol(symbol);
+    }
+    if let Some(error) = &spec.x_error {
+        curve = curve.with_x_error(error.clone());
+    }
+    if let Some(error) = &spec.y_error {
+        curve = curve.with_y_error(error.clone());
+    }
+    if spec.fill {
+        curve = curve.with_fill(spec.baseline.clone());
+    }
+    curve
+}
+
 /// Borrow a [`RetainedItemData`] as a [`StatsInput`] for a live
 /// [`StatsWidget`] / fit feed (silx `StatsWidget` per-item data). Split out so
 /// the data→input bridge is unit-testable without a GPU backend.
@@ -1355,6 +1435,11 @@ struct ItemRecord {
     /// Retained raw data for live stats/fit consumers; `None` for items whose
     /// data is not retained (RGBA images, triangles, shapes, markers).
     data: Option<RetainedItemData>,
+    /// Full retained [`CurveData`] (data + style) of a curve-like item, so the
+    /// curve-style cycle action (silx `CurveStyleAction`) can clone it, change
+    /// the line style, and re-apply without losing color/symbol/error bars.
+    /// `None` for non-curve items.
+    curve_data: Option<CurveData>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1826,6 +1911,7 @@ impl PlotWidget {
             stats,
             visual,
             data: None,
+            curve_data: None,
         });
         self.events.push(PlotEvent::ItemAdded { handle, kind });
         if self.active_item.is_none() {
@@ -1865,6 +1951,7 @@ impl PlotWidget {
                 stats,
                 visual,
                 data: None,
+                curve_data: None,
             });
             self.events.push(PlotEvent::ItemAdded { handle, kind });
         }
@@ -1931,6 +2018,21 @@ impl PlotWidget {
             .and_then(|record| record.data.as_ref())
     }
 
+    /// Attach (or clear) the retained full [`CurveData`] for a curve-like item.
+    /// Called by the curve spec entry points so the curve-style cycle action can
+    /// clone it, change the line style, and re-apply the full curve.
+    fn set_record_curve_data(&mut self, handle: ItemHandle, curve_data: Option<CurveData>) {
+        if let Some(record) = self.item_record_mut(handle) {
+            record.curve_data = curve_data;
+        }
+    }
+
+    /// The retained full [`CurveData`] for a curve-like item, if any.
+    fn record_curve_data(&self, handle: ItemHandle) -> Option<&CurveData> {
+        self.item_record(handle)
+            .and_then(|record| record.curve_data.as_ref())
+    }
+
     fn clear_active_if_missing(&mut self) {
         if self
             .active_item
@@ -1988,9 +2090,11 @@ impl PlotWidget {
         let stats = Some(curve_spec_stats(&spec));
         let visual = curve_spec_legend_visual(&spec, kind);
         let data = curve_spec_retained_data(&spec);
+        let curve_data = curve_data_from_spec_hl(&spec);
         let handle = self.backend.add_curve(spec);
         self.record_item(handle, kind, bounds, stats, visual);
         self.set_retained_data(handle, Some(data));
+        self.set_record_curve_data(handle, Some(curve_data));
         handle
     }
 
@@ -2004,9 +2108,11 @@ impl PlotWidget {
             .unwrap_or(PlotItemKind::Curve);
         let visual = curve_spec_legend_visual(&spec, kind);
         let data = curve_spec_retained_data(&spec);
+        let curve_data = curve_data_from_spec_hl(&spec);
         if self.backend.update_curve(handle, spec) {
             self.update_item_record(handle, kind, bounds, stats, visual);
             self.set_retained_data(handle, Some(data));
+            self.set_record_curve_data(handle, Some(curve_data));
             true
         } else {
             false
@@ -2771,6 +2877,27 @@ impl PlotWidget {
         })
     }
 
+    /// The current line style of the active curve-like item, if one is active
+    /// and its style is retained.
+    pub fn active_curve_line_style(&self) -> Option<LineStyle> {
+        let handle = self.active_curve()?;
+        self.record_curve_data(handle)
+            .map(|data| data.line_style.clone())
+    }
+
+    /// Cycle the active curve's line style to the next style (silx
+    /// `CurveStyleAction`), re-applying the full retained curve so color, symbol,
+    /// width, and error bars are preserved. Returns the new [`LineStyle`], or
+    /// `None` if there is no active curve with a retained style.
+    pub fn cycle_active_curve_style(&mut self) -> Option<LineStyle> {
+        let handle = self.active_curve()?;
+        let mut data = self.record_curve_data(handle)?.clone();
+        let next = crate::widget::actions::control::next_line_style(&data.line_style);
+        data.line_style = next.clone();
+        self.update_curve_data(handle, &data);
+        Some(next)
+    }
+
     /// Set the active curve-like item.
     pub fn set_active_curve(&mut self, item: Option<ItemHandle>) -> bool {
         if item.is_some_and(|handle| {
@@ -3264,6 +3391,22 @@ impl PlotWidget {
         if toolbar_icon_button(ui, ToolbarIcon::ShowAxis, show_axis, "Show/hide axes").clicked() {
             crate::widget::actions::control::show_axis_toggle(self);
             out.show_axis_changed = true;
+        }
+
+        let has_curve = self.active_curve().is_some();
+        let curve_style_response = ui
+            .add_enabled_ui(has_curve, |ui| {
+                toolbar_icon_button(
+                    ui,
+                    ToolbarIcon::CurveStyle,
+                    false,
+                    "Cycle active curve line style",
+                )
+            })
+            .inner;
+        if curve_style_response.clicked() {
+            crate::widget::actions::control::curve_style_cycle(self);
+            out.curve_style_changed = true;
         }
     }
 
