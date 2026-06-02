@@ -265,6 +265,126 @@ impl Baseline {
     }
 }
 
+/// A per-pixel validity mask for a scalar image, applied at the CPU data-prep
+/// stage (silx `ImageDataBase` `getMaskData` / `setMaskData` / `getValueData`,
+/// `image.py:209-284`).
+///
+/// silx stores a 2D mask alongside the scalar data; [`getValueData`] returns the
+/// data with masked pixels set to NaN (`data[mask != 0] = numpy.nan`). The egui
+/// port has no place to hang state on the render-layer `ImageData`, so masking is
+/// modeled as this standalone, GPU-free value type: build it with a mask, then
+/// call [`ScalarMask::apply`] to get the masked scalar field to hand to
+/// `ImageData::new`. Masked pixels become `f32::NAN`, which the existing scalar
+/// pipeline renders via its `nan_color` — no shader edit needed.
+///
+/// [`getValueData`]: ScalarMask::apply
+/// [`getMaskData`]: ScalarMask::get_mask_data
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScalarMask {
+    /// Image width in pixels (number of columns); rows are `width` wide.
+    width: usize,
+    /// Image height in pixels (number of rows).
+    height: usize,
+    /// Row-major per-pixel mask, length `width * height`. A pixel is masked
+    /// (invalid) where the entry is non-zero, matching silx's `mask != 0`.
+    mask: Vec<u8>,
+}
+
+impl ScalarMask {
+    /// An all-valid (empty) mask for a `width * height` scalar image: every pixel
+    /// is unmasked. Mirrors silx's `_mask is None` initial state via an explicit
+    /// zero mask, so [`ScalarMask::apply`] is a no-op until [`set_mask_data`] is
+    /// called.
+    ///
+    /// [`set_mask_data`]: ScalarMask::set_mask_data
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            mask: vec![0; width.saturating_mul(height)],
+        }
+    }
+
+    /// Image width (columns).
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Image height (rows).
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Set the validity mask (silx `setMaskData`). A pixel is masked where its
+    /// entry is non-zero. If `mask` does not match the image shape it is clipped
+    /// or zero-extended to `width * height` by copying the overlapping top-left
+    /// region, mirroring silx's lazy clip/extend in `getMaskData`
+    /// (`image.py:215-226`): the new mask is `width` columns wide, and only the
+    /// rows/columns present in the supplied mask are copied.
+    ///
+    /// `src_width` is the column count of the supplied `mask` (its row stride);
+    /// its row count is inferred as `mask.len() / src_width` (the trailing partial
+    /// row, if any, is ignored). A `src_width` of zero is treated as a single row.
+    pub fn set_mask_data(&mut self, mask: &[u8], src_width: usize) {
+        if src_width == self.width && mask.len() == self.width * self.height {
+            // Exact shape match: take it verbatim (silx `mask.shape == shape`).
+            self.mask.clear();
+            self.mask.extend_from_slice(mask);
+            return;
+        }
+
+        // Clip/extend: build a zero mask of the image shape and copy the
+        // overlapping top-left rectangle (silx
+        // `newMask[:m_h, :m_w] = mask[:h, :w]`).
+        let src_width = src_width.max(1);
+        let src_height = mask.len() / src_width;
+        let copy_w = src_width.min(self.width);
+        let copy_h = src_height.min(self.height);
+
+        let mut new_mask = vec![0u8; self.width * self.height];
+        for row in 0..copy_h {
+            let dst = row * self.width;
+            let src = row * src_width;
+            new_mask[dst..dst + copy_w].copy_from_slice(&mask[src..src + copy_w]);
+        }
+        self.mask = new_mask;
+    }
+
+    /// The current row-major mask (silx `getMaskData`), length `width * height`.
+    /// A pixel is masked where its entry is non-zero.
+    pub fn get_mask_data(&self) -> &[u8] {
+        &self.mask
+    }
+
+    /// Whether pixel `(col, row)` is masked (non-zero in the mask). Out-of-bounds
+    /// indices are reported as unmasked.
+    pub fn is_masked(&self, col: usize, row: usize) -> bool {
+        if col >= self.width || row >= self.height {
+            return false;
+        }
+        self.mask[row * self.width + col] != 0
+    }
+
+    /// Apply the mask to a scalar field (silx `getValueData`): every masked pixel
+    /// becomes `f32::NAN`, every unmasked value is passed through unchanged. The
+    /// result is the row-major field to hand to `ImageData::new`, where the scalar
+    /// pipeline's `nan_color` renders the masked pixels.
+    ///
+    /// `data` must have one value per pixel (`width * height`); a length mismatch
+    /// panics, matching the construction-time contract of `ImageData::new`.
+    pub fn apply(&self, data: &[f32]) -> Vec<f32> {
+        assert_eq!(
+            data.len(),
+            self.width * self.height,
+            "data length must equal width * height"
+        );
+        data.iter()
+            .zip(&self.mask)
+            .map(|(&v, &m)| if m != 0 { f32::NAN } else { v })
+            .collect()
+    }
+}
+
 /// Per-point uncertainty drawn as error bars (silx `xerror` / `yerror`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ErrorBars {
@@ -479,6 +599,88 @@ mod tests {
             assert_eq!(s.render_size_px(7.0), 7.0);
             assert_eq!(s.render_size_px(8.0), 8.0);
         }
+    }
+
+    #[test]
+    fn scalar_mask_new_is_all_valid() {
+        // An untouched mask leaves every value unchanged (silx `_mask is None`).
+        let m = ScalarMask::new(2, 2);
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        assert_eq!(m.apply(&data), data);
+        assert!(m.get_mask_data().iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn scalar_mask_sets_masked_pixels_to_nan_and_keeps_others() {
+        // 2x2 image; mask the (col 1, row 0) and (col 0, row 1) pixels.
+        let mut m = ScalarMask::new(2, 2);
+        m.set_mask_data(&[0, 1, 1, 0], 2);
+        let out = m.apply(&[10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(out[0], 10.0); // unmasked
+        assert!(out[1].is_nan()); // masked
+        assert!(out[2].is_nan()); // masked
+        assert_eq!(out[3], 40.0); // unmasked
+        assert!(m.is_masked(1, 0));
+        assert!(m.is_masked(0, 1));
+        assert!(!m.is_masked(0, 0));
+    }
+
+    #[test]
+    fn scalar_mask_any_nonzero_value_masks() {
+        // silx masks where `mask != 0`, not only where mask == 1.
+        let mut m = ScalarMask::new(3, 1);
+        m.set_mask_data(&[0, 7, 255], 3);
+        let out = m.apply(&[1.0, 2.0, 3.0]);
+        assert_eq!(out[0], 1.0);
+        assert!(out[1].is_nan());
+        assert!(out[2].is_nan());
+    }
+
+    #[test]
+    fn scalar_mask_clips_oversized_mask_to_image_shape() {
+        // Supplied mask is 3x3 but the image is 2x2: copy the top-left 2x2 block
+        // (silx clip), so the row-2 / col-2 entries are dropped.
+        let mut m = ScalarMask::new(2, 2);
+        #[rustfmt::skip]
+        let big = [
+            1, 0, 9,
+            0, 1, 9,
+            9, 9, 9,
+        ];
+        m.set_mask_data(&big, 3);
+        // Top-left 2x2 = [[1,0],[0,1]] row-major.
+        assert_eq!(m.get_mask_data(), &[1, 0, 0, 1]);
+        let out = m.apply(&[5.0, 6.0, 7.0, 8.0]);
+        assert!(out[0].is_nan());
+        assert_eq!(out[1], 6.0);
+        assert_eq!(out[2], 7.0);
+        assert!(out[3].is_nan());
+    }
+
+    #[test]
+    fn scalar_mask_zero_extends_undersized_mask() {
+        // Supplied mask is 1x1 but the image is 2x2: copy the single pixel into
+        // the top-left, zero-fill the rest (silx extend).
+        let mut m = ScalarMask::new(2, 2);
+        m.set_mask_data(&[1], 1);
+        assert_eq!(m.get_mask_data(), &[1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn scalar_mask_extends_when_only_height_differs() {
+        // Same width (2) but only one source row for a 2x2 image: the second row
+        // stays unmasked. This exercises the `src_width == self.width` clip path
+        // where lengths still differ.
+        let mut m = ScalarMask::new(2, 2);
+        m.set_mask_data(&[1, 1], 2);
+        assert_eq!(m.get_mask_data(), &[1, 1, 0, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "data length must equal width * height")]
+    fn scalar_mask_apply_rejects_length_mismatch() {
+        let m = ScalarMask::new(2, 2);
+        m.apply(&[1.0, 2.0, 3.0]);
     }
 
     #[test]
