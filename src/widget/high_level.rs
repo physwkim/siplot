@@ -4010,6 +4010,10 @@ fn colormap_to_rgba(_width: u32, data: &[f32], colormap: &Colormap) -> Vec<[u8; 
 /// the 25 pt gradient strip (silx `_ColorScale`) plus ticks and end labels.
 const COLORBAR_WIDTH: f32 = 70.0;
 
+/// Height in points of the radar overview in the bottom-right corner (silx
+/// `_radarView`, ImageView.py:486-490). Matches the histogram strip thickness.
+const RADAR_OVERVIEW_SIZE: f32 = 80.0;
+
 /// Build the side [`ColorBarWidget`](crate::widget::colorbar::ColorBarWidget)
 /// for an [`ImageView`], synced to `colormap`'s value limits (silx
 /// `ImageView.getColorBarWidget`, ImageView.py:501). Split out from
@@ -4095,6 +4099,10 @@ pub struct ImageView {
     /// Last cursor data coordinates `(x, y)` from a pointer move/click over the
     /// image plot, or `None` when no pointer event landed on the data area.
     cursor: Option<[f64; 2]>,
+    /// Corner overview of the full image extent with a draggable viewport
+    /// rectangle (silx `ImageView._radarView`, ImageView.py:486-490). Dragging
+    /// it pans the image plot.
+    radar: crate::widget::radar_view::RadarView,
 }
 
 impl ImageView {
@@ -4137,6 +4145,7 @@ impl ImageView {
             aggregation_block: (1, 1),
             position_info: crate::widget::position_info::PositionInfo::with_xy(),
             cursor: None,
+            radar: crate::widget::radar_view::RadarView::default(),
         }
     }
 
@@ -4160,6 +4169,12 @@ impl ImageView {
         self.pixels = pixels.to_vec();
         self.colormap = colormap.clone();
         self.image_plot.set_default_colormap(colormap);
+
+        // The image uses default geometry (origin (0,0), unit scale), so its
+        // data extent is [0, width] × [0, height]. Feed it to the radar overview
+        // (silx `_updateDataContent` from `getDataRange`).
+        self.radar
+            .set_data_bounds(0.0, width as f64, 0.0, height as f64);
 
         self.upload_image();
         self.rebuild_histograms();
@@ -4347,15 +4362,34 @@ impl ImageView {
             },
         );
 
-        // Bottom row: image + vertical histogram + colorbar side by side.
+        // Sync the radar viewport to the image plot's current limits before
+        // rendering (silx `__setVisibleRectFromPlot`).
+        let (xmin, xmax) = self.image_plot.x_limits();
+        if let Some((ymin, ymax)) = self.image_plot.y_limits(YAxis::Left) {
+            self.radar.set_viewport_limits(xmin, xmax, ymin, ymax);
+        }
+
+        // Bottom row: image + vertical histogram + colorbar side by side. The
+        // radar overview sits in the bottom-right corner under the vertical
+        // histogram (silx grid (1,1), ImageView.py:486-490).
+        let img_h = avail.y - histo_h_h;
+        let radar_h = RADAR_OVERVIEW_SIZE.min(img_h);
         let response = ui.horizontal(|ui| {
             let img_w = avail.x - histo_v_w - colorbar_w;
-            let img_h = avail.y - histo_h_h;
             let response = ui
                 .allocate_ui(egui::vec2(img_w, img_h), |ui| self.image_plot.show(ui))
                 .inner;
+            // Vertical histogram with the radar overview stacked below it.
             ui.allocate_ui(egui::vec2(histo_v_w, img_h), |ui| {
-                self.histo_v.show(ui);
+                ui.allocate_ui(egui::vec2(histo_v_w, img_h - radar_h), |ui| {
+                    self.histo_v.show(ui);
+                });
+                let radar = self.radar.ui(ui, egui::vec2(histo_v_w, radar_h));
+                if let Some((rx0, rx1, ry0, ry1)) = radar.dragged_limits {
+                    // Forward the dragged viewport to pan/zoom the image plot
+                    // (silx `plot.setLimits`, RadarView.py:326).
+                    self.image_plot.set_limits(rx0, rx1, ry0, ry1, None);
+                }
             });
             // Colorbar column, synced to the active image's colormap limits.
             self.colorbar().ui(ui, egui::vec2(colorbar_w, img_h));
@@ -4368,6 +4402,12 @@ impl ImageView {
             self.cursor = Some(cursor);
         }
         self.position_info.ui(ui, self.cursor);
+    }
+
+    /// The radar overview of the full image extent with its draggable viewport
+    /// (silx `ImageView._radarView`, ImageView.py:486-490).
+    pub fn radar(&self) -> &crate::widget::radar_view::RadarView {
+        &self.radar
     }
 
     /// The last cursor data coordinates `(x, y)` fed into the PositionInfo
@@ -4911,6 +4951,32 @@ mod tests {
         assert_eq!(spec.interpolation, InterpolationMode::Linear);
         assert_eq!(spec.aggregation, AggregationMode::Mean);
         assert_eq!(spec.aggregation_block, (2, 3));
+    }
+
+    #[test]
+    fn radar_drag_output_maps_to_image_plot_limits() {
+        // Item 3: a RadarView viewport drag emits (x0, x1, y0, y1) which the
+        // ImageView forwards verbatim to image_plot.set_limits. Verify the
+        // emitted limits via the same clamp+limits path the radar drag uses.
+        use crate::widget::radar_view::{DataRect, RadarView, clamp_viewport};
+
+        // 100x80 image extent; viewport is a 20x16 window panned by (+30, +20).
+        let mut radar = RadarView::default();
+        radar.set_data_bounds(0.0, 100.0, 0.0, 80.0);
+        radar.set_viewport(DataRect::new(0.0, 0.0, 20.0, 16.0));
+
+        let moved = DataRect {
+            left: radar.viewport.left + 30.0,
+            top: radar.viewport.top + 20.0,
+            width: radar.viewport.width,
+            height: radar.viewport.height,
+        };
+        let clamped = clamp_viewport(moved, &radar.data_extent);
+        let (x0, x1, y0, y1) = clamped.limits();
+        // Window stays inside the extent: left 30..50, top 20..36.
+        assert_eq!((x0, x1, y0, y1), (30.0, 50.0, 20.0, 36.0));
+        // This tuple is exactly what set_limits(x0, x1, y0, y1, None) receives.
+        assert!(x1 > x0 && y1 > y0);
     }
 
     #[test]
