@@ -66,6 +66,7 @@ pub use crate::render::save::{
 };
 pub use crate::widget::actions;
 pub use crate::widget::actions::io::{SaveTarget, curve_to_csv};
+pub use crate::widget::actions::mode::{mask_draw_mode, pan_mode, select_mode, zoom_mode};
 pub use crate::widget::alpha_slider::{AlphaSlider, AlphaSliderOrientation};
 pub use crate::widget::colorbar::{ColorBarOrientation, ColorBarWidget};
 pub use crate::widget::colormap_dialog::ColormapDialog;

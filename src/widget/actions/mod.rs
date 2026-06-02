@@ -11,6 +11,8 @@
 //! - [`control`] mirrors silx `actions/control.py` (axis display, colorbar,
 //!   curve style, zoom in/out/back).
 //! - [`io`] mirrors silx `actions/io.py` (save figure/data, copy to clipboard).
+//! - [`mode`] mirrors silx `actions/mode.py` (zoom / pan interaction modes),
+//!   plus the port-specific mask-draw and select mode setters.
 //!
 //! Load-bearing logic (style cycling, zoom-range math, format detection, CSV
 //! serialization, RGBA→clipboard shaping) is factored into pure functions so it
@@ -19,3 +21,4 @@
 
 pub mod control;
 pub mod io;
+pub mod mode;
