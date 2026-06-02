@@ -299,6 +299,28 @@ pub enum PlotEvent {
     RoisCleared,
 }
 
+/// A legend right-click context-menu action (silx `LegendListContextMenu`).
+/// The action set mirrors silx: `SetActive` (`setActiveCurve`), `MapToLeft` /
+/// `MapToRight` (move the curve's Y axis), checkable `TogglePoints` /
+/// `ToggleLines` (symbol / line visibility), `Remove`, and `Rename`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegendAction {
+    /// Make the item the active item (silx `setActiveCurve`).
+    SetActive,
+    /// Move a curve to the left Y axis (silx `Map to left`).
+    MapToLeft,
+    /// Move a curve to the right Y axis (silx `Map to right`).
+    MapToRight,
+    /// Toggle a curve's point markers (silx checkable `Points`).
+    TogglePoints,
+    /// Toggle a curve's connecting line (silx checkable `Lines`).
+    ToggleLines,
+    /// Remove the item from the plot (silx `Remove curve`).
+    Remove,
+    /// Open the rename popup for the item (silx `Rename curve`).
+    Rename,
+}
+
 /// Return value of [`PlotWidget::show_legend`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LegendResponse {
@@ -308,6 +330,10 @@ pub struct LegendResponse {
     pub activated: Option<ItemHandle>,
     /// Handle whose visibility was toggled this frame (eye icon click).
     pub visibility_changed: Option<ItemHandle>,
+    /// Context-menu action fired this frame, with the item it targeted. The
+    /// action is already self-applied by `show_legend`; this is reported for
+    /// callers that want to observe or react to it.
+    pub context_action: Option<(ItemHandle, LegendAction)>,
 }
 
 /// Return value of [`PlotWidget::show_toolbar`].
@@ -1940,6 +1966,9 @@ struct LegendRowResult {
     row_clicked: bool,
     /// Click on the visibility eye icon.
     eye_clicked: bool,
+    /// The row's egui [`Response`](egui::Response), so the caller can attach a
+    /// right-click context menu while holding `&mut self`.
+    row_response: egui::Response,
 }
 
 fn legend_row_response(
@@ -1975,6 +2004,7 @@ fn legend_row_response(
     LegendRowResult {
         row_clicked: row_response.clicked() && !eye_response.clicked(),
         eye_clicked: eye_response.clicked(),
+        row_response,
     }
 }
 
@@ -2220,6 +2250,9 @@ pub struct PlotWidget {
     interaction_mode: PlotInteractionMode,
     active_item: Option<ItemHandle>,
     events: Vec<PlotEvent>,
+    /// Open legend rename popup: the item being renamed and its edit buffer
+    /// (silx `RenameCurveDialog`). `None` when no rename is in progress.
+    rename_state: Option<(ItemHandle, String)>,
 }
 
 impl PlotWidget {
@@ -2239,6 +2272,7 @@ impl PlotWidget {
             interaction_mode: PlotInteractionMode::Zoom,
             active_item: None,
             events: Vec::new(),
+            rename_state: None,
         }
     }
 
@@ -3572,9 +3606,169 @@ impl PlotWidget {
                         self.backend.set_item_visible(handle, !visible);
                         out.visibility_changed = Some(handle);
                     }
+                    // Right-click context menu (silx LegendListContextMenu).
+                    // The closure both self-applies the action and records it.
+                    result.row_response.context_menu(|ui| {
+                        if let Some(action) = self.legend_context_menu_ui(ui, handle, kind, active)
+                        {
+                            out.context_action = Some((handle, action));
+                        }
+                    });
                 }
             });
+        // The rename popup (silx RenameCurveDialog) is rendered after the rows
+        // so it floats above the legend, and from inside show_legend so the
+        // legend stays self-contained.
+        self.show_rename_popup(ui);
         out
+    }
+
+    /// Build the legend right-click context menu for one row, self-applying the
+    /// chosen action and returning the [`LegendAction`] that fired (if any).
+    /// Checkable / current-axis state is re-read from the record on every call
+    /// so a reopened menu reflects the up-to-date Points/Lines/axis state.
+    fn legend_context_menu_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        handle: ItemHandle,
+        kind: PlotItemKind,
+        active: bool,
+    ) -> Option<LegendAction> {
+        let mut fired: Option<LegendAction> = None;
+
+        // Set Active: disabled when the item is already active (silx omits
+        // re-activating the active curve; we degrade to a disabled entry).
+        if ui
+            .add_enabled(!active, egui::Button::new("Set Active"))
+            .clicked()
+        {
+            self.set_active_item(Some(handle));
+            fired = Some(LegendAction::SetActive);
+            ui.close();
+        }
+
+        if matches!(kind, PlotItemKind::Curve) {
+            // Read the live curve state for the checkable / current-axis marks.
+            let (y_axis, symbol_visible, line_visible) = self
+                .record_curve_data(handle)
+                .map(|data| {
+                    (
+                        data.y_axis,
+                        data.symbol.is_some(),
+                        data.line_style.draws_line(),
+                    )
+                })
+                .unwrap_or((YAxis::Left, false, false));
+
+            // Map to Y Left / Right: the current axis is disabled (it is already
+            // the target), matching silx's intent of moving to the *other* axis.
+            if ui
+                .add_enabled(y_axis != YAxis::Left, egui::Button::new("Map to Y Left"))
+                .clicked()
+            {
+                self.set_curve_y_axis(handle, YAxis::Left);
+                fired = Some(LegendAction::MapToLeft);
+                ui.close();
+            }
+            if ui
+                .add_enabled(y_axis != YAxis::Right, egui::Button::new("Map to Y Right"))
+                .clicked()
+            {
+                self.set_curve_y_axis(handle, YAxis::Right);
+                fired = Some(LegendAction::MapToRight);
+                ui.close();
+            }
+
+            // Checkable Points / Lines: the checkmark reflects current visibility
+            // read above; clicking toggles to the opposite state.
+            let mut points = symbol_visible;
+            if ui.checkbox(&mut points, "Points").clicked() {
+                self.set_curve_points_visible(handle, points);
+                fired = Some(LegendAction::TogglePoints);
+                ui.close();
+            }
+            let mut lines = line_visible;
+            if ui.checkbox(&mut lines, "Lines").clicked() {
+                self.set_curve_lines_visible(handle, lines);
+                fired = Some(LegendAction::ToggleLines);
+                ui.close();
+            }
+        }
+        // Non-curve items (Image/Scatter/Histogram/Mask/...) degrade gracefully:
+        // only Set Active / Rename / Remove are offered, since Points/Lines/Map-Y
+        // are curve-only (silx's legend is curve-centric).
+
+        ui.separator();
+
+        if ui.button("Rename").clicked() {
+            // Seed the edit buffer with the current label so the popup opens
+            // pre-filled (silx RenameCurveDialog sets the line edit text).
+            let current = self
+                .item_record(handle)
+                .map(|record| self.legend_label(record))
+                .unwrap_or_default();
+            self.rename_state = Some((handle, current));
+            fired = Some(LegendAction::Rename);
+            ui.close();
+        }
+        if ui.button("Remove").clicked() {
+            self.remove(handle);
+            fired = Some(LegendAction::Remove);
+            ui.close();
+        }
+
+        fired
+    }
+
+    /// Render the legend rename popup (silx `RenameCurveDialog`) when a rename
+    /// is in progress: a single-line text field with Apply / Cancel. Apply
+    /// commits the buffer via [`Self::set_item_legend`] and clears the state;
+    /// Cancel or Escape clears it without committing. No-op when no rename is
+    /// pending.
+    fn show_rename_popup(&mut self, ui: &mut egui::Ui) {
+        let Some((handle, mut buffer)) = self.rename_state.take() else {
+            return;
+        };
+        // `keep_open` decides whether the popup state survives this frame; any
+        // terminal action (Apply / Cancel / Escape / window close) leaves it
+        // false so `rename_state` stays cleared.
+        let mut keep_open = true;
+        let mut apply = false;
+        let mut open = true;
+        egui::Window::new("Rename")
+            .id(ui.id().with(("legend_rename", handle)))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                let edit = ui.add(egui::TextEdit::singleline(&mut buffer).desired_width(200.0));
+                // Enter in the field applies, matching a dialog's default button.
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        keep_open = false;
+                    }
+                });
+            });
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            keep_open = false;
+        }
+        if apply {
+            self.set_item_legend(handle, buffer.clone());
+            keep_open = false;
+        }
+        // The window's own close button (`open`) is a Cancel.
+        if !open {
+            keep_open = false;
+        }
+        if keep_open {
+            self.rename_state = Some((handle, buffer));
+        }
     }
 
     /// Draw retained statistics for an item. Returns `false` if the handle is unknown.
