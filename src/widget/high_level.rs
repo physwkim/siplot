@@ -27,7 +27,7 @@ use crate::core::transform::{Margins, Scale, YAxis};
 use crate::core::triangles::Triangles;
 use crate::render::backend_wgpu::WgpuBackend;
 use crate::render::gpu_curve::CurveData;
-use crate::render::gpu_image::{AggregationMode, ImageData, ImagePixels};
+use crate::render::gpu_image::{AggregationMode, ImageData, ImagePixels, InterpolationMode};
 use crate::render::save::SaveError;
 use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
 
@@ -4023,15 +4023,22 @@ fn image_view_colorbar(colormap: &Colormap) -> crate::widget::colorbar::ColorBar
 /// colormap and `alpha` (silx `ActiveImageAlphaSlider` propagation,
 /// ImageView.py:513-517). Split out from [`ImageView::upload_image`] so the
 /// alpha→spec propagation is unit-testable without a GPU backend.
+#[allow(clippy::too_many_arguments)]
 fn image_view_image_spec<'a>(
     width: u32,
     height: u32,
     pixels: &'a [f32],
     colormap: &Colormap,
     alpha: f32,
+    interpolation: InterpolationMode,
+    aggregation: AggregationMode,
+    aggregation_block: (u32, u32),
 ) -> ImageSpec<'a> {
     let mut spec = ImageSpec::scalar(width, height, pixels, colormap.clone());
     spec.alpha = alpha;
+    spec.interpolation = interpolation;
+    spec.aggregation = aggregation;
+    spec.aggregation_block = aggregation_block;
     spec
 }
 
@@ -4054,6 +4061,17 @@ pub struct ImageView {
     /// Active-image opacity slider (silx `ImageView` `ActiveImageAlphaSlider`,
     /// ImageView.py:513-517). Its value propagates to the displayed image.
     alpha: crate::widget::alpha_slider::AlphaSlider,
+    /// Data-to-screen interpolation of the active image (silx image
+    /// `interpolation`, items/image.py: nearest / linear).
+    interpolation: InterpolationMode,
+    /// Block aggregation of the active image (silx `ImageDataAggregated`,
+    /// items/image.py: max / mean / min).
+    aggregation: AggregationMode,
+    /// Per-axis block factors `(block_x, block_y)` for [`aggregation`]
+    /// (silx level-of-detail `(lodx, lody)`).
+    ///
+    /// [`aggregation`]: ImageView::aggregation
+    aggregation_block: (u32, u32),
 }
 
 impl ImageView {
@@ -4091,6 +4109,9 @@ impl ImageView {
             pixels: Vec::new(),
             colormap: Colormap::viridis(0.0, 1.0),
             alpha: crate::widget::alpha_slider::AlphaSlider::default(),
+            interpolation: InterpolationMode::default(),
+            aggregation: AggregationMode::default(),
+            aggregation_block: (1, 1),
         }
     }
 
@@ -4134,6 +4155,9 @@ impl ImageView {
             &self.pixels,
             &self.colormap,
             self.alpha.alpha(),
+            self.interpolation,
+            self.aggregation,
+            self.aggregation_block,
         );
         if let Some(handle) = self.image_handle {
             self.image_plot.update_image_spec(handle, spec);
@@ -4157,10 +4181,99 @@ impl ImageView {
         self.upload_image();
     }
 
-    /// Show the ImageView toolbar: the active-image alpha slider (silx
-    /// `ActiveImageAlphaSlider`, ImageView.py:513-517). When the slider value
-    /// changes the new opacity is propagated to the displayed image.
+    /// The active image's data-to-screen interpolation (silx image
+    /// `interpolation`).
+    pub fn interpolation(&self) -> InterpolationMode {
+        self.interpolation
+    }
+
+    /// Set the active image's interpolation and re-upload it (silx
+    /// `image.setInterpolation`, items/image.py).
+    pub fn set_interpolation(&mut self, interpolation: InterpolationMode) {
+        if interpolation != self.interpolation {
+            self.interpolation = interpolation;
+            self.upload_image();
+        }
+    }
+
+    /// The active image's block aggregation (silx `ImageDataAggregated`).
+    pub fn aggregation(&self) -> AggregationMode {
+        self.aggregation
+    }
+
+    /// The active image's per-axis aggregation block factors `(block_x,
+    /// block_y)` (silx level-of-detail `(lodx, lody)`).
+    pub fn aggregation_block(&self) -> (u32, u32) {
+        self.aggregation_block
+    }
+
+    /// Set the active image's block aggregation `mode` and per-axis block
+    /// factors, then re-upload it (silx `ImageDataAggregated.setAggregationMode`,
+    /// items/image_aggregated.py). Each block factor is clamped to `>= 1`.
+    pub fn set_aggregation(&mut self, mode: AggregationMode, block: (u32, u32)) {
+        let block = (block.0.max(1), block.1.max(1));
+        if mode != self.aggregation || block != self.aggregation_block {
+            self.aggregation = mode;
+            self.aggregation_block = block;
+            self.upload_image();
+        }
+    }
+
+    /// Show the ImageView toolbar: interpolation / aggregation selectors on the
+    /// active image (silx image `interpolation` nearest/linear and
+    /// `ImageDataAggregated` max/mean/min, items/image.py) plus the active-image
+    /// alpha slider (silx `ActiveImageAlphaSlider`, ImageView.py:513-517). Each
+    /// change is propagated to the displayed image.
     pub fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            // Interpolation selector (silx image interpolation).
+            let mut interpolation = self.interpolation;
+            egui::ComboBox::from_label("interp")
+                .selected_text(match interpolation {
+                    InterpolationMode::Nearest => "nearest",
+                    InterpolationMode::Linear => "linear",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut interpolation, InterpolationMode::Nearest, "nearest");
+                    ui.selectable_value(&mut interpolation, InterpolationMode::Linear, "linear");
+                });
+            if interpolation != self.interpolation {
+                self.set_interpolation(interpolation);
+            }
+
+            // Aggregation selector (silx ImageDataAggregated).
+            let mut aggregation = self.aggregation;
+            egui::ComboBox::from_label("agg")
+                .selected_text(match aggregation {
+                    AggregationMode::None => "none",
+                    AggregationMode::Max => "max",
+                    AggregationMode::Mean => "mean",
+                    AggregationMode::Min => "min",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut aggregation, AggregationMode::None, "none");
+                    ui.selectable_value(&mut aggregation, AggregationMode::Max, "max");
+                    ui.selectable_value(&mut aggregation, AggregationMode::Mean, "mean");
+                    ui.selectable_value(&mut aggregation, AggregationMode::Min, "min");
+                });
+
+            // Block factors (silx level-of-detail (lodx, lody)).
+            let mut block = self.aggregation_block;
+            let bx = ui.add(
+                egui::DragValue::new(&mut block.0)
+                    .range(1..=64)
+                    .prefix("bx "),
+            );
+            let by = ui.add(
+                egui::DragValue::new(&mut block.1)
+                    .range(1..=64)
+                    .prefix("by "),
+            );
+            if aggregation != self.aggregation || bx.changed() || by.changed() {
+                self.set_aggregation(aggregation, block);
+            }
+        });
+
         let response = self.alpha.ui(ui);
         if response.changed() {
             self.upload_image();
@@ -4705,10 +4818,41 @@ mod tests {
         let cmap = Colormap::viridis(0.0, 4.0);
         let mut slider = crate::widget::alpha_slider::AlphaSlider::default();
         slider.set_alpha(0.25);
-        let spec = image_view_image_spec(2, 2, &pixels, &cmap, slider.alpha());
+        let spec = image_view_image_spec(
+            2,
+            2,
+            &pixels,
+            &cmap,
+            slider.alpha(),
+            InterpolationMode::default(),
+            AggregationMode::default(),
+            (1, 1),
+        );
         // 0.25 -> round(255*0.25)=64 -> 64/255 == slider.alpha().
         assert_eq!(spec.alpha, slider.alpha());
         assert!((spec.alpha - 64.0 / 255.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn image_view_interpolation_aggregation_update_spec() {
+        // Item 5: selecting interpolation / aggregation modes updates the image
+        // spec's interpolation/aggregation/block (silx image interpolation +
+        // ImageDataAggregated).
+        let pixels = [1.0_f32, 2.0, 3.0, 4.0];
+        let cmap = Colormap::viridis(0.0, 4.0);
+        let spec = image_view_image_spec(
+            2,
+            2,
+            &pixels,
+            &cmap,
+            1.0,
+            InterpolationMode::Linear,
+            AggregationMode::Mean,
+            (2, 3),
+        );
+        assert_eq!(spec.interpolation, InterpolationMode::Linear);
+        assert_eq!(spec.aggregation, AggregationMode::Mean);
+        assert_eq!(spec.aggregation_block, (2, 3));
     }
 
     #[test]
