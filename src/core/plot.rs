@@ -558,6 +558,31 @@ impl Plot {
         resolved_axis_label(self.y2_label.as_deref(), active_label)
     }
 
+    /// The explicit grid-line color override (silx `getGridColor`). `None` means
+    /// the grid follows the foreground color; see [`Self::effective_grid_color`].
+    pub fn grid_color(&self) -> Option<Color32> {
+        self.grid_color
+    }
+
+    /// Set (or clear, with `None`) the grid-line color override (silx
+    /// `setGridColor`). Marks the plot dirty on change, mirroring silx's
+    /// `_foregroundColorsUpdated` -> `_setDirtyPlot()`. State only; the chrome
+    /// reads the foreground color today, so wiring this into the grid render is
+    /// deferred.
+    pub fn set_grid_color(&mut self, color: Option<Color32>) {
+        if self.grid_color != color {
+            self.grid_color = color;
+            self.set_dirty(false);
+        }
+    }
+
+    /// Resolve the color the grid lines should use given the resolved
+    /// `foreground` color, mirroring silx `_foregroundColorsUpdated`: the
+    /// explicit [`Self::grid_color`] when set, otherwise `foreground`.
+    pub fn effective_grid_color(&self, foreground: Color32) -> Color32 {
+        self.grid_color.unwrap_or(foreground)
+    }
+
     /// Refit the view to `data` honoring the per-axis autoscale flags, mirroring
     /// silx `PlotWidget.resetZoom`. An axis whose autoscale flag is off keeps its
     /// current display range; an axis whose flag is on is refit to its data
@@ -915,6 +940,37 @@ mod tests {
         assert_eq!(plot.limits.1, 1000.0);
         // Y stays pinned.
         assert_eq!((plot.limits.2, plot.limits.3), (0.0, 1.0));
+    }
+
+    #[test]
+    fn grid_color_defaults_none_and_follows_foreground() {
+        let plot = Plot::new(0);
+        assert_eq!(plot.grid_color(), None);
+        let fg = Color32::from_rgb(200, 200, 200);
+        // No explicit grid color -> effective is the foreground.
+        assert_eq!(plot.effective_grid_color(fg), fg);
+    }
+
+    #[test]
+    fn grid_color_explicit_overrides_foreground() {
+        let mut plot = Plot::new(0);
+        let grid = Color32::from_rgb(64, 64, 64);
+        let fg = Color32::from_rgb(200, 200, 200);
+        plot.set_grid_color(Some(grid));
+        assert_eq!(plot.grid_color(), Some(grid));
+        // Explicit grid color wins over foreground.
+        assert_eq!(plot.effective_grid_color(fg), grid);
+    }
+
+    #[test]
+    fn set_grid_color_change_marks_full_dirty() {
+        let mut plot = Plot::new(0);
+        // Setting to the same value (None) is a no-op for dirty.
+        plot.set_grid_color(None);
+        assert_eq!(plot.dirty(), DirtyState::Clean);
+        // A real change marks dirty (silx _foregroundColorsUpdated).
+        plot.set_grid_color(Some(Color32::RED));
+        assert_eq!(plot.dirty(), DirtyState::Full);
     }
 
     #[test]
