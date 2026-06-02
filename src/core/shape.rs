@@ -57,6 +57,15 @@ pub struct Shape {
     /// Second color filling dash gaps in the outline (silx `gapcolor`); `None`
     /// leaves the gaps empty.
     pub gap_color: Option<Color32>,
+    /// Whether the shape draws in the overlay pass (silx `_OverlayItem.isOverlay`
+    /// / `setOverlay`, `shape.py:54-73`).
+    ///
+    /// Defaults to `true`, the port's current behavior: every shape draws in the
+    /// single overlay pass (over the chrome, like an ROI). This differs from
+    /// silx's `_OverlayItem` default of `False` (the data layer); the port has no
+    /// separate data layer for shapes, so the field is carried for parity and for
+    /// a future renderer that honors it without changing today's draw path.
+    pub is_overlay: bool,
 }
 
 impl Shape {
@@ -107,6 +116,7 @@ impl Shape {
             line_style: LineStyle::Solid,
             line_width: 1.0,
             gap_color: None,
+            is_overlay: true,
         }
     }
 
@@ -137,6 +147,13 @@ impl Shape {
     /// Set the dash-gap fill color (silx `gapcolor`).
     pub fn with_gap_color(mut self, color: Color32) -> Self {
         self.gap_color = Some(color);
+        self
+    }
+
+    /// Set whether the shape draws in the overlay pass (silx
+    /// `_OverlayItem.setOverlay`).
+    pub fn with_overlay(mut self, overlay: bool) -> Self {
+        self.is_overlay = overlay;
         self
     }
 
@@ -232,6 +249,15 @@ mod tests {
         assert_eq!(s.line_style, LineStyle::Dashed);
         assert_eq!(s.line_width, 2.0);
         assert_eq!(s.gap_color, Some(Color32::BLACK));
+    }
+
+    #[test]
+    fn overlay_defaults_true_and_builder_toggles() {
+        // Default is the port's current behavior: shapes draw in the overlay pass.
+        assert!(Shape::rectangle(0.0, 0.0, 1.0, 1.0).is_overlay);
+        // The builder can opt out (silx setOverlay(False)).
+        let s = Shape::rectangle(0.0, 0.0, 1.0, 1.0).with_overlay(false);
+        assert!(!s.is_overlay);
     }
 
     #[test]
