@@ -756,6 +756,23 @@ impl Backend for WgpuBackend {
     fn save_graph(&self, path: &std::path::Path, size: (u32, u32)) -> Result<(), Self::SaveError> {
         crate::render::save::save_graph(&self.render_state, &self.plot, size, path)
     }
+
+    fn save_graph_with_format(
+        &self,
+        path: &std::path::Path,
+        size: (u32, u32),
+        format: crate::render::save::SaveFormat,
+        dpi: u32,
+    ) -> Result<(), Self::SaveError> {
+        crate::render::save::save_graph_with_format(
+            &self.render_state,
+            &self.plot,
+            size,
+            path,
+            format,
+            dpi,
+        )
+    }
 }
 
 fn apply_alpha(color: Color32, alpha: f32) -> Color32 {

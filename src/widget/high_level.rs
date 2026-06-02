@@ -29,7 +29,7 @@ use crate::core::triangles::Triangles;
 use crate::render::backend_wgpu::WgpuBackend;
 use crate::render::gpu_curve::CurveData;
 use crate::render::gpu_image::{AggregationMode, ImageData, ImagePixels, InterpolationMode};
-use crate::render::save::SaveError;
+use crate::render::save::{SaveError, SaveFormat};
 use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
 
 /// Live profile extraction mode (silx profile toolbar).
@@ -343,6 +343,12 @@ pub type PlotWindow = PlotWidget;
 /// size is supplied (silx saves at the widget's pixel size; the toolbar has no
 /// data-area handle here, so it uses a fixed default).
 const DEFAULT_SAVE_SIZE: (u32, u32) = (1024, 768);
+
+/// Default figure resolution (dots per inch) recorded in formats that carry it
+/// (TIFF resolution tags). Mirrors silx's matplotlib-backend default of 90 dpi;
+/// 96 is the common screen value used here as a sensible default for the raster
+/// snapshot. PNG/PPM/SVG ignore it (px-sized containers).
+const DEFAULT_SAVE_DPI: u32 = 96;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolbarIcon {
@@ -4067,24 +4073,42 @@ impl PlotWidget {
         self.backend.save_graph(path, size)
     }
 
+    /// Render the figure to `path` in the given [`SaveFormat`] at `dpi`,
+    /// generalizing [`Self::save_graph`] (PNG-only) over silx's raster save
+    /// formats (PNG/PPM/SVG/TIFF). Faithful to silx
+    /// `BackendBase.saveGraph(fileName, fileFormat, dpi)`. The GPU readback +
+    /// file write are native shims; the per-format encoding is unit-tested in
+    /// [`crate::render::save`].
+    pub fn save_graph_with_format(
+        &self,
+        path: &Path,
+        size: (u32, u32),
+        format: SaveFormat,
+        dpi: u32,
+    ) -> Result<(), SaveError> {
+        self.backend.save_graph_with_format(path, size, format, dpi)
+    }
+
     /// Save to `path`, dispatching by its extension (silx `SaveAction`):
     /// a `.csv` path writes the active curve's `(x, y)` data; a raster figure
-    /// extension renders the figure to a `size` pixel image. Returns `Ok(true)`
-    /// when a file was written, `Ok(false)` when the path's extension is not a
-    /// recognized save target or (for CSV) there is no active curve to save.
+    /// extension (`png`/`ppm`/`svg`/`tif`/`tiff`) renders the figure to a `size`
+    /// pixel image in the matching [`SaveFormat`]. Returns `Ok(true)` when a file
+    /// was written, `Ok(false)` when the path's extension is not a recognized save
+    /// target or (for CSV) there is no active curve to save.
     ///
-    /// Only PNG figure snapshots are routed here (the GPU readback shim); other
-    /// raster formats are not yet wired from this entry point.
+    /// All recognized figure formats are routed through
+    /// [`Self::save_graph_with_format`] at [`DEFAULT_SAVE_DPI`]; PNG remains
+    /// byte-identical to [`Self::save_graph`] (both go through
+    /// [`crate::render::save::encode_png`]). The extension-to-target decision is
+    /// the pure, unit-tested [`SaveTarget::from_path`].
     pub fn save_to_path(&self, path: &Path, size: (u32, u32)) -> Result<bool, SaveError> {
-        use crate::render::save::SaveFormat;
         use crate::widget::actions::io::{SaveTarget, curve_to_csv};
 
         match SaveTarget::from_path(path) {
-            Some(SaveTarget::Figure(SaveFormat::Png)) => {
-                self.save_graph(path, size)?;
+            Some(SaveTarget::Figure(format)) => {
+                self.save_graph_with_format(path, size, format, DEFAULT_SAVE_DPI)?;
                 Ok(true)
             }
-            Some(SaveTarget::Figure(_)) => Ok(false),
             Some(SaveTarget::CurveCsv) => {
                 let Some(handle) = self.active_curve() else {
                     return Ok(false);
@@ -4109,6 +4133,9 @@ impl PlotWidget {
     pub fn save_dialog(&self, size: (u32, u32)) -> Result<bool, SaveError> {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("PNG figure", &["png"])
+            .add_filter("PPM figure", &["ppm"])
+            .add_filter("SVG figure", &["svg"])
+            .add_filter("TIFF figure", &["tif", "tiff"])
             .add_filter("Curve CSV", &["csv"])
             .save_file()
         else {
@@ -6489,6 +6516,44 @@ fn roi_description(roi: &Roi) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_to_path_dispatch_resolves_format_per_extension() {
+        // save_to_path branches on SaveTarget::from_path; the GPU readback +
+        // file write are shims, but the extension->target decision (which
+        // SaveFormat each figure extension routes to, vs CSV) is pure. Assert
+        // the full dispatch table this entry point relies on, without a GPU.
+        use crate::widget::actions::io::SaveTarget;
+
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.png")),
+            Some(SaveTarget::Figure(SaveFormat::Png))
+        );
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.ppm")),
+            Some(SaveTarget::Figure(SaveFormat::Ppm))
+        );
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.svg")),
+            Some(SaveTarget::Figure(SaveFormat::Svg))
+        );
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.tif")),
+            Some(SaveTarget::Figure(SaveFormat::Tiff))
+        );
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.tiff")),
+            Some(SaveTarget::Figure(SaveFormat::Tiff))
+        );
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/curve.csv")),
+            Some(SaveTarget::CurveCsv)
+        );
+        // Unknown / matplotlib-only / extensionless paths are not save targets,
+        // so save_to_path returns Ok(false) for them.
+        assert_eq!(SaveTarget::from_path(Path::new("/tmp/fig.pdf")), None);
+        assert_eq!(SaveTarget::from_path(Path::new("/tmp/noext")), None);
+    }
 
     #[test]
     fn colorbar_column_width_reserves_only_when_shown_and_available() {

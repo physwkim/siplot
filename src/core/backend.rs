@@ -16,6 +16,7 @@ use crate::core::marker::MarkerSymbol;
 use crate::core::shape::ShapeKind;
 use crate::core::transform::{Margins, YAxis};
 use crate::render::gpu_image::{AggregationMode, InterpolationMode};
+use crate::render::save::SaveFormat;
 
 /// Backend item handle. Equivalent to silx's opaque backend item object.
 pub type ItemHandle = u64;
@@ -254,4 +255,16 @@ pub trait Backend {
 
     fn replot(&mut self);
     fn save_graph(&self, path: &Path, size: (u32, u32)) -> Result<(), Self::SaveError>;
+    /// Render the figure to `path` in the given [`SaveFormat`] at `dpi`.
+    ///
+    /// Generalizes [`Self::save_graph`] (PNG-only) over silx's raster save
+    /// formats (PNG/PPM/SVG/TIFF), faithful to silx
+    /// `BackendBase.saveGraph(fileName, fileFormat, dpi)`.
+    fn save_graph_with_format(
+        &self,
+        path: &Path,
+        size: (u32, u32),
+        format: SaveFormat,
+        dpi: u32,
+    ) -> Result<(), Self::SaveError>;
 }
