@@ -504,6 +504,55 @@ the C++ `median<T>()` in `include/median_filter.hpp`) and `actions/{medfilt,hist
   the shader-gated items (SOLID scatter-triangle pipeline, per-point scatter alpha, mask colormap GPU
   overlay — NaN-holes) + marker drag/cursor + `is_overlay` data-layer (render-refactor) + true vector SVG.
 
+### Wave 8 — Shader-gated GPU cluster (4 sequential sub-waves, all share the `high_level.rs` long-pole)
+Verification boundary for this wave: WGSL is now **statically** validated headlessly via `naga` (8A) — the
+prior "WGSL RUNTIME-UNVERIFIED (no naga CLI)" caveat is partly obsolete — but actual rendered pixels, GPU
+alpha-blend, pipeline creation, and the per-vertex marker DRAW remain **GPU-only UNVERIFIED** on this machine
+(Metal, no headless rasterizer). CPU geometry/data/LUT math is fully unit-tested. Each sub-wave = one
+worktree-isolated implement + parallel adversarial verify; ff-merged to `main` preserving verified SHAs.
+- **Wave 8A — headless naga WGSL validation gate** (`c253950`, 707 tests). New test-only `src/render/shaders.rs`
+  (registered `#[cfg(test)] mod shaders;` in `render/mod.rs`): `validate_wgsl(name, src)` =
+  `naga::front::wgsl::parse_str` + `Validator::new(ValidationFlags::all(), Capabilities::all())`, one `#[test]`
+  per shader (clear/curve/errorbars/fill/image/image_rgba/markers) via `include_str!`. **Zero new deps** —
+  `naga` is re-exported through `egui_wgpu::wgpu`. A malformed shader now fails `cargo nextest` headlessly.
+- **Wave 8B — per-point marker color + per-point scatter alpha** (`62bc335` + `baf1715`, 712 tests). Fixes the
+  latent bug that the marker pipeline **dropped** per-vertex colors: `markers.wgsl` gains
+  `use_vertex_color: f32` (consumes a `_pad` slot — stays 112-byte std140, guarded by
+  `marker_params_std140_size_unchanged`) + `@binding(2) vcolors` storage buffer; `vs_main` passes
+  `vcolors[min(inst, len-1)]` through a color varying; `fs_main` = `select(params.color, in.color,
+  use_vertex_color > 0.5)` (regression-safe: flag 0 ⟹ old behavior). `gpu_curve.rs` adds the binding +
+  shares the existing per-vertex color buffer. `high_level.rs`: `compose_per_point_alpha` (round-trips
+  `to_srgba_unmultiplied` to avoid double-premultiply) + `ScatterView.alpha: Option<Vec<f64>>` +
+  `with_alpha`/`set_alpha`/`clear_alpha`; silx three-stage `colormap.alpha · per_point.alpha · global.alpha`
+  (`scatter.py __applyColormapToData rgbacolors[:,-1] *= __alpha`). **UNFIXED (out of scope, recorded):** the
+  pre-existing `apply_curve_alpha` double-premultiply bug on the shared curve/line path (kodex 162cc1a8).
+- **Wave 8C — SOLID scatter triangle surface** (`6575cef`/`e5cc70d`/`5fc178b`, 717 tests; `high_level.rs` only).
+  `ScatterVisualization::Solid` rendered through the **existing CPU `epaint::Mesh` path** (no GPU shader
+  needed — recon corrected the assumption). Extracted `point_colors(values, colormap, alpha)` shared by the
+  Points + Solid arms (no drift); `ScatterView.triangles_handle` with the invariant *Some iff a mesh is
+  displayed*; Solid arm calls `scatter_viz::solid_triangles`, `None` on <3 finite / collinear clears the
+  handle and draws nothing (silx "Cannot display as solid surface" early-out). silx `scatter.py:610-625`
+  `backend.addTriangles` GL Gouraud. Enum-leak match arms fixed (`Points | Solid => None`; explicit Solid arm).
+- **Wave 8D — mask 256×4 LUT overlay** (`12a7607` + `e38226a`, then 3 review fixes; 724 tests). Replaces the
+  flat single-color boolean overlay (which collapsed all 255 levels) with silx's faithful per-level LUT.
+  `core/colormap.rs`: `mask_overlay_lut(base, overrides, selected_level, alpha) -> [[u8;4];256]` faithful to
+  `_BaseMaskToolsWidget._setMaskColors` (base RGB → per-level override → `alpha/2` for all → full `alpha` at
+  the selected level → `lut[0]=[0,0,0,0]` set LAST; float→u8 = `(x*256).clamp(0,255) as u8` truncation
+  matching numpy `clip(c*256,0,255).astype(uint8)`). `mask_tools.rs::apply()` rewired to discrete
+  `lut[level] → RGBA` (**Option B**: reuses `image_rgba.wgsl`, NOT a scalar+colormap image — the
+  linear-filtering LUT sampler would blend adjacent levels and corrupt the selected-level alpha). New fields
+  `alpha` (default 0.8 = silx slider 8/10) + `overrides: Vec<Option<[u8;3]>>`(256); setters
+  `set_transparency`, `set_mask_colors(rgb, Option<u8>)`, `reset_mask_colors(Option<u8>)`; pure helpers
+  `mask_overlay_rgba` + `overlay_z_value`; z = active-image z + 1 (silx `MaskToolsWidget.py:482`, fallback
+  `_z=1`). `high_level.rs`: additive `add_rgba_mask`. Default overlay color corrected to silx
+  `rgba("gray")` = `#a0a0a4` (160,160,164) (gui/colors.py:71), not `#808080`. **Post-integration review fixes
+  (one commit per finding):** `71c52de` wrong silx gray (`#808080`→`#a0a0a4`); `33f1ed6` tautological z test →
+  test coupled to the real `overlay_z_value` helper; `8d671ef` `reset_mask_colors` per-level fidelity (silx
+  `resetMaskColors(level)`). UNVERIFIED (GPU): on-screen compositing, alpha blend, draw-on-top z-layering.
+- **Wave 8 complete** (8A/8B/8C/8D), `main` @ `8d671ef`, 724 tests, full-workspace gate green. Remaining
+  backlog = marker drag/cursor (needs ownership decision) + `is_overlay` data-layer + `DirtyState::Overlay`
+  + true vector SVG export + `delaunator` robustness upgrade (separately approvable).
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
