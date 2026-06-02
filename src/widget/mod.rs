@@ -19,6 +19,7 @@ pub mod mask_tools;
 pub mod plot_widget;
 pub mod position_info;
 pub mod profile_window;
+pub mod radar_view;
 pub mod roi_manager;
 pub mod roi_stats;
 pub mod scatter_mask;
