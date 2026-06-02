@@ -8,7 +8,31 @@ adjacent silx.gui** (colors, data-adjacent GUI widgets).
 
 Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/M/L.
 
-> This file tracks the port. As waves land, flip ☐/◐ → ✅ and cite the commit.
+> This file tracks the port. The per-area tables below are the **as-of-sweep
+> baseline**; landed work is recorded in the Progress log so the baseline stays
+> a stable reference. Follow-ups that a wave deliberately deferred are listed too.
+
+## Progress log
+
+### Wave 0 — cited detail
+- ProfileWindow opens *beside* the main window (right → left → roomier edge,
+  vertically centred), restores previous position on reopen. silx
+  `ProfileManager.initProfileWindow`. Commit `3010677` (+4 boundary tests).
+
+### Wave 1 — Colormap / Symbols / Mask model (parallel, worktree-isolated)
+- **Colormap** (`c8b3794`..`1ab00de`): catalog → gray/reversed-gray/red/green/blue/
+  temperature/jet/hsv; `Normalization::Arcsinh`; `AutoscaleMode` MinMax/Stddev3/
+  Percentile(1,99); `Colormap::nan_color`; ColormapDialog wiring.
+- **Symbols** (`22347ea`,`361a519`): silx symbol set — diamond, point, pixel,
+  vertical/horizontal line, tick{left,right,up,down}, caret{left,right,up,down};
+  char-code parsing matching silx.
+- **Mask model** (`58e1416`..`f513506`): multi-level u8 buffer + level selector;
+  rectangle/polygon/disk/ellipse fills; threshold below/between/above; invert;
+  bounded undo/redo.
+- Gate: clippy `--workspace` clean, **185 tests pass** (+41), doctests ok.
+- **Deferred follow-ups** (cross-cluster wiring): arcsinh branch in `image.wgsl`;
+  ColormapDialog Stddev3/Percentile need Plot2D raw-pixel access; Heart glyph SDF;
+  mask on-plot drawing (Plot2D wiring) + Bresenham `draw_line` + mask file I/O.
 
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
