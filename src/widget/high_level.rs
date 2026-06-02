@@ -51,6 +51,31 @@ pub enum ProfileMode {
     Rectangle,
 }
 
+/// Popup controls for the median-filter action (silx `MedianFilterDialog`).
+///
+/// Held by the caller (e.g. in egui temp-memory) and passed to
+/// [`Plot2D::show_median_filter`], which mutates it from the kernel-width and
+/// conditional widgets. `kernel_width` is the square-kernel width for the 2D
+/// action (silx `MedianFilter2DAction`), kept odd by the widget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MedianFilterParams {
+    /// Odd kernel width (silx `MedianFilterDialog` spinbox; min 1, step 2).
+    pub kernel_width: usize,
+    /// Conditional median filtering (silx `MedianFilterDialog` checkbox): only
+    /// replace a center pixel that is the window min or max.
+    pub conditional: bool,
+}
+
+impl Default for MedianFilterParams {
+    fn default() -> Self {
+        // silx MedianFilterDialog defaults to a 3x3 kernel, conditional off.
+        Self {
+            kernel_width: 3,
+            conditional: false,
+        }
+    }
+}
+
 /// Data validation failures returned by helper APIs that build derived items.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlotDataError {
@@ -328,6 +353,9 @@ pub struct ToolbarResponse {
     pub copy: bool,
     /// Print button was clicked (silx `PrintAction`).
     pub print: bool,
+    /// The median-filter Apply button replaced the active image this frame
+    /// (silx `MedianFilterAction` re-adding the filtered image).
+    pub median_filter_applied: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
@@ -380,6 +408,7 @@ enum ToolbarIcon {
     Print,
     AutoscaleX,
     AutoscaleY,
+    MedianFilter,
 }
 
 impl ToolbarIcon {
@@ -393,6 +422,18 @@ impl ToolbarIcon {
 
 fn expected_image_len(width: u32, height: u32) -> usize {
     (width as usize).saturating_mul(height as usize)
+}
+
+/// Round a kernel dimension up to the nearest odd value (>= 1), matching the
+/// silx odd-kernel requirement (`MedianFilterDialog` spinbox min 1, step 2).
+fn force_odd(n: usize) -> usize {
+    if n <= 1 {
+        1
+    } else if n % 2 == 1 {
+        n
+    } else {
+        n + 1
+    }
 }
 
 /// Build the temp PNG path the print shim rasterizes into before handing it to
@@ -481,7 +522,37 @@ fn draw_toolbar_icon(painter: &egui::Painter, rect: egui::Rect, icon: ToolbarIco
         ToolbarIcon::Print => draw_print_icon(painter, rect, stroke),
         ToolbarIcon::AutoscaleX => draw_autoscale_icon(painter, rect, "X", false, stroke),
         ToolbarIcon::AutoscaleY => draw_autoscale_icon(painter, rect, "Y", true, stroke),
+        ToolbarIcon::MedianFilter => draw_median_filter_icon(painter, rect, stroke),
     }
+}
+
+/// Draw a small 3x3 grid with a highlighted center cell for the
+/// [`ToolbarIcon::MedianFilter`] toggle (silx `median-filter` icon): a kernel
+/// sweeping a center pixel.
+fn draw_median_filter_icon(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let grid = rect.shrink(1.0);
+    let third_x = grid.width() / 3.0;
+    let third_y = grid.height() / 3.0;
+    // 3x3 cell grid outline.
+    painter.rect_stroke(grid, 0.0, stroke, egui::StrokeKind::Inside);
+    for i in 1..3 {
+        let x = grid.left() + third_x * i as f32;
+        painter.line_segment(
+            [egui::pos2(x, grid.top()), egui::pos2(x, grid.bottom())],
+            stroke,
+        );
+        let y = grid.top() + third_y * i as f32;
+        painter.line_segment(
+            [egui::pos2(grid.left(), y), egui::pos2(grid.right(), y)],
+            stroke,
+        );
+    }
+    // Highlight the center cell (the pixel being replaced by its window median).
+    let center = egui::Rect::from_min_size(
+        egui::pos2(grid.left() + third_x, grid.top() + third_y),
+        egui::vec2(third_x, third_y),
+    );
+    painter.rect_filled(center.shrink(1.0), 0.0, stroke.color);
 }
 
 /// Draw a labeled axis with a double-headed fit-arrow for the
@@ -4078,6 +4149,84 @@ impl PlotWidget {
         Some(limits)
     }
 
+    /// Apply a median filter to the active image and replace it in place (silx
+    /// `MedianFilterAction` / `MedianFilter2DAction` re-adding the filtered image
+    /// with `addImage(replace=True)`).
+    ///
+    /// Reads the active image's raw scalar pixels and geometry, runs
+    /// [`crate::widget::actions::analysis::median_filter_2d`] with a square
+    /// `(kernel_width, kernel_width)` kernel (silx `MedianFilter2DAction`) and
+    /// the default `mode='nearest'` edge handling, then re-uploads the result
+    /// with the same origin / scale / colormap. `kernel_width` is forced odd
+    /// (silx `MedianFilterDialog` spinbox step 2, min 1) by rounding up to the
+    /// next odd value; a width of 1 (or 0) leaves the image unchanged.
+    ///
+    /// Returns `true` if a scalar image was filtered and replaced, or `false`
+    /// when the active item is not a scalar image with retained data.
+    pub fn apply_median_filter(&mut self, kernel_width: usize, conditional: bool) -> bool {
+        self.apply_median_filter_kernel(kernel_width, kernel_width, conditional)
+    }
+
+    /// Apply a 1D median filter to the active image (silx `MedianFilter1DAction`,
+    /// kernel `(kernel_width, 1)`), replacing it in place.
+    ///
+    /// Same contract as [`Self::apply_median_filter`] but with a column-1 kernel
+    /// that filters along image rows (the height / y direction).
+    pub fn apply_median_filter_1d(&mut self, kernel_width: usize, conditional: bool) -> bool {
+        self.apply_median_filter_kernel(kernel_width, 1, conditional)
+    }
+
+    /// Shared median-filter apply path for the 1D `(k,1)` and 2D `(k,k)` actions.
+    fn apply_median_filter_kernel(
+        &mut self,
+        kernel_h: usize,
+        kernel_w: usize,
+        conditional: bool,
+    ) -> bool {
+        // Force odd kernel dimensions (silx asserts odd; the dialog steps by 2).
+        let kernel_h = force_odd(kernel_h);
+        let kernel_w = force_odd(kernel_w);
+
+        let handle = match self.active_item {
+            Some(h) => h,
+            None => return false,
+        };
+        let (data, width, height, origin, scale, colormap) = match self.retained_data(handle) {
+            Some(RetainedItemData::Image {
+                data,
+                width,
+                height,
+                origin,
+                scale,
+                colormap,
+            }) => (
+                data.clone(),
+                *width,
+                *height,
+                *origin,
+                *scale,
+                (**colormap).clone(),
+            ),
+            _ => return false,
+        };
+
+        let filtered = crate::widget::actions::analysis::median_filter_2d(
+            &data,
+            width,
+            height,
+            kernel_h,
+            kernel_w,
+            conditional,
+        );
+
+        let pixels: Vec<f32> = filtered.iter().map(|&v| v as f32).collect();
+        let mut spec = ImageSpec::scalar(width as u32, height as u32, &pixels, colormap);
+        spec.origin = origin;
+        spec.scale = scale;
+        self.update_image_spec(handle, spec);
+        true
+    }
+
     pub fn set_graph_cursor(&mut self, on: bool) {
         self.backend.plot_mut().crosshair = on;
     }
@@ -4624,6 +4773,113 @@ impl Plot2D {
             }
             _ => None,
         }
+    }
+
+    /// Draw the median-filter controls (silx `MedianFilterDialog`): an odd
+    /// kernel-width drag, a conditional checkbox, and an Apply button.
+    ///
+    /// `params` holds the popup state (held by the caller, e.g. in egui
+    /// temp-memory); the widgets mutate it. On Apply this runs
+    /// [`PlotWidget::apply_median_filter`] on the active image (square
+    /// `(width, width)` kernel, silx `MedianFilter2DAction`, default
+    /// `mode='nearest'`), replacing it in place, and returns `true`. Returns
+    /// `false` on any frame Apply was not clicked or no scalar image was active.
+    ///
+    /// Place it inside an `egui::Window` (or any `Ui`) for the silx popup feel:
+    ///
+    /// ```ignore
+    /// egui::Window::new("Median filter").show(ctx, |ui| {
+    ///     plot.show_median_filter(ui, &mut params);
+    /// });
+    /// ```
+    pub fn show_median_filter(
+        &mut self,
+        ui: &mut egui::Ui,
+        params: &mut MedianFilterParams,
+    ) -> bool {
+        ui.horizontal(|ui| {
+            ui.label("Kernel width:");
+            // silx MedianFilterDialog spinbox: min 1, step 2 (odd). The drag steps
+            // by 2 and we re-force odd in case the value is typed/clamped even.
+            let mut width = params.kernel_width.max(1);
+            if ui
+                .add(egui::DragValue::new(&mut width).range(1..=99).speed(2.0))
+                .changed()
+            {
+                params.kernel_width = force_odd(width);
+            }
+        });
+        ui.checkbox(&mut params.conditional, "Conditional")
+            .on_hover_text("Replace a pixel only if it is the window min or max");
+
+        let mut applied = false;
+        let has_image = self.get_image_pixels_raw().is_some();
+        if ui
+            .add_enabled(has_image, egui::Button::new("Apply"))
+            .on_hover_text("Replace the active image with its median-filtered copy")
+            .clicked()
+        {
+            applied = self.apply_median_filter(params.kernel_width, params.conditional);
+        }
+        applied
+    }
+
+    /// Draw a median-filter toolbar button that toggles a popup window with the
+    /// kernel/conditional/Apply controls (silx `MedianFilterAction`, a checkable
+    /// toolbar action opening `MedianFilterDialog`).
+    ///
+    /// The popup open-state and [`MedianFilterParams`] are stored in egui
+    /// temp-memory keyed by this plot's id, so the button is self-contained:
+    /// callers can drop it into any toolbar row. Returns `true` on a frame the
+    /// Apply button replaced the active image.
+    ///
+    /// Place it inside [`PlotWidget::show_toolbar_with`] to share the standard
+    /// toolbar row:
+    ///
+    /// ```ignore
+    /// let (_, applied) = plot.show_toolbar_with(ui, |ui, _| {
+    ///     // (plot is borrowed by the closure as the same Plot2D's inner)
+    /// });
+    /// ```
+    pub fn show_median_filter_toolbar(&mut self, ui: &mut egui::Ui) -> bool {
+        let plot_id = self.backend().plot().id;
+        let open_id = egui::Id::new(plot_id).with("median_filter_open");
+        let params_id = egui::Id::new(plot_id).with("median_filter_params");
+
+        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        let has_image = self.get_image_pixels_raw().is_some();
+
+        let button = ui
+            .add_enabled_ui(has_image, |ui| {
+                toolbar_icon_button(ui, ToolbarIcon::MedianFilter, open, "Median filter")
+            })
+            .inner;
+        if button.clicked() {
+            open = !open;
+        }
+
+        let mut applied = false;
+        if open {
+            let mut params = ui
+                .data(|d| d.get_temp::<MedianFilterParams>(params_id))
+                .unwrap_or_default();
+            let mut window_open = true;
+            egui::Window::new("Median filter")
+                .id(open_id.with("window"))
+                .open(&mut window_open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    applied = self.show_median_filter(ui, &mut params);
+                });
+            ui.data_mut(|d| d.insert_temp(params_id, params));
+            if !window_open {
+                open = false;
+            }
+        }
+
+        ui.data_mut(|d| d.insert_temp(open_id, open));
+        applied
     }
 
     /// Unwrap to the underlying [`PlotWidget`].

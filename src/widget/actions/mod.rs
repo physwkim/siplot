@@ -13,12 +13,15 @@
 //! - [`io`] mirrors silx `actions/io.py` (save figure/data, copy to clipboard).
 //! - [`mode`] mirrors silx `actions/mode.py` (zoom / pan interaction modes),
 //!   plus the port-specific mask-draw and select mode setters.
+//! - [`analysis`] mirrors silx `actions/medfilt.py` (median filter) and the
+//!   compute half of `actions/histogram.py` (pixel-intensity histogram).
 //!
 //! Load-bearing logic (style cycling, zoom-range math, format detection, CSV
 //! serialization, RGBA→clipboard shaping) is factored into pure functions so it
 //! is unit-testable without a GPU backend; the native file-dialog, GPU
 //! readback, and clipboard calls are thin untestable shims around that logic.
 
+pub mod analysis;
 pub mod control;
 pub mod io;
 pub mod mode;
