@@ -308,6 +308,8 @@ pub struct ToolbarResponse {
     pub x_inverted_changed: bool,
     /// Y invert toggle was clicked.
     pub y_inverted_changed: bool,
+    /// Show-axis toggle was clicked (silx `ShowAxisAction`).
+    pub show_axis_changed: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
@@ -339,6 +341,7 @@ enum ToolbarIcon {
     LogY,
     InvertX,
     InvertY,
+    ShowAxis,
 }
 
 impl ToolbarIcon {
@@ -422,7 +425,25 @@ fn draw_toolbar_icon(painter: &egui::Painter, rect: egui::Rect, icon: ToolbarIco
         ToolbarIcon::LogY => draw_log_icon(painter, rect, "Y", color),
         ToolbarIcon::InvertX => draw_axis_icon(painter, rect, "X", false, stroke),
         ToolbarIcon::InvertY => draw_axis_icon(painter, rect, "Y", true, stroke),
+        ToolbarIcon::ShowAxis => draw_show_axis_icon(painter, rect, stroke),
     }
+}
+
+/// Draw an L-shaped axes glyph (left Y axis + bottom X axis with arrow tips)
+/// for the [`ToolbarIcon::ShowAxis`] toggle.
+fn draw_show_axis_icon(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let origin = egui::pos2(rect.left() + 3.0, rect.bottom() - 3.0);
+    let x_end = egui::pos2(rect.right() - 1.0, rect.bottom() - 3.0);
+    let y_end = egui::pos2(rect.left() + 3.0, rect.top() + 1.0);
+    painter.line_segment([origin, x_end], stroke);
+    painter.line_segment([origin, y_end], stroke);
+    let arrow = 3.0;
+    // X-axis arrow head.
+    painter.line_segment([x_end, x_end + egui::vec2(-arrow, -arrow)], stroke);
+    painter.line_segment([x_end, x_end + egui::vec2(-arrow, arrow)], stroke);
+    // Y-axis arrow head.
+    painter.line_segment([y_end, y_end + egui::vec2(-arrow, arrow)], stroke);
+    painter.line_segment([y_end, y_end + egui::vec2(arrow, arrow)], stroke);
 }
 
 fn draw_home_icon(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
@@ -3235,6 +3256,14 @@ impl PlotWidget {
             cursor = !cursor;
             self.set_graph_cursor(cursor);
             out.cursor_changed = true;
+        }
+
+        ui.separator();
+
+        let show_axis = self.plot().axes_displayed();
+        if toolbar_icon_button(ui, ToolbarIcon::ShowAxis, show_axis, "Show/hide axes").clicked() {
+            crate::widget::actions::control::show_axis_toggle(self);
+            out.show_axis_changed = true;
         }
     }
 
