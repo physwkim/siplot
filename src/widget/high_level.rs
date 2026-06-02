@@ -316,6 +316,8 @@ pub struct ToolbarResponse {
     pub zoom_in: bool,
     /// Zoom-out button was clicked (silx `ZoomOutAction`).
     pub zoom_out: bool,
+    /// Zoom-back button was clicked (silx `ZoomBackAction`).
+    pub zoom_back: bool,
 }
 
 /// Return value of [`PlotWidget::show_with_toolbar`].
@@ -351,6 +353,7 @@ enum ToolbarIcon {
     CurveStyle,
     ZoomIn,
     ZoomOut,
+    ZoomBack,
 }
 
 impl ToolbarIcon {
@@ -438,7 +441,19 @@ fn draw_toolbar_icon(painter: &egui::Painter, rect: egui::Rect, icon: ToolbarIco
         ToolbarIcon::CurveStyle => draw_curve_style_icon(painter, rect, stroke),
         ToolbarIcon::ZoomIn => draw_zoom_step_icon(painter, rect, stroke, true),
         ToolbarIcon::ZoomOut => draw_zoom_step_icon(painter, rect, stroke, false),
+        ToolbarIcon::ZoomBack => draw_zoom_back_icon(painter, rect, stroke),
     }
+}
+
+/// Draw a leftward back-arrow for the [`ToolbarIcon::ZoomBack`] button.
+fn draw_zoom_back_icon(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let c = rect.center();
+    let left = egui::pos2(rect.left() + 2.0, c.y);
+    let right = egui::pos2(rect.right() - 2.0, c.y);
+    painter.line_segment([left, right], stroke);
+    let arrow = 4.0;
+    painter.line_segment([left, left + egui::vec2(arrow, -arrow)], stroke);
+    painter.line_segment([left, left + egui::vec2(arrow, arrow)], stroke);
 }
 
 /// Draw a magnifier with a `+` ([`ToolbarIcon::ZoomIn`]) or `-`
@@ -3325,6 +3340,10 @@ impl PlotWidget {
             crate::widget::actions::control::zoom_out(self);
             out.zoom_out = true;
         }
+        if toolbar_icon_button(ui, ToolbarIcon::ZoomBack, false, "Zoom back").clicked() {
+            crate::widget::actions::control::zoom_back(self);
+            out.zoom_back = true;
+        }
 
         ui.separator();
 
@@ -3474,6 +3493,18 @@ impl PlotWidget {
     /// Reset the displayed limits from accumulated data bounds.
     pub fn reset_zoom(&mut self) {
         self.reset_zoom_to_data();
+    }
+
+    /// Restore the most recently pushed view from the limits history (silx
+    /// `LimitsHistory.pop`), emitting [`PlotEvent::LimitsChanged`] if the view
+    /// changed. Returns `true` if a stored view was restored, or `false` if the
+    /// history was empty (callers fall back to [`Self::reset_zoom`], matching
+    /// silx `LimitsHistory.pop`).
+    pub fn zoom_back(&mut self) -> bool {
+        let before = self.limits_snapshot();
+        let restored = self.backend.plot_mut().zoom_back();
+        self.push_limits_changed_if(before);
+        restored
     }
 
     /// Return the current X axis limits `(min, max)`.

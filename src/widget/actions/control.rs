@@ -121,6 +121,20 @@ pub fn zoom_out(plot: &mut PlotWidget) {
     apply_zoom(plot, 1.0 / ZOOM_STEP);
 }
 
+/// Restore the most recently pushed view from the limits history, falling back
+/// to a reset-zoom when the history is empty, mirroring silx `ZoomBackAction`
+/// (whose `LimitsHistory.pop` calls `plot.resetZoom()` on an empty stack).
+/// Returns `true` if a stored view was restored, `false` if it fell back to
+/// reset-zoom.
+pub fn zoom_back(plot: &mut PlotWidget) -> bool {
+    if plot.zoom_back() {
+        true
+    } else {
+        plot.reset_zoom();
+        false
+    }
+}
+
 /// Cycle the active curve's line style to the next style in
 /// [`LINE_STYLE_CYCLE`], mirroring silx `CurveStyleAction` (which cycles the
 /// plot-wide default line/points state). Returns the new [`LineStyle`], or
@@ -214,6 +228,29 @@ mod tests {
     #[test]
     fn scale_1d_range_degenerate_is_unchanged() {
         assert_eq!(scale_1d_range(3.0, 3.0, 3.0, 1.5), (3.0, 3.0));
+    }
+
+    #[test]
+    fn zoom_back_restores_pushed_view_then_falls_back_when_empty() {
+        // Exercise the zoom_back action's decision (restore-or-fallback) on the
+        // bare Plot model the action ultimately drives, without a GPU backend.
+        use crate::core::plot::Plot;
+
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        // Push the home view, then change limits (a zoom).
+        plot.push_limits();
+        plot.limits = (2.0, 4.0, 2.0, 4.0);
+        assert_eq!(plot.limits_history_len(), 1);
+
+        // First zoom_back restores the pushed view and pops the entry.
+        assert!(plot.zoom_back(), "restored a stored view");
+        assert_eq!(plot.limits, (0.0, 10.0, 0.0, 10.0));
+        assert_eq!(plot.limits_history_len(), 0);
+
+        // Empty history: zoom_back returns false (the action then reset-zooms;
+        // here we just assert it does not panic and signals empty).
+        assert!(!plot.zoom_back(), "empty history signals fallback");
     }
 
     #[test]
