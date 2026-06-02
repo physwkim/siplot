@@ -4019,6 +4019,23 @@ fn image_view_colorbar(colormap: &Colormap) -> crate::widget::colorbar::ColorBar
     crate::widget::colorbar::ColorBarWidget::new(colormap.clone())
 }
 
+/// Extract cursor data coordinates `[x, y]` from a pointer event for the
+/// PositionInfo readout (silx `PositionInfo._updateStatusBar`, fed by
+/// `sigMouseMoved`). A move (hover), click, or double-click over the data area
+/// all carry the data-space `(x, y)`; a `LimitsChanged` event carries no cursor
+/// and yields `None`. `None` input (no pointer event this frame) yields `None`.
+fn cursor_from_pointer_event(
+    event: Option<&crate::widget::interaction::PlotPointerEvent>,
+) -> Option<[f64; 2]> {
+    use crate::widget::interaction::PlotPointerEvent;
+    match event? {
+        PlotPointerEvent::Moved { data, .. }
+        | PlotPointerEvent::Clicked { data, .. }
+        | PlotPointerEvent::DoubleClicked { data, .. } => Some([data.0, data.1]),
+        PlotPointerEvent::LimitsChanged { .. } => None,
+    }
+}
+
 /// Build the [`ImageSpec`] for an [`ImageView`]'s active image from its retained
 /// colormap and `alpha` (silx `ActiveImageAlphaSlider` propagation,
 /// ImageView.py:513-517). Split out from [`ImageView::upload_image`] so the
@@ -4072,6 +4089,12 @@ pub struct ImageView {
     ///
     /// [`aggregation`]: ImageView::aggregation
     aggregation_block: (u32, u32),
+    /// Cursor-coordinate readout fed by the live pointer (silx
+    /// `tools/PositionInfo.PositionInfo`, bound to the plot `sigMouseMoved`).
+    position_info: crate::widget::position_info::PositionInfo,
+    /// Last cursor data coordinates `(x, y)` from a pointer move/click over the
+    /// image plot, or `None` when no pointer event landed on the data area.
+    cursor: Option<[f64; 2]>,
 }
 
 impl ImageView {
@@ -4112,6 +4135,8 @@ impl ImageView {
             interpolation: InterpolationMode::default(),
             aggregation: AggregationMode::default(),
             aggregation_block: (1, 1),
+            position_info: crate::widget::position_info::PositionInfo::with_xy(),
+            cursor: None,
         }
     }
 
@@ -4323,18 +4348,51 @@ impl ImageView {
         );
 
         // Bottom row: image + vertical histogram + colorbar side by side.
-        ui.horizontal(|ui| {
+        let response = ui.horizontal(|ui| {
             let img_w = avail.x - histo_v_w - colorbar_w;
             let img_h = avail.y - histo_h_h;
-            ui.allocate_ui(egui::vec2(img_w, img_h), |ui| {
-                self.image_plot.show(ui);
-            });
+            let response = ui
+                .allocate_ui(egui::vec2(img_w, img_h), |ui| self.image_plot.show(ui))
+                .inner;
             ui.allocate_ui(egui::vec2(histo_v_w, img_h), |ui| {
                 self.histo_v.show(ui);
             });
             // Colorbar column, synced to the active image's colormap limits.
             self.colorbar().ui(ui, egui::vec2(colorbar_w, img_h));
+            response
         });
+
+        // Feed the live cursor (silx sigMouseMoved) into the PositionInfo
+        // readout, then render it below the image.
+        if let Some(cursor) = cursor_from_pointer_event(response.inner.pointer_event.as_ref()) {
+            self.cursor = Some(cursor);
+        }
+        self.position_info.ui(ui, self.cursor);
+    }
+
+    /// The last cursor data coordinates `(x, y)` fed into the PositionInfo
+    /// readout from a pointer move/click, or `None`.
+    pub fn cursor(&self) -> Option<[f64; 2]> {
+        self.cursor
+    }
+
+    /// The position-info readout bound to the live cursor (silx
+    /// `tools/PositionInfo.PositionInfo`).
+    pub fn position_info(&self) -> &crate::widget::position_info::PositionInfo {
+        &self.position_info
+    }
+
+    /// Mutable access to the position-info readout, to add converter columns
+    /// (silx `PositionInfo(converters=...)`).
+    pub fn position_info_mut(&mut self) -> &mut crate::widget::position_info::PositionInfo {
+        &mut self.position_info
+    }
+
+    /// The PositionInfo readout strings at the current live cursor (silx
+    /// `PositionInfo` value fields). One string per converter column;
+    /// `"------"` when no cursor has been seen.
+    pub fn position_info_values(&self) -> Vec<String> {
+        self.position_info.values(self.cursor)
     }
 
     /// Access the main image plot for toolbar/ROI/limit configuration.
@@ -4853,6 +4911,38 @@ mod tests {
         assert_eq!(spec.interpolation, InterpolationMode::Linear);
         assert_eq!(spec.aggregation, AggregationMode::Mean);
         assert_eq!(spec.aggregation_block, (2, 3));
+    }
+
+    #[test]
+    fn image_view_position_info_reads_hover_cursor() {
+        // Item 4: a Moved (hover) pointer event yields the cursor data coords,
+        // which the PositionInfo readout formats.
+        use crate::widget::interaction::PlotPointerEvent;
+        let moved = PlotPointerEvent::Moved {
+            button: None,
+            data: (12.5, -3.0),
+            pixel: (40.0, 60.0),
+        };
+        let cursor = cursor_from_pointer_event(Some(&moved));
+        assert_eq!(cursor, Some([12.5, -3.0]));
+
+        let info = crate::widget::position_info::PositionInfo::with_xy();
+        let values = info.values(cursor);
+        assert_eq!(values, vec!["12.5".to_owned(), "-3".to_owned()]);
+
+        // A LimitsChanged event carries no cursor; absence of an event too.
+        let limits = PlotPointerEvent::LimitsChanged {
+            x: (0.0, 1.0),
+            y: (0.0, 1.0),
+            y2: None,
+        };
+        assert_eq!(cursor_from_pointer_event(Some(&limits)), None);
+        assert_eq!(cursor_from_pointer_event(None), None);
+        // No cursor -> placeholder readout.
+        assert_eq!(
+            info.values(None),
+            vec!["------".to_owned(), "------".to_owned()]
+        );
     }
 
     #[test]
