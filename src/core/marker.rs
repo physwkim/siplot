@@ -57,6 +57,57 @@ pub enum MarkerKind {
     HLine { y: f64 },
 }
 
+/// The dragging constraint of a marker (silx `MarkerBase._setConstraint`,
+/// `marker.py:208-235` plus the `Marker` presets `marker.py:273-292`).
+///
+/// A constraint is a drag-time *filter*: given the cursor position the user
+/// dragged to, it returns the position the marker is actually allowed to move to.
+/// silx supports an arbitrary callable plus the `'horizontal'` / `'vertical'`
+/// string presets. The presets pin one coordinate to the marker's current value;
+/// they are stored here as enum variants so [`Marker`] stays `Clone` / `Debug` /
+/// `PartialEq`. An arbitrary closure is not stored on the marker (it would break
+/// those derives and is interaction-layer state, not drawn geometry); apply a
+/// custom filter with the pure [`apply_constraint`] free function instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MarkerConstraint {
+    /// No filtering: the marker moves freely to the cursor position (silx
+    /// `_defaultConstraint`, which returns its arguments unchanged).
+    #[default]
+    None,
+    /// Pin the X coordinate to the marker's current X, leaving Y free (silx
+    /// `Marker._horizontalConstraint`: `return self.getXPosition(), y`).
+    Horizontal,
+    /// Pin the Y coordinate to the marker's current Y, leaving X free (silx
+    /// `Marker._verticalConstraint`: `return x, self.getYPosition()`).
+    Vertical,
+}
+
+/// Apply a drag constraint, returning the position the marker is allowed to move
+/// to (silx `MarkerBase.setPosition` calling `getConstraint()(x, y)`,
+/// `marker.py:200-206`).
+///
+/// `from` is the marker's current data position (the anchor a preset pins to);
+/// `to` is the data position the cursor dragged to. The result is the filtered
+/// position:
+///
+/// - [`MarkerConstraint::None`] returns `to` unchanged.
+/// - [`MarkerConstraint::Horizontal`] keeps `from.0` (the current X) and `to.1`.
+/// - [`MarkerConstraint::Vertical`] keeps `to.0` and `from.1` (the current Y).
+///
+/// For a silx arbitrary callable, call the closure directly on `to` rather than
+/// going through a [`MarkerConstraint`].
+pub fn apply_constraint(
+    constraint: MarkerConstraint,
+    from: (f64, f64),
+    to: (f64, f64),
+) -> (f64, f64) {
+    match constraint {
+        MarkerConstraint::None => to,
+        MarkerConstraint::Horizontal => (from.0, to.1),
+        MarkerConstraint::Vertical => (to.0, from.1),
+    }
+}
+
 /// A point / vertical-line / horizontal-line marker drawn over the data area
 /// (silx `BackendBase.addMarker`).
 ///
@@ -82,6 +133,14 @@ pub struct Marker {
     pub line_width: f32,
     /// Which Y axis the marker's data Y is measured against (silx `yaxis`).
     pub y_axis: YAxis,
+    /// Whether the user may drag the marker (silx `DraggableMixIn.isDraggable`,
+    /// default `false`). The interaction layer reads this to decide whether to
+    /// move the marker on drag; the constraint below only applies while dragging.
+    pub is_draggable: bool,
+    /// Drag-time position filter (silx `MarkerBase._setConstraint` and the
+    /// `Marker` `'horizontal'` / `'vertical'` presets). Defaults to
+    /// [`MarkerConstraint::None`].
+    pub constraint: MarkerConstraint,
 }
 
 impl Marker {
@@ -115,6 +174,8 @@ impl Marker {
             line_style: LineStyle::Solid,
             line_width: 1.0,
             y_axis: YAxis::Left,
+            is_draggable: false,
+            constraint: MarkerConstraint::None,
         }
     }
 
@@ -170,6 +231,62 @@ impl Marker {
     pub fn with_y_axis(mut self, axis: YAxis) -> Self {
         self.y_axis = axis;
         self
+    }
+
+    /// Set whether the user may drag the marker (silx `DraggableMixIn`).
+    pub fn with_draggable(mut self, draggable: bool) -> Self {
+        self.is_draggable = draggable;
+        self
+    }
+
+    /// Set the drag constraint (silx `_setConstraint` and the `'horizontal'` /
+    /// `'vertical'` presets).
+    pub fn with_constraint(mut self, constraint: MarkerConstraint) -> Self {
+        self.constraint = constraint;
+        self
+    }
+
+    /// The marker's current data position `(x, y)` (silx `getPosition`). For a
+    /// line marker the off-axis coordinate is the constraint anchor only and has
+    /// no drawn meaning; it is reported as `0.0` (silx stores `None` there, which
+    /// is not representable in this `(f64, f64)` model — the line markers carry a
+    /// single coordinate).
+    pub fn position(&self) -> (f64, f64) {
+        match self.kind {
+            MarkerKind::Point { x, y, .. } => (x, y),
+            MarkerKind::VLine { x } => (x, 0.0),
+            MarkerKind::HLine { y } => (0.0, y),
+        }
+    }
+
+    /// Drag the marker to data position `to`, applying its [`constraint`] anchored
+    /// at `from` (silx `DraggableMixIn.drag` → `setPosition`, `marker.py:113-114`
+    /// and the per-kind `setPosition` overrides `marker.py:177-206`, `296-352`).
+    ///
+    /// `from` is the marker's position before the drag (the anchor a preset pins
+    /// to — silx reads it from `getXPosition()` / `getYPosition()`); pass
+    /// [`position`](Marker::position). The constraint is applied to `to`, then the
+    /// coordinate(s) relevant to the marker kind are updated:
+    ///
+    /// - [`MarkerKind::Point`] takes both filtered coordinates.
+    /// - [`MarkerKind::VLine`] takes only the filtered X (silx `XMarker.setPosition`).
+    /// - [`MarkerKind::HLine`] takes only the filtered Y (silx `YMarker.setPosition`).
+    ///
+    /// This is a no-op when [`is_draggable`](Marker::is_draggable) is `false`,
+    /// matching silx, which moves the item on drag only if `isDraggable()`.
+    pub fn drag(&mut self, from: (f64, f64), to: (f64, f64)) {
+        if !self.is_draggable {
+            return;
+        }
+        let (fx, fy) = apply_constraint(self.constraint, from, to);
+        match &mut self.kind {
+            MarkerKind::Point { x, y, .. } => {
+                *x = fx;
+                *y = fy;
+            }
+            MarkerKind::VLine { x } => *x = fx,
+            MarkerKind::HLine { y } => *y = fy,
+        }
     }
 
     /// Screen position of a point marker, or `None` for a line marker.
@@ -268,6 +385,101 @@ mod tests {
         let v = v.with_line_style(LineStyle::Dashed).with_line_width(2.0);
         assert_eq!(v.line_style, LineStyle::Dashed);
         assert_eq!(v.line_width, 2.0);
+    }
+
+    #[test]
+    fn constraint_none_moves_both_coordinates() {
+        let from = (1.0, 2.0);
+        let to = (5.0, 6.0);
+        assert_eq!(
+            apply_constraint(MarkerConstraint::None, from, to),
+            (5.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn horizontal_constraint_pins_x_keeps_y() {
+        // silx _horizontalConstraint: return (getXPosition(), y).
+        let from = (1.0, 2.0);
+        let to = (5.0, 6.0);
+        assert_eq!(
+            apply_constraint(MarkerConstraint::Horizontal, from, to),
+            (1.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn vertical_constraint_pins_y_keeps_x() {
+        // silx _verticalConstraint: return (x, getYPosition()).
+        let from = (1.0, 2.0);
+        let to = (5.0, 6.0);
+        assert_eq!(
+            apply_constraint(MarkerConstraint::Vertical, from, to),
+            (5.0, 2.0)
+        );
+    }
+
+    #[test]
+    fn custom_constraint_closure_applied_directly() {
+        // The custom path: caller invokes the closure on `to` (silx arbitrary
+        // callable). Here a closure that snaps to integer grid.
+        let snap = |to: (f64, f64)| (to.0.round(), to.1.round());
+        assert_eq!(snap((5.4, 6.6)), (5.0, 7.0));
+    }
+
+    #[test]
+    fn drag_free_point_moves_both() {
+        let mut m = Marker::point(1.0, 2.0).with_draggable(true);
+        let from = m.position();
+        m.drag(from, (5.0, 6.0));
+        assert_eq!(m.position(), (5.0, 6.0));
+    }
+
+    #[test]
+    fn drag_horizontal_constraint_pins_x() {
+        let mut m = Marker::point(1.0, 2.0)
+            .with_draggable(true)
+            .with_constraint(MarkerConstraint::Horizontal);
+        let from = m.position();
+        m.drag(from, (5.0, 6.0));
+        // X stays at 1.0 (current), Y moves to 6.0.
+        assert_eq!(m.position(), (1.0, 6.0));
+    }
+
+    #[test]
+    fn drag_vertical_constraint_pins_y() {
+        let mut m = Marker::point(1.0, 2.0)
+            .with_draggable(true)
+            .with_constraint(MarkerConstraint::Vertical);
+        let from = m.position();
+        m.drag(from, (5.0, 6.0));
+        // X moves to 5.0, Y stays at 2.0 (current).
+        assert_eq!(m.position(), (5.0, 2.0));
+    }
+
+    #[test]
+    fn drag_non_draggable_is_a_noop() {
+        // Default is_draggable == false: drag must not move the marker.
+        let mut m = Marker::point(1.0, 2.0);
+        assert!(!m.is_draggable);
+        let from = m.position();
+        m.drag(from, (5.0, 6.0));
+        assert_eq!(m.position(), (1.0, 2.0));
+    }
+
+    #[test]
+    fn drag_line_markers_update_only_their_axis() {
+        // VLine: only X updates (silx XMarker.setPosition takes constraint X).
+        let mut v = Marker::vline(3.0).with_draggable(true);
+        let from = v.position();
+        v.drag(from, (7.0, 99.0));
+        assert_eq!(v.kind, MarkerKind::VLine { x: 7.0 });
+
+        // HLine: only Y updates (silx YMarker.setPosition takes constraint Y).
+        let mut h = Marker::hline(3.0).with_draggable(true);
+        let from = h.position();
+        h.drag(from, (99.0, 7.0));
+        assert_eq!(h.kind, MarkerKind::HLine { y: 7.0 });
     }
 
     #[test]
