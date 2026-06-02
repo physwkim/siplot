@@ -125,6 +125,28 @@ Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/
   short-circuit; per-pixel scalar alpha (needs shader); timezone for datetime axis; on-plot mask
   draw (plot→data coords) + mask colormap overlay + active-item sync; EDF/TIFF/HDF5/msk codecs.
 
+### Wave 5 — Iterative fit / Scatter-viz algorithms / Export formats / RadarView (parallel, worktree-isolated)
+- **Fit** (`f293ca1`,`5b84bff`): unconstrained Levenberg-Marquardt `leastsq` (forward numerical
+  Jacobian, flambda damping, covariance via Gauss-Jordan inverse, reduced-χ² — silx
+  `math/fit/leastsq.py`); peak models Gaussian/GaussianArea/Lorentzian/PseudoVoigt with analytical
+  seeds (`fittheories.py`/`funs.c`); `fit_in_range(xmin,xmax)`; FitWidget `FitModelChoice` +
+  results table (name·value·±error·reduced-χ²). Legacy estimate/linear fit kept (additive).
+- **Scatter-viz** (`c8f0544`): pure `core/scatter_viz.rs` — Bowyer-Watson Delaunay; SOLID
+  (per-vertex-colored `Triangles`); IRREGULAR_GRID (barycentric raster to image); regular-grid
+  auto-detection + `GridMajorOrder`; `BinnedStatistic` mean/count/sum; per-point alpha. Render/
+  picking wiring deferred. Note: IRREGULAR here = Delaunay-raster, not silx's quadrilateral mesh.
+- **Export** (`5499da2`,`7abefe6`,`b225b68`,`0e9a258`): PPM (P6); SVG (base64-PNG `<image>` wrap);
+  hand-written uncompressed baseline TIFF with DPI XResolution/YResolution tags; `SaveFormat` enum
+  + extension auto-detect + `save_graph_with_format` dispatch (silx `saveGraph`/`PlotImageFile`).
+  All encoders pure `encode_*(rgba,w,h,..)`; existing `save_graph`/PNG signature unchanged.
+- **RadarView** (`5d8bede`): self-contained `widget/radar_view.rs` overview — full-extent box +
+  draggable viewport rect, aspect-fit data↔widget mapping + inverse, clamp-to-extent, hit-test,
+  emits new limits on drag (silx `tools/RadarView.py`). Live-plot pan wiring deferred.
+- Gate: clippy `--workspace` clean, **584 tests pass** (+74), doctests ok.
+- **Deferred follow-ups** (actions/render wave): wire scatter-viz outputs into the GPU triangle/
+  image path + per-mode picking; FitWidget→live curve; RadarView→Plot2D pan + auto-extent; true
+  vector SVG (record draw ops); JPEG/EPS/PDF; LM constraints + strip background + multi-peak search.
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
