@@ -19,4 +19,5 @@ pub mod plot_widget;
 pub mod profile_window;
 pub mod roi_manager;
 pub mod roi_stats;
+pub mod stats_widget;
 pub mod sync;
