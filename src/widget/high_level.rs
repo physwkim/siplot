@@ -1960,6 +1960,84 @@ fn set_line_visibility(
     }
 }
 
+/// Per-field override style for the active-curve highlight (silx
+/// `items/curve.py` `class CurveStyle(_Style)`).
+///
+/// Each field is `Some(value)` to override that aspect of the curve's own
+/// style, or `None` to inherit the curve's base value — exactly silx's "set a
+/// value to `None` to use the default" convention. The active-curve highlight
+/// merges these over the curve's retained [`CurveData`] via
+/// [`current_curve_style`].
+///
+/// The default value used for the active-curve highlight is
+/// `CurveStyle { line_width: Some(2.0), ..Default::default() }`, mirroring
+/// silx's `DEFAULT_PLOT_ACTIVE_CURVE_LINEWIDTH = 2` with
+/// `DEFAULT_PLOT_ACTIVE_CURVE_COLOR = None`: the active curve is emphasised
+/// purely by a thicker line, leaving color and markers unchanged.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CurveStyle {
+    /// Override line color (silx `CurveStyle` `color`). `None` inherits the
+    /// curve's own [`CurveData::color`].
+    pub color: Option<Color32>,
+    /// Override line width in pixels (silx `linewidth`). `None` inherits the
+    /// curve's own [`CurveData::width`].
+    pub line_width: Option<f32>,
+    /// Override line stroke style (silx `linestyle`). `None` inherits the
+    /// curve's own [`CurveData::line_style`].
+    pub line_style: Option<LineStyle>,
+    /// Override marker symbol (silx `symbol`). `Some(s)` replaces the marker
+    /// with `s`; `None` inherits the curve's own [`CurveData::symbol`]. The
+    /// active-curve highlight emphasises, it never hides markers — a faithful
+    /// mapping of silx, where the active style's `symbol` field is `None` by
+    /// default and so leaves the curve's own symbol untouched.
+    pub symbol: Option<Symbol>,
+    /// Override marker size in pixels (silx `symbolsize`). `None` inherits the
+    /// curve's own [`CurveData::marker_size`].
+    pub symbol_size: Option<f32>,
+    /// Override dashed-line gap color (silx `gapcolor`). `None` inherits the
+    /// curve's own [`CurveData::gap_color`].
+    pub gap_color: Option<Color32>,
+}
+
+/// Resolve the render style of a curve given its retained base style, the
+/// active-curve highlight override, and whether this curve is currently the
+/// highlighted (active) one. Pure and headless-testable.
+///
+/// This is silx `Curve.getCurrentStyle()` (`items/curve.py` ~280-330): when
+/// `highlighted`, each resolved field is the highlight's value when it is
+/// `Some`, else the curve's own (per-field override, `None` falls through);
+/// when not `highlighted`, the curve renders with its own base style
+/// unchanged.
+///
+/// Only the *style* fields are affected (color/width/line_style/symbol/
+/// marker_size/gap_color). The data fields (x/y/colors/fill/baseline/errors/
+/// y_axis) are passed through from `base` untouched — they are data, not
+/// style.
+fn current_curve_style(base: &CurveData, highlight: &CurveStyle, highlighted: bool) -> CurveData {
+    let mut resolved = base.clone();
+    if highlighted {
+        if let Some(color) = highlight.color {
+            resolved.color = color;
+        }
+        if let Some(width) = highlight.line_width {
+            resolved.width = width;
+        }
+        if let Some(line_style) = highlight.line_style.clone() {
+            resolved.line_style = line_style;
+        }
+        if let Some(symbol) = highlight.symbol {
+            resolved.symbol = Some(symbol);
+        }
+        if let Some(symbol_size) = highlight.symbol_size {
+            resolved.marker_size = symbol_size;
+        }
+        if let Some(gap_color) = highlight.gap_color {
+            resolved.gap_color = Some(gap_color);
+        }
+    }
+    resolved
+}
+
 /// What a single legend-row interaction returned.
 struct LegendRowResult {
     /// Click anywhere in the row body (not the eye icon).
@@ -2249,6 +2327,16 @@ pub struct PlotWidget {
     auto_reset_zoom: bool,
     interaction_mode: PlotInteractionMode,
     active_item: Option<ItemHandle>,
+    /// Per-field override style applied to the active curve when active-curve
+    /// handling is enabled (silx `PlotWidget._activeCurveStyle`). Default is
+    /// `line_width: Some(2.0)` with all other fields `None`, matching silx's
+    /// `DEFAULT_PLOT_ACTIVE_CURVE_LINEWIDTH = 2` /
+    /// `DEFAULT_PLOT_ACTIVE_CURVE_COLOR = None`.
+    active_curve_style: CurveStyle,
+    /// Whether the active curve is rendered with [`Self::active_curve_style`]
+    /// applied (silx `PlotWidget.setActiveCurveHandling`). When `false`, every
+    /// curve renders with its own base style. Enabled by default.
+    active_curve_handling: bool,
     events: Vec<PlotEvent>,
     /// Open legend rename popup: the item being renamed and its edit buffer
     /// (silx `RenameCurveDialog`). `None` when no rename is in progress.
@@ -2271,6 +2359,11 @@ impl PlotWidget {
             auto_reset_zoom: true,
             interaction_mode: PlotInteractionMode::Zoom,
             active_item: None,
+            active_curve_style: CurveStyle {
+                line_width: Some(2.0),
+                ..CurveStyle::default()
+            },
+            active_curve_handling: true,
             events: Vec::new(),
             rename_state: None,
         }
@@ -2530,6 +2623,39 @@ impl PlotWidget {
     fn record_curve_data(&self, handle: ItemHandle) -> Option<&CurveData> {
         self.item_record(handle)
             .and_then(|record| record.curve_data.as_ref())
+    }
+
+    /// Whether `handle` is the curve that should currently render with the
+    /// active-curve highlight (silx: highlight applies only when the active
+    /// item's kind is exactly `'curve'`).
+    ///
+    /// INVARIANT: a curve is highlighted iff active-curve handling is on AND it
+    /// is the active item AND its kind is exactly [`PlotItemKind::Curve`]
+    /// (scatter is a distinct kind and is never highlighted, matching silx
+    /// `_setActiveItem`).
+    fn is_highlighted_curve(&self, handle: ItemHandle) -> bool {
+        self.active_curve_handling
+            && self.active_item == Some(handle)
+            && self.item_kind(handle) == Some(PlotItemKind::Curve)
+    }
+
+    /// Single owner of the active-curve highlight transition. Re-pushes the GPU
+    /// render style of `handle` as
+    /// `current_curve_style(retained_base, active_curve_style, is_highlighted)`.
+    ///
+    /// INVARIANT: the retained `record.curve_data` is ALWAYS the BASE style
+    /// (never the resolved highlight) — the single source of truth. The
+    /// highlight is a render-time overlay only, so this never calls
+    /// `set_record_curve_data`. Returns early when `handle` has no retained
+    /// curve data (not a curve / no data), so non-curve handles are a no-op.
+    fn sync_curve_highlight(&mut self, handle: ItemHandle) {
+        let Some(base) = self.record_curve_data(handle).cloned() else {
+            return;
+        };
+        let highlighted = self.is_highlighted_curve(handle);
+        let effective = current_curve_style(&base, &self.active_curve_style, highlighted);
+        self.backend
+            .update_curve(handle, curve_spec_from_data(&effective));
     }
 
     fn clear_active_if_missing(&mut self) {
@@ -3392,6 +3518,38 @@ impl PlotWidget {
             self.item_kind(*handle)
                 .is_some_and(PlotItemKind::is_curve_like)
         })
+    }
+
+    /// The override style applied to the active curve when active-curve
+    /// handling is enabled (silx `PlotWidget.getActiveCurveStyle`).
+    pub fn active_curve_style(&self) -> &CurveStyle {
+        &self.active_curve_style
+    }
+
+    /// Whether the active curve is highlighted with the active-curve style
+    /// (silx `PlotWidget.isActiveCurveHandling`).
+    pub fn is_active_curve_handling(&self) -> bool {
+        self.active_curve_handling
+    }
+
+    /// Set the override style applied to the active curve (silx
+    /// `PlotWidget.setActiveCurveStyle`), then re-apply it to the active curve
+    /// through the single highlight owner so the change takes effect at once.
+    pub fn set_active_curve_style(&mut self, style: CurveStyle) {
+        self.active_curve_style = style;
+        if let Some(handle) = self.active_curve() {
+            self.sync_curve_highlight(handle);
+        }
+    }
+
+    /// Enable or disable active-curve highlighting (silx
+    /// `PlotWidget.setActiveCurveHandling`), then re-sync the active curve:
+    /// enabling applies the highlight, disabling reverts it to its base style.
+    pub fn set_active_curve_handling(&mut self, enabled: bool) {
+        self.active_curve_handling = enabled;
+        if let Some(handle) = self.active_curve() {
+            self.sync_curve_highlight(handle);
+        }
     }
 
     /// The current line style of the active curve-like item, if one is active
@@ -7730,6 +7888,92 @@ mod tests {
         let out = set_line_visibility(LineStyle::None, false, &mut cache);
         assert_eq!(out, LineStyle::None);
         assert_eq!(cache, Some(LineStyle::Dashed));
+    }
+
+    fn highlight_base() -> CurveData {
+        // A fully-distinct base style so any spurious override is detectable.
+        let mut base = CurveData::new(vec![0.0, 1.0], vec![0.0, 1.0], Color32::RED);
+        base.width = 1.0;
+        base.line_style = LineStyle::Solid;
+        base.symbol = Some(Symbol::Circle);
+        base.marker_size = 7.0;
+        base.gap_color = Some(Color32::BLUE);
+        base
+    }
+
+    #[test]
+    fn current_curve_style_not_highlighted_returns_base_unchanged() {
+        // silx getCurrentStyle: when not highlighted, the resolved style is the
+        // curve's own fields verbatim, regardless of the highlight override.
+        let base = highlight_base();
+        let highlight = CurveStyle {
+            color: Some(Color32::GREEN),
+            line_width: Some(9.0),
+            line_style: Some(LineStyle::Dashed),
+            symbol: Some(Symbol::Square),
+            symbol_size: Some(99.0),
+            gap_color: Some(Color32::WHITE),
+        };
+        let resolved = current_curve_style(&base, &highlight, false);
+        assert_eq!(resolved.color, base.color);
+        assert_eq!(resolved.width, base.width);
+        assert_eq!(resolved.line_style, base.line_style);
+        assert_eq!(resolved.symbol, base.symbol);
+        assert_eq!(resolved.marker_size, base.marker_size);
+        assert_eq!(resolved.gap_color, base.gap_color);
+    }
+
+    #[test]
+    fn current_curve_style_default_highlight_overrides_only_width() {
+        // silx DEFAULT highlight (linewidth=2, all else None) on a width-1 base:
+        // width becomes 2.0; every other style field falls through to the base
+        // (the no-op-on-unset-fields proof).
+        let base = highlight_base();
+        let highlight = CurveStyle {
+            line_width: Some(2.0),
+            ..CurveStyle::default()
+        };
+        let resolved = current_curve_style(&base, &highlight, true);
+        assert_eq!(resolved.width, 2.0);
+        assert_eq!(resolved.color, base.color);
+        assert_eq!(resolved.line_style, base.line_style);
+        assert_eq!(resolved.symbol, base.symbol);
+        assert_eq!(resolved.marker_size, base.marker_size);
+        assert_eq!(resolved.gap_color, base.gap_color);
+    }
+
+    #[test]
+    fn current_curve_style_per_field_override_color_and_line_style_only() {
+        // silx per-field merge: only the Some fields win; line_width None falls
+        // through to the base width.
+        let base = highlight_base();
+        let highlight = CurveStyle {
+            color: Some(Color32::GREEN),
+            line_style: Some(LineStyle::Dashed),
+            ..CurveStyle::default()
+        };
+        let resolved = current_curve_style(&base, &highlight, true);
+        assert_eq!(resolved.color, Color32::GREEN);
+        assert_eq!(resolved.line_style, LineStyle::Dashed);
+        assert_eq!(resolved.width, base.width); // None inherits the base width.
+        assert_eq!(resolved.symbol, base.symbol);
+        assert_eq!(resolved.marker_size, base.marker_size);
+        assert_eq!(resolved.gap_color, base.gap_color);
+    }
+
+    #[test]
+    fn default_active_curve_style_is_width_two_only() {
+        // The PlotWidget default highlight is silx's: linewidth 2, all else None.
+        let default_style = CurveStyle {
+            line_width: Some(2.0),
+            ..CurveStyle::default()
+        };
+        assert_eq!(default_style.line_width, Some(2.0));
+        assert_eq!(default_style.color, None);
+        assert_eq!(default_style.line_style, None);
+        assert_eq!(default_style.symbol, None);
+        assert_eq!(default_style.symbol_size, None);
+        assert_eq!(default_style.gap_color, None);
     }
 
     #[test]
