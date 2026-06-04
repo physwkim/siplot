@@ -22,7 +22,7 @@
 //! Deferred (see this wave's report): wiring the widget into
 //! ImageView/ScatterView/chrome and tracking a plot's active item.
 
-use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Vec2, pos2, vec2};
+use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Vec2, pos2};
 
 use crate::core::colormap::{Colormap, Normalization};
 
@@ -355,17 +355,21 @@ impl ColorBarWidget {
         match self.orientation {
             ColorBarOrientation::Vertical => {
                 // Rotated 270° (silx painter.rotate(270)): text reads bottom-up,
-                // centered along the bar. egui rotation is clockwise-positive,
-                // so -90° gives the silx orientation.
+                // centered along the bar. egui rotation is clockwise-positive, so
+                // -90° gives the silx orientation.
+                //
+                // epaint's `with_angle_and_anchor` with `CENTER_CENTER` lands the
+                // galley center at `pos + galley_center` (the rotation term cancels,
+                // so the offset is angle-independent), NOT at `pos`. Pre-subtracting
+                // the galley center cancels that offset so the legend's visual center
+                // sits on the strip center regardless of legend length — the same
+                // idiom as `chrome::draw_rotated_label`.
                 let angle = -std::f32::consts::FRAC_PI_2;
-                // Anchor at the strip center; offset by half the rotated extent
-                // so the line is centered on both axes.
-                let center = area.center();
-                let half = vec2(galley.size().y * 0.5, -galley.size().x * 0.5);
-                let pos = center + half;
-                let mut shape = egui::epaint::TextShape::new(pos, galley, fg);
-                shape.angle = angle;
-                painter.add(shape);
+                let pos = area.center() - galley.rect.center().to_vec2();
+                painter.add(egui::Shape::Text(
+                    egui::epaint::TextShape::new(pos, galley, fg)
+                        .with_angle_and_anchor(angle, Align2::CENTER_CENTER),
+                ));
             }
             ColorBarOrientation::Horizontal => {
                 let center = area.center();
@@ -917,5 +921,66 @@ mod tests {
             .with_legend("Intensity");
         assert_eq!(w.orientation, ColorBarOrientation::Horizontal);
         assert_eq!(w.legend, "Intensity");
+    }
+
+    // --- vertical legend centering --------------------------------------
+
+    /// The rotated vertical legend must land its *visual* center on the strip
+    /// center. epaint rotates a raw [`TextShape`] about `self.pos` (the galley
+    /// origin), so the galley center renders at `pos + Rot(angle)*galley_center`
+    /// — placing it at the target requires `pos = center - Rot(angle)*galley_center`,
+    /// which the safe [`TextShape::with_angle_and_anchor`] + pre-subtract idiom
+    /// expresses. The old `center + (H/2, -W/2)` offset instead lands the center
+    /// at `center + (H, -W)` (wrong sign), pushing a long legend off the strip.
+    #[test]
+    fn vertical_legend_visual_center_lands_at_strip_center() {
+        use egui::epaint::TextShape;
+        use egui::vec2;
+
+        let ctx = egui::Context::default();
+        let mut galley = None;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            galley = Some(ui.painter().layout_no_wrap(
+                "Intensity [counts]".to_owned(),
+                FontId::proportional(TICK_FONT_SIZE),
+                Color32::WHITE,
+            ));
+        });
+        let galley = galley.expect("run closure executes once");
+        assert!(
+            galley.rect.width() > 40.0,
+            "fixture legend should be wide so a sign error is visible"
+        );
+
+        let angle = -std::f32::consts::FRAC_PI_2;
+        let center = egui::Pos2::new(312.0, 480.0);
+
+        // Fixed construction (matches chrome::draw_rotated_label): pre-subtract
+        // the galley center, then anchor CENTER_CENTER so the visual center lands
+        // exactly on `center`.
+        let pos = center - galley.rect.center().to_vec2();
+        let fixed = TextShape::new(pos, galley.clone(), Color32::WHITE)
+            .with_angle_and_anchor(angle, Align2::CENTER_CENTER);
+        let c = fixed.visual_bounding_rect().center();
+        // Allow ~1px: we center the galley *layout box* (`galley.rect.center()`)
+        // while `visual_bounding_rect` reports the *ink* AABB, and font metrics
+        // (line gap / descent) make the two differ by under a pixel. The wrong-sign
+        // bug below is ~90px off, so the threshold separates them unambiguously.
+        assert!(
+            (c.x - center.x).abs() < 2.0 && (c.y - center.y).abs() < 2.0,
+            "fixed legend center {c:?} should sit on strip center {center:?}"
+        );
+
+        // Old construction: raw `shape.angle` + `center + (H/2, -W/2)` offset.
+        // It lands the visual center at `center + (H, -W)` — far off for a wide
+        // legend. Guards against a regression back to the buggy offset.
+        let half = vec2(galley.size().y * 0.5, -galley.size().x * 0.5);
+        let mut old = TextShape::new(center + half, galley, Color32::WHITE);
+        old.angle = angle;
+        let oc = old.visual_bounding_rect().center();
+        assert!(
+            (oc - center).length() > 10.0,
+            "old offset should be visibly off-center, got {oc:?} vs {center:?}"
+        );
     }
 }
