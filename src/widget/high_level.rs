@@ -300,7 +300,8 @@ pub enum PlotEvent {
     /// [`PlotInteractionMode::RoiCreate`] (silx `RegionOfInterestManager`
     /// shape-finished). Read its geometry with `plot().rois[index].roi`.
     RoiCreated { index: usize },
-    /// All ROIs were cleared.
+    /// The ROI collection changed by a clear-all or a single-ROI removal
+    /// (re-read `rois()`).
     RoisCleared,
     /// The current/highlighted ROI changed, by a manager selection or
     /// [`PlotWidget::set_current_roi`] (silx `sigCurrentRoiChanged`). Carries the
@@ -5329,8 +5330,20 @@ impl PlotWidget {
     }
 
     pub fn clear_rois(&mut self) {
-        self.backend.plot_mut().rois.clear();
+        self.backend.plot_mut().clear_rois();
         self.events.push(PlotEvent::RoisCleared);
+    }
+
+    /// Remove the ROI at `index`, keeping the current-ROI selection consistent
+    /// via the [`Plot`] owner (silx `RegionOfInterestManager.removeRoi`). Emits
+    /// [`PlotEvent::RoisCleared`] (the ROI collection changed) when a ROI was
+    /// actually removed; an out-of-range index is ignored.
+    pub fn remove_roi(&mut self, index: usize) {
+        let before = self.backend.plot().rois.len();
+        self.backend.plot_mut().remove_roi(index);
+        if self.backend.plot().rois.len() != before {
+            self.events.push(PlotEvent::RoisCleared);
+        }
     }
 
     /// Append a fully-specified [`ManagedRoi`] (geometry + appearance) and
@@ -5431,8 +5444,8 @@ impl PlotWidget {
             });
 
         if let Some(idx) = remove_idx {
-            self.backend.plot_mut().rois.remove(idx);
-            self.events.push(PlotEvent::RoisCleared);
+            // Route through the owner so the current-ROI index stays consistent.
+            self.remove_roi(idx);
         }
 
         // --- add buttons ---

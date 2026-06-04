@@ -1,11 +1,17 @@
 //! ROI Manager Example.
 //!
-//! Demonstrates the `RoiManagerWidget` for tracking multiple Regions of Interest on a plot.
+//! Demonstrates the `RoiManagerWidget` editing the plot's single ROI
+//! collection: ROIs added or restyled in the manager window (color, name,
+//! current/highlight, line width/style, fill) render on the plot immediately,
+//! and in Select mode you can drag/resize them directly on the plot. The plot
+//! starts with two styled, named ROIs; the circle is the current (highlighted)
+//! ROI.
 //!
 //! Run with: `cargo run --example high_level_roi_manager`
 
 use eframe::egui;
-use egui_silx::{Colormap, Plot2D, RoiManagerWidget};
+use egui::Color32;
+use egui_silx::{Colormap, Plot2D, PlotInteractionMode, Roi, RoiManagerWidget};
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 96;
@@ -30,6 +36,30 @@ impl RoiManagerApp {
         image_plot
             .try_add_default_image(WIDTH, HEIGHT, &pixels)
             .expect("image dimensions match");
+
+        // Select mode lets you drag/resize the ROIs directly on the plot.
+        image_plot.set_interaction_mode(PlotInteractionMode::Select);
+
+        // Seed two styled, named ROIs. They live on the plot (one collection)
+        // and the manager window edits these same ROIs.
+        let rect = image_plot.add_roi(Roi::Rect {
+            x: (18.0, 58.0),
+            y: (20.0, 52.0),
+        });
+        image_plot.set_roi_name(rect, "feature A");
+        image_plot.set_roi_color(rect, Color32::from_rgb(90, 200, 255));
+
+        let spot = image_plot.add_roi(Roi::Circle {
+            center: (92.0, 60.0),
+            radius: 16.0,
+        });
+        image_plot.set_roi_name(spot, "spot");
+        image_plot.set_roi_color(spot, Color32::from_rgb(255, 180, 80));
+        image_plot.set_roi_fill(spot, true);
+
+        // Highlight the circle as the current ROI (thicker outline on the plot).
+        image_plot.set_current_roi(Some(spot));
+        image_plot.drain_events();
 
         let mut roi_manager = RoiManagerWidget::new();
         roi_manager.open = true; // Show by default

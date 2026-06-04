@@ -487,6 +487,33 @@ impl Plot {
         }
     }
 
+    /// Remove the ROI at `index`, adjusting [`Self::current_roi`] so it keeps
+    /// pointing at the same ROI (or clears when the current one is removed),
+    /// then re-syncing the `selected` flags (silx
+    /// `RegionOfInterestManager.removeRoi`). An out-of-range index is ignored.
+    /// This is the sole removal path, so the current-ROI invariant holds across
+    /// every removal (no caller pokes `rois`/`current_roi` directly).
+    pub fn remove_roi(&mut self, index: usize) {
+        if index >= self.rois.len() {
+            return;
+        }
+        self.rois.remove(index);
+        self.current_roi = match self.current_roi {
+            Some(c) if c == index => None,
+            Some(c) if c > index => Some(c - 1),
+            other => other,
+        };
+        self.sync_roi_selection();
+    }
+
+    /// Remove every ROI and clear the current selection (silx
+    /// `RegionOfInterestManager.clear`). Resetting `current_roi` to `None` keeps
+    /// the invariant: no current index dangles past the emptied collection.
+    pub fn clear_rois(&mut self) {
+        self.rois.clear();
+        self.current_roi = None;
+    }
+
     /// Append the current view (left limits plus the y2 range) to the limits
     /// history, mirroring silx `LimitsHistory.push`. The widget calls this
     /// before applying a zoom/box-zoom/pan so [`Self::zoom_back`] can restore it.
@@ -1492,5 +1519,40 @@ mod tests {
         plot.set_current_roi(Some(1));
         assert_eq!(plot.current_roi(), None);
         assert!(!plot.rois[0].selected);
+    }
+
+    #[test]
+    fn remove_roi_adjusts_current_index() {
+        let mut plot = Plot::new(0);
+        plot.rois = (0..3).map(point_roi).collect();
+
+        // Current after the removed index shifts down by one.
+        plot.set_current_roi(Some(2));
+        plot.remove_roi(0);
+        assert_eq!(plot.current_roi(), Some(1));
+        assert!(plot.rois[1].selected);
+
+        // Removing the current ROI clears the selection.
+        plot.set_current_roi(Some(1));
+        plot.remove_roi(1);
+        assert_eq!(plot.current_roi(), None);
+        assert!(plot.rois.iter().all(|r| !r.selected));
+
+        // Current before the removed index is unaffected.
+        plot.rois = (0..3).map(point_roi).collect();
+        plot.set_current_roi(Some(0));
+        plot.remove_roi(2);
+        assert_eq!(plot.current_roi(), Some(0));
+        assert!(plot.rois[0].selected);
+    }
+
+    #[test]
+    fn clear_rois_resets_current() {
+        let mut plot = Plot::new(0);
+        plot.rois = (0..3).map(point_roi).collect();
+        plot.set_current_roi(Some(1));
+        plot.clear_rois();
+        assert_eq!(plot.current_roi(), None);
+        assert!(plot.rois.is_empty());
     }
 }

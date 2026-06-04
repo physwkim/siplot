@@ -1,39 +1,28 @@
-//! ROI manager: tracks a list of regions of interest together with their
-//! per-ROI metadata (color, name, selection) and the "current" ROI, mirroring
-//! silx `RegionOfInterestManager` (`tools/roi.py`).
+//! ROI manager: a detached window that edits the plot's regions of interest —
+//! each ROI's color, name, current/highlighted state, line width/style, and
+//! fill — directly on the plot's single ROI collection, mirroring silx
+//! `RegionOfInterestManager` / `RegionOfInterestTableWidget` (`tools/roi.py`).
 //!
-//! The geometry [`Roi`] is kept pure; the color / name / selection that silx
-//! stores on each `RegionOfInterest` live here on [`ManagedRoi`] instead, so the
-//! geometry enum stays a clean value type. Drawing of a managed ROI (with its
-//! color, a name label, and a thicker outline when selected) goes through
-//! [`chrome::draw_roi`](crate::widget::chrome::draw_roi).
+//! The ROIs themselves (geometry + appearance, [`ManagedRoi`]) live on the
+//! [`Plot`](crate::core::plot::Plot) as the single source of truth and are
+//! rendered by the live plot, so edits here appear on the plot immediately.
+//! This widget owns no ROI state — only its window's open/position — so there
+//! is one ROI collection, not two.
 
-use egui::Color32;
-
-use crate::core::roi::{DEFAULT_ROI_COLOR, Roi};
-// `ManagedRoi`/`RoiLineStyle` now live in `core::roi` (the geometry's home) so
+use crate::core::roi::Roi;
+// `ManagedRoi`/`RoiLineStyle` live in `core::roi` (the geometry's home) so
 // `Plot::rois` can own them; re-exported here to keep the
 // `widget::roi_manager::{ManagedRoi, RoiLineStyle}` import path valid.
 pub use crate::core::roi::{ManagedRoi, RoiLineStyle};
-use crate::core::transform::Transform;
-use crate::widget::chrome::{self, RoiAppearance, Style};
 use crate::widget::high_level::Plot2D;
 
-/// A dedicated widget to track and manage multiple ROIs drawn on a plot.
-///
-/// Holds the authoritative list of [`ManagedRoi`] and the current-ROI index,
-/// mirroring silx `RegionOfInterestManager`. The geometry can be drawn over a
-/// plot with [`Self::draw`].
+/// A detached window that edits the plot's ROIs (silx `RegionOfInterestManager`
+/// table). Stateless beyond its window: every control mutates the plot's single
+/// [`ManagedRoi`] collection, so changes render on the plot at once.
 pub struct RoiManagerWidget {
     win: crate::widget::detached::DetachedWindow,
     /// Whether the detached manager window is shown.
     pub open: bool,
-    rois: Vec<ManagedRoi>,
-    /// Index of the current ROI, or `None`.
-    current: Option<usize>,
-    /// Default color applied to ROIs without an explicit color (silx
-    /// `RegionOfInterestManager.getColor`/`setColor`, default red).
-    default_color: Color32,
 }
 
 impl Default for RoiManagerWidget {
@@ -44,9 +33,6 @@ impl Default for RoiManagerWidget {
                 egui::vec2(320.0, 360.0),
             ),
             open: false,
-            rois: Vec::new(),
-            current: None,
-            default_color: DEFAULT_ROI_COLOR,
         }
     }
 }
@@ -57,109 +43,11 @@ impl RoiManagerWidget {
         Self::default()
     }
 
-    /// The managed ROIs.
-    pub fn rois(&self) -> &[ManagedRoi] {
-        &self.rois
-    }
-
-    /// Mutable access to the managed ROIs.
-    pub fn rois_mut(&mut self) -> &mut [ManagedRoi] {
-        &mut self.rois
-    }
-
-    /// The manager's default ROI color (silx `getColor`).
-    pub fn default_color(&self) -> Color32 {
-        self.default_color
-    }
-
-    /// Set the manager's default ROI color (silx `setColor`). Existing ROIs are
-    /// not affected, matching silx.
-    pub fn set_default_color(&mut self, color: Color32) {
-        self.default_color = color;
-    }
-
-    /// Append a ROI with default metadata and return its index.
-    pub fn add_roi(&mut self, roi: Roi) -> usize {
-        self.rois.push(ManagedRoi::new(roi));
-        self.rois.len() - 1
-    }
-
-    /// Append a fully-specified managed ROI and return its index.
-    pub fn add_managed(&mut self, managed: ManagedRoi) -> usize {
-        self.rois.push(managed);
-        self.rois.len() - 1
-    }
-
-    /// Remove the ROI at `index`. Adjusts the current-ROI index so it keeps
-    /// pointing at the same ROI (or clears it when the current one is removed),
-    /// mirroring silx `removeRoi` clearing the current ROI it removes.
-    pub fn remove_roi(&mut self, index: usize) {
-        if index >= self.rois.len() {
-            return;
-        }
-        self.rois.remove(index);
-        self.current = match self.current {
-            Some(c) if c == index => None,
-            Some(c) if c > index => Some(c - 1),
-            other => other,
-        };
-        self.sync_selection();
-    }
-
-    /// Remove all ROIs and clear the current selection.
-    pub fn clear(&mut self) {
-        self.rois.clear();
-        self.current = None;
-    }
-
-    /// The index of the current ROI (silx `getCurrentRoi`).
-    pub fn current_roi(&self) -> Option<usize> {
-        self.current
-    }
-
-    /// Set the current ROI by index, or `None` to clear it (silx
-    /// `setCurrentRoi`): the previous current ROI loses its highlight and the
-    /// new one gains it. An out-of-range index clears the selection.
-    pub fn set_current_roi(&mut self, index: Option<usize>) {
-        self.current = match index {
-            Some(i) if i < self.rois.len() => Some(i),
-            _ => None,
-        };
-        self.sync_selection();
-    }
-
-    /// Mirror the current-ROI index onto each ROI's `selected` flag so exactly
-    /// the current ROI is highlighted (silx highlights only the current ROI).
-    fn sync_selection(&mut self) {
-        for (i, r) in self.rois.iter_mut().enumerate() {
-            r.selected = Some(i) == self.current;
-        }
-    }
-
-    /// Draw every managed ROI over the data area with its color, name label, and
-    /// (for the current one) a thicker outline, via [`chrome::draw_roi`].
-    pub fn draw(&self, painter: &egui::Painter, t: &Transform, style: &Style) {
-        for r in &self.rois {
-            let appearance = RoiAppearance {
-                color: Some(r.color.unwrap_or(self.default_color)),
-                name: if r.name.is_empty() {
-                    None
-                } else {
-                    Some(r.name.as_str())
-                },
-                selected: r.selected,
-                line_width: Some(r.line_width),
-                line_style: Some(r.line_style.to_line_style()),
-                fill: Some(r.fill),
-            };
-            chrome::draw_roi(painter, t, &r.roi, &appearance, style);
-        }
-    }
-
-    /// Show the ROI Manager floating window: a list of the managed ROIs with a
-    /// per-row name field, color swatch, select (current) and remove controls,
-    /// buttons to add each ROI kind centered on the plot view, and a clear-all
-    /// button (silx `RegionOfInterestTableWidget` / `RegionOfInterestManager`).
+    /// Show the ROI Manager floating window: a row per plot ROI (current-ROI
+    /// radio, color swatch, name field, line width/style, fill toggle, remove
+    /// button), buttons to add each ROI kind centered on the plot view, and a
+    /// clear-all button (silx `RegionOfInterestTableWidget` /
+    /// `RegionOfInterestManager`). Every control edits `plot`'s ROIs directly.
     pub fn show(&mut self, ctx: &egui::Context, plot: &mut Plot2D) {
         if !self.open {
             return;
@@ -174,17 +62,20 @@ impl RoiManagerWidget {
         self.win.apply_signals(&signals, &mut self.open);
     }
 
-    /// Render the manager controls into `ui`. Seeds new ROIs at the center of
-    /// the plot's current view.
-    pub fn ui(&mut self, ui: &mut egui::Ui, plot: &Plot2D) {
+    /// Render the manager controls into `ui`, editing `plot`'s ROIs. Seeds new
+    /// ROIs at the center of the plot's current view.
+    pub fn ui(&mut self, ui: &mut egui::Ui, plot: &mut Plot2D) {
         let mut remove_idx: Option<usize> = None;
         let mut make_current: Option<usize> = None;
-        let default_color = self.default_color;
+        // Per-row color fallback and the current selection, read before the
+        // mutable row loop (the Plot owns both).
+        let default_color = plot.plot().roi_color;
+        let current = plot.current_roi();
 
         egui::ScrollArea::vertical()
             .max_height(220.0)
             .show(ui, |ui| {
-                for (i, r) in self.rois.iter_mut().enumerate() {
+                for (i, r) in plot.rois_mut().iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         // Current-ROI radio: selecting one deselects the rest.
                         if ui
@@ -195,7 +86,7 @@ impl RoiManagerWidget {
                             make_current = Some(i);
                         }
                         ui.label(roi_kind(&r.roi));
-                        // Per-ROI color (defaults to the manager color).
+                        // Per-ROI color (defaults to the plot's ROI color).
                         let mut color = r.color.unwrap_or(default_color);
                         if ui.color_edit_button_srgba(&mut color).changed() {
                             r.color = Some(color);
@@ -238,15 +129,11 @@ impl RoiManagerWidget {
 
         if let Some(i) = make_current {
             // Toggle: clicking the current ROI's radio clears the selection.
-            let next = if self.current == Some(i) {
-                None
-            } else {
-                Some(i)
-            };
-            self.set_current_roi(next);
+            let next = if current == Some(i) { None } else { Some(i) };
+            plot.set_current_roi(next);
         }
         if let Some(idx) = remove_idx {
-            self.remove_roi(idx);
+            plot.remove_roi(idx);
         }
 
         // Seed new ROIs at the center of the current view.
@@ -262,41 +149,41 @@ impl RoiManagerWidget {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             if ui.button("+ Rect").clicked() {
-                self.add_roi(Roi::Rect {
+                plot.add_roi(Roi::Rect {
                     x: (cx - dx, cx + dx),
                     y: (cy - dy, cy + dy),
                 });
             }
             if ui.button("+ HRange").clicked() {
-                self.add_roi(Roi::HRange {
+                plot.add_roi(Roi::HRange {
                     y: (cy - dy, cy + dy),
                 });
             }
             if ui.button("+ VRange").clicked() {
-                self.add_roi(Roi::VRange {
+                plot.add_roi(Roi::VRange {
                     x: (cx - dx, cx + dx),
                 });
             }
             if ui.button("+ Point").clicked() {
-                self.add_roi(Roi::Point { x: cx, y: cy });
+                plot.add_roi(Roi::Point { x: cx, y: cy });
             }
             if ui.button("+ Cross").clicked() {
-                self.add_roi(Roi::Cross { center: (cx, cy) });
+                plot.add_roi(Roi::Cross { center: (cx, cy) });
             }
             if ui.button("+ Line").clicked() {
-                self.add_roi(Roi::Line {
+                plot.add_roi(Roi::Line {
                     start: (cx - dx, cy),
                     end: (cx + dx, cy),
                 });
             }
             if ui.button("+ Circle").clicked() {
-                self.add_roi(Roi::Circle {
+                plot.add_roi(Roi::Circle {
                     center: (cx, cy),
                     radius: dx.abs().max(dy.abs()),
                 });
             }
             if ui.button("+ Ellipse").clicked() {
-                self.add_roi(Roi::Ellipse {
+                plot.add_roi(Roi::Ellipse {
                     center: (cx, cy),
                     radii: (dx.abs(), dy.abs()),
                 });
@@ -304,7 +191,7 @@ impl RoiManagerWidget {
             if ui.button("+ Arc").clicked() {
                 // A quarter-ring centered on the view (silx ArcROI).
                 let r = dx.abs().max(dy.abs()).max(f64::EPSILON);
-                self.add_roi(Roi::Arc {
+                plot.add_roi(Roi::Arc {
                     center: (cx, cy),
                     inner_radius: r * 0.5,
                     outer_radius: r,
@@ -313,7 +200,7 @@ impl RoiManagerWidget {
                 });
             }
             if ui.button("+ Band").clicked() {
-                self.add_roi(Roi::Band {
+                plot.add_roi(Roi::Band {
                     begin: (cx - dx, cy),
                     end: (cx + dx, cy),
                     width: dy.abs(),
@@ -321,8 +208,8 @@ impl RoiManagerWidget {
             }
         });
 
-        if !self.rois.is_empty() && ui.button("Clear all").clicked() {
-            self.clear();
+        if !plot.rois().is_empty() && ui.button("Clear all").clicked() {
+            plot.clear_rois();
         }
     }
 }
@@ -342,85 +229,5 @@ fn roi_kind(roi: &Roi) -> &'static str {
         Roi::Ellipse { .. } => "ellipse",
         Roi::Arc { .. } => "arc",
         Roi::Band { .. } => "band",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn set_current_highlights_only_one() {
-        let mut m = RoiManagerWidget::new();
-        m.add_roi(Roi::Point { x: 0.0, y: 0.0 });
-        m.add_roi(Roi::Point { x: 1.0, y: 1.0 });
-        m.add_roi(Roi::Point { x: 2.0, y: 2.0 });
-
-        m.set_current_roi(Some(1));
-        assert_eq!(m.current_roi(), Some(1));
-        assert!(!m.rois()[0].selected);
-        assert!(m.rois()[1].selected);
-        assert!(!m.rois()[2].selected);
-
-        // Switching the current ROI moves the highlight.
-        m.set_current_roi(Some(2));
-        assert!(!m.rois()[1].selected);
-        assert!(m.rois()[2].selected);
-
-        // Clearing removes all highlights.
-        m.set_current_roi(None);
-        assert_eq!(m.current_roi(), None);
-        assert!(m.rois().iter().all(|r| !r.selected));
-    }
-
-    #[test]
-    fn out_of_range_current_clears_selection() {
-        let mut m = RoiManagerWidget::new();
-        m.add_roi(Roi::Point { x: 0.0, y: 0.0 });
-        m.set_current_roi(Some(5));
-        assert_eq!(m.current_roi(), None);
-    }
-
-    #[test]
-    fn remove_adjusts_current_index() {
-        let mut m = RoiManagerWidget::new();
-        for i in 0..3 {
-            m.add_roi(Roi::Point {
-                x: i as f64,
-                y: 0.0,
-            });
-        }
-        // Current after the removed index shifts down by one.
-        m.set_current_roi(Some(2));
-        m.remove_roi(0);
-        assert_eq!(m.current_roi(), Some(1));
-        assert!(m.rois()[1].selected);
-
-        // Removing the current ROI clears the selection.
-        m.set_current_roi(Some(1));
-        m.remove_roi(1);
-        assert_eq!(m.current_roi(), None);
-
-        // Current before the removed index is unaffected.
-        m.clear();
-        for i in 0..3 {
-            m.add_roi(Roi::Point {
-                x: i as f64,
-                y: 0.0,
-            });
-        }
-        m.set_current_roi(Some(0));
-        m.remove_roi(2);
-        assert_eq!(m.current_roi(), Some(0));
-    }
-
-    #[test]
-    fn color_falls_back_to_manager_default() {
-        let mut m = RoiManagerWidget::new();
-        assert_eq!(m.default_color(), Color32::RED);
-        let idx = m.add_roi(Roi::Point { x: 0.0, y: 0.0 });
-        assert_eq!(m.rois()[idx].color, None);
-        m.set_default_color(Color32::GREEN);
-        assert_eq!(m.default_color(), Color32::GREEN);
     }
 }
