@@ -1489,6 +1489,8 @@ mod tests {
             alpha: 0.5,
             symbol_size: 9.0,
             baseline: Baseline::PerPoint(vec![1.0, 1.5, 2.0]),
+            x_label: None,
+            y_label: None,
         };
 
         let curve = curve_data_from_spec(spec);

@@ -1669,6 +1669,25 @@ fn xy_bounds(x: &[f64], y: &[f64], axis: YAxis) -> DataBounds {
     bounds
 }
 
+/// Route an active curve's per-axis labels onto the plot's active-label
+/// overrides (silx `_setActiveItem` → `Axis._setCurrentLabel`): the X label
+/// always drives the X axis; the Y label drives the left Y axis or the right
+/// (y2) axis by the curve's `y_axis`. Returns
+/// `(active_x, active_y_left, active_y2)` for [`Plot::active_x_label`] /
+/// `active_y_label` / `active_y2_label`. Pure and headless-testable.
+fn active_axis_label_overrides(
+    x_label: Option<&str>,
+    y_label: Option<&str>,
+    y_axis: YAxis,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let x = x_label.map(ToOwned::to_owned);
+    let y = y_label.map(ToOwned::to_owned);
+    match y_axis {
+        YAxis::Left => (x, y, None),
+        YAxis::Right => (x, None, y),
+    }
+}
+
 fn curve_spec_from_data(curve: &CurveData) -> CurveSpec<'_> {
     CurveSpec {
         x: &curve.x,
@@ -1688,6 +1707,11 @@ fn curve_spec_from_data(curve: &CurveData) -> CurveSpec<'_> {
         alpha: 1.0,
         symbol_size: curve.marker_size,
         baseline: curve.baseline.clone(),
+        // Per-curve axis labels live in the high-level `ItemRecord` (alongside
+        // `legend`), not in `CurveData`, so a data round-trip carries none; the
+        // record's labels are preserved across this re-application path.
+        x_label: None,
+        y_label: None,
     }
 }
 
@@ -1831,6 +1855,15 @@ struct ItemRecord {
     kind: PlotItemKind,
     bounds: DataBounds,
     legend: Option<String>,
+    /// Per-curve X-axis label shown while this item is the active curve (silx
+    /// `Curve.getXLabel`). Stored here (not in `CurveData`) so it is preserved
+    /// across style/highlight re-applications, exactly like `legend`. `None`
+    /// keeps the graph's default X label active.
+    x_label: Option<String>,
+    /// Per-curve Y-axis label shown while this item is the active curve (silx
+    /// `Curve.getYLabel`), routed to the left or right axis by the curve's
+    /// `y_axis`. See [`Self::x_label`].
+    y_label: Option<String>,
     stats: Option<ItemStats>,
     visual: LegendVisual,
     /// Retained raw data for live stats/fit consumers; `None` for items whose
@@ -2384,6 +2417,7 @@ impl PlotWidget {
     /// Render the widget in `ui`, handling interaction and plot item selection.
     pub fn show(&mut self, ui: &mut egui::Ui) -> PlotResponse {
         let before = self.limits_snapshot();
+        self.sync_active_axis_labels();
         let response = PlotView::new().show_with_interaction(
             ui,
             self.backend.plot_mut(),
@@ -2417,6 +2451,35 @@ impl PlotWidget {
             }
         }
         response
+    }
+
+    /// Push the active curve's per-axis labels onto the core plot's active-label
+    /// overrides so the chrome draws them in place of the graph defaults (silx
+    /// `_setActiveItem` → `Axis._setCurrentLabel`). Recomputed every frame from
+    /// the current active curve; cleared to the graph defaults when no curve is
+    /// active. The active curve's Y label is routed to the left or right (y2)
+    /// axis by the curve's `y_axis`.
+    fn sync_active_axis_labels(&mut self) {
+        let (x, y, y2) = self
+            .active_curve()
+            .and_then(|handle| self.item_record(handle))
+            .map(|record| {
+                let y_axis = record
+                    .curve_data
+                    .as_ref()
+                    .map(|data| data.y_axis)
+                    .unwrap_or(YAxis::Left);
+                active_axis_label_overrides(
+                    record.x_label.as_deref(),
+                    record.y_label.as_deref(),
+                    y_axis,
+                )
+            })
+            .unwrap_or((None, None, None));
+        let plot = self.backend.plot_mut();
+        plot.active_x_label = x;
+        plot.active_y_label = y;
+        plot.active_y2_label = y2;
     }
 
     /// Access the underlying plot model.
@@ -2539,6 +2602,8 @@ impl PlotWidget {
             kind,
             bounds,
             legend: None,
+            x_label: None,
+            y_label: None,
             stats,
             visual,
             data: None,
@@ -2581,6 +2646,8 @@ impl PlotWidget {
                 kind,
                 bounds,
                 legend: None,
+                x_label: None,
+                y_label: None,
                 stats,
                 visual,
                 data: None,
@@ -2759,10 +2826,19 @@ impl PlotWidget {
         let visual = curve_spec_legend_visual(&spec, kind);
         let data = curve_spec_retained_data(&spec);
         let curve_data = curve_data_from_spec_hl(&spec);
+        // Per-curve axis labels (silx `addCurve(xlabel=, ylabel=)`): capture
+        // before the spec is consumed, then store on the record alongside
+        // `legend` so they survive style/highlight re-applications.
+        let x_label = spec.x_label.map(ToOwned::to_owned);
+        let y_label = spec.y_label.map(ToOwned::to_owned);
         let handle = self.backend.add_curve(spec);
         self.record_item(handle, kind, bounds, stats, visual);
         self.set_retained_data(handle, Some(data));
         self.set_record_curve_data(handle, Some(curve_data));
+        if let Some(record) = self.item_record_mut(handle) {
+            record.x_label = x_label;
+            record.y_label = y_label;
+        }
         handle
     }
 
@@ -3561,6 +3637,69 @@ impl PlotWidget {
     pub fn item_legend(&self, handle: ItemHandle) -> Option<&str> {
         self.item_record(handle)
             .and_then(|record| record.legend.as_deref())
+    }
+
+    /// Set the curve's X-axis label, shown on the X axis while it is the active
+    /// curve (silx `Curve.setXLabel`). The active curve's label overrides the
+    /// graph default ([`Self::set_graph_x_label`]). Returns `false` for an
+    /// unknown handle.
+    pub fn set_curve_x_label(&mut self, handle: ItemHandle, label: impl Into<String>) -> bool {
+        let Some(record) = self.item_record_mut(handle) else {
+            return false;
+        };
+        record.x_label = Some(label.into());
+        let kind = record.kind;
+        self.events.push(PlotEvent::ItemUpdated { handle, kind });
+        true
+    }
+
+    /// Remove the curve's X-axis label, so the graph default shows when it is
+    /// active (silx setting the label back to `None`).
+    pub fn clear_curve_x_label(&mut self, handle: ItemHandle) -> bool {
+        let Some(record) = self.item_record_mut(handle) else {
+            return false;
+        };
+        record.x_label = None;
+        let kind = record.kind;
+        self.events.push(PlotEvent::ItemUpdated { handle, kind });
+        true
+    }
+
+    /// The curve's X-axis label, if set (silx `Curve.getXLabel`).
+    pub fn curve_x_label(&self, handle: ItemHandle) -> Option<&str> {
+        self.item_record(handle)
+            .and_then(|record| record.x_label.as_deref())
+    }
+
+    /// Set the curve's Y-axis label, shown on the left or right (y2) axis (per
+    /// the curve's Y-axis binding) while it is the active curve (silx
+    /// `Curve.setYLabel`). Returns `false` for an unknown handle.
+    pub fn set_curve_y_label(&mut self, handle: ItemHandle, label: impl Into<String>) -> bool {
+        let Some(record) = self.item_record_mut(handle) else {
+            return false;
+        };
+        record.y_label = Some(label.into());
+        let kind = record.kind;
+        self.events.push(PlotEvent::ItemUpdated { handle, kind });
+        true
+    }
+
+    /// Remove the curve's Y-axis label, so the graph default shows when it is
+    /// active.
+    pub fn clear_curve_y_label(&mut self, handle: ItemHandle) -> bool {
+        let Some(record) = self.item_record_mut(handle) else {
+            return false;
+        };
+        record.y_label = None;
+        let kind = record.kind;
+        self.events.push(PlotEvent::ItemUpdated { handle, kind });
+        true
+    }
+
+    /// The curve's Y-axis label, if set (silx `Curve.getYLabel`).
+    pub fn curve_y_label(&self, handle: ItemHandle) -> Option<&str> {
+        self.item_record(handle)
+            .and_then(|record| record.y_label.as_deref())
     }
 
     fn legend_label(&self, record: &ItemRecord) -> String {
@@ -7926,6 +8065,27 @@ fn roi_description(roi: &Roi) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_axis_label_overrides_routes_y_by_axis() {
+        use crate::core::transform::YAxis;
+        // Left-axis curve: X drives the X axis, Y drives the left Y axis, y2 unset.
+        assert_eq!(
+            active_axis_label_overrides(Some("Time"), Some("Counts"), YAxis::Left),
+            (Some("Time".to_string()), Some("Counts".to_string()), None)
+        );
+        // Right-axis curve: X drives the X axis, Y drives the y2 axis, left Y unset.
+        assert_eq!(
+            active_axis_label_overrides(Some("Time"), Some("Counts"), YAxis::Right),
+            (Some("Time".to_string()), None, Some("Counts".to_string()))
+        );
+        // Missing per-curve labels pass through as None on every axis (the plot
+        // then falls back to the graph defaults).
+        assert_eq!(
+            active_axis_label_overrides(None, None, YAxis::Left),
+            (None, None, None)
+        );
+    }
 
     #[test]
     fn set_symbol_visibility_hide_then_show_is_lossless() {

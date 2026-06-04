@@ -327,16 +327,21 @@ impl PlotView {
         }
 
         // Title + axis labels in the reserved gutters (hidden with the axes).
+        // Axis labels resolve the active curve's per-axis label over the graph
+        // default (silx `Axis._currentLabel`); the title has no active override.
         if axes_displayed {
+            let x_label = plot.displayed_x_label();
+            let y_label = plot.displayed_y_label();
+            let y2_label = plot.displayed_y2_label();
             chrome::draw_labels(
                 painter,
                 rect,
                 area,
                 &chrome::Labels {
                     title: plot.title.as_deref(),
-                    x: plot.x_label.as_deref(),
-                    y: plot.y_label.as_deref(),
-                    y2: plot.y2_label.as_deref(),
+                    x: x_label.as_deref(),
+                    y: y_label.as_deref(),
+                    y2: y2_label.as_deref(),
                 },
                 with_y2,
                 &style,

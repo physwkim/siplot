@@ -47,6 +47,14 @@ pub struct CurveSpec<'a> {
     pub alpha: f32,
     pub symbol_size: f32,
     pub baseline: Baseline,
+    /// X-axis label shown while this curve is the active curve (silx
+    /// `addCurve(xlabel=...)` / `Curve.setXLabel`). `None` keeps the graph's
+    /// default X label when this curve is active.
+    pub x_label: Option<&'a str>,
+    /// Y-axis label shown while this curve is the active curve (silx
+    /// `addCurve(ylabel=...)` / `Curve.setYLabel`). Routed to the left or right
+    /// (y2) axis by [`Self::y_axis`]. `None` keeps the graph's default Y label.
+    pub y_label: Option<&'a str>,
 }
 
 impl<'a> CurveSpec<'a> {
@@ -67,6 +75,8 @@ impl<'a> CurveSpec<'a> {
             alpha: 1.0,
             symbol_size: 7.0,
             baseline: Baseline::Scalar(0.0),
+            x_label: None,
+            y_label: None,
         }
     }
 }

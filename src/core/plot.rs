@@ -143,20 +143,23 @@ impl GraphGrid {
 }
 
 /// Resolve the label to display on an axis, mirroring silx
-/// `items/axis.py:187-218` (`Axis.getLabel` / `_setCurrentLabel`): the axis
-/// shows its explicit label when one is set, otherwise it falls back to the
-/// active item's per-axis label, otherwise an empty string.
+/// `items/axis.py:187-218` (`Axis.getLabel` / `_setCurrentLabel`): the active
+/// item's per-axis label is shown when one is set, otherwise it falls back to
+/// the axis' own default label, otherwise an empty string.
 ///
-/// `explicit` is the axis' own label (silx `_defaultLabel`); `active_label` is
-/// the active curve/image's label for this axis (silx `getXLabel`/`getYLabel`).
-/// A `Some("")` is treated the same as `None` (silx `_setCurrentLabel` treats an
-/// empty string as "no label").
-pub fn resolved_axis_label(explicit: Option<&str>, active_label: Option<&str>) -> String {
+/// `default_label` is the axis' own label (silx `_defaultLabel`, set via
+/// `setGraphXLabel`); `active_label` is the active curve/image's label for this
+/// axis (silx `getXLabel`/`getYLabel`). silx `_setActiveItem` calls
+/// `_setCurrentLabel(activeLabel)`, which displays `activeLabel` when non-empty
+/// and otherwise falls back to `_defaultLabel` — so the active curve's label
+/// *overrides* the graph default when present. A `Some("")` is treated the same
+/// as `None` (silx `_setCurrentLabel` treats an empty string as "no label").
+pub fn resolved_axis_label(default_label: Option<&str>, active_label: Option<&str>) -> String {
     fn non_empty(s: Option<&str>) -> Option<&str> {
         s.filter(|l| !l.is_empty())
     }
-    non_empty(explicit)
-        .or(non_empty(active_label))
+    non_empty(active_label)
+        .or(non_empty(default_label))
         .unwrap_or("")
         .to_string()
 }
@@ -307,6 +310,20 @@ pub struct Plot {
     /// Right (y2) Y-axis label, drawn rotated at the far right; only shown when
     /// a [`Self::y2`] axis exists. `None` reserves no extra right space.
     pub y2_label: Option<String>,
+    /// Active curve's X label, overriding [`Self::x_label`] while that curve is
+    /// active (silx `Axis._currentLabel`, set by `_setActiveItem` from the active
+    /// curve's `getXLabel`). The high-level widget repopulates this each frame
+    /// from the active curve; `None` falls back to the default. See
+    /// [`Self::displayed_x_label`].
+    pub active_x_label: Option<String>,
+    /// Active curve's left-Y label, overriding [`Self::y_label`] (silx
+    /// `Axis._currentLabel`). Set only when the active curve is bound to the left
+    /// Y axis. See [`Self::active_x_label`].
+    pub active_y_label: Option<String>,
+    /// Active curve's right (y2) label, overriding [`Self::y2_label`] (silx
+    /// `Axis._currentLabel`). Set only when the active curve is bound to the right
+    /// Y axis. See [`Self::active_x_label`].
+    pub active_y2_label: Option<String>,
     /// Foreground color override for axes/frame/ticks/labels (silx
     /// `setForegroundColor`). `None` follows the egui theme's text color.
     pub foreground: Option<Color32>,
@@ -403,6 +420,9 @@ impl Plot {
             x_label: None,
             y_label: None,
             y2_label: None,
+            active_x_label: None,
+            active_y_label: None,
+            active_y2_label: None,
             foreground: None,
             grid_color: None,
             grid: GraphGrid::Major,
@@ -609,8 +629,9 @@ impl Plot {
     }
 
     /// The X-axis label to display, given the active curve's X label (silx
-    /// `Axis.getLabel`). Uses the explicit [`Self::x_label`] when set, otherwise
-    /// falls back to `active_label`, otherwise empty. See [`resolved_axis_label`].
+    /// `Axis.getLabel`). The active curve's `active_label` overrides the default
+    /// [`Self::x_label`] when set, otherwise the default shows, otherwise empty.
+    /// See [`resolved_axis_label`].
     pub fn x_axis_label(&self, active_label: Option<&str>) -> String {
         resolved_axis_label(self.x_label.as_deref(), active_label)
     }
@@ -625,6 +646,29 @@ impl Plot {
     /// (silx `Axis.getLabel`). See [`Self::x_axis_label`].
     pub fn y2_axis_label(&self, active_label: Option<&str>) -> String {
         resolved_axis_label(self.y2_label.as_deref(), active_label)
+    }
+
+    /// The X-axis label actually drawn this frame: the active curve's X label
+    /// ([`Self::active_x_label`], set by the widget from the active curve)
+    /// overriding the graph default [`Self::x_label`], or `None` when neither is
+    /// set (silx `Axis._currentLabel`). `None` means nothing is drawn.
+    pub fn displayed_x_label(&self) -> Option<String> {
+        let label = self.x_axis_label(self.active_x_label.as_deref());
+        (!label.is_empty()).then_some(label)
+    }
+
+    /// The left-Y-axis label actually drawn this frame (silx `Axis._currentLabel`).
+    /// See [`Self::displayed_x_label`].
+    pub fn displayed_y_label(&self) -> Option<String> {
+        let label = self.y_axis_label(self.active_y_label.as_deref());
+        (!label.is_empty()).then_some(label)
+    }
+
+    /// The right (y2) axis label actually drawn this frame (silx
+    /// `Axis._currentLabel`). See [`Self::displayed_x_label`].
+    pub fn displayed_y2_label(&self) -> Option<String> {
+        let label = self.y2_axis_label(self.active_y2_label.as_deref());
+        (!label.is_empty()).then_some(label)
     }
 
     /// The explicit grid-line color override (silx `getGridColor`). `None` means
@@ -1043,15 +1087,20 @@ mod tests {
     }
 
     #[test]
-    fn axis_label_explicit_wins_over_active_curve() {
+    fn axis_label_active_curve_wins_over_default() {
+        // silx _setActiveItem: the active curve's label overrides the graph
+        // default (_setCurrentLabel displays the active label when non-empty).
         assert_eq!(
             resolved_axis_label(Some("Energy"), Some("curve X")),
-            "Energy"
+            "curve X"
         );
     }
 
     #[test]
-    fn axis_label_falls_back_to_active_curve_when_no_explicit() {
+    fn axis_label_falls_back_to_default_when_no_active() {
+        // No active curve label -> the axis' own default label.
+        assert_eq!(resolved_axis_label(Some("Energy"), None), "Energy");
+        // Active label only -> active label.
         assert_eq!(resolved_axis_label(None, Some("curve X")), "curve X");
     }
 
@@ -1061,24 +1110,53 @@ mod tests {
     }
 
     #[test]
-    fn axis_label_empty_explicit_treated_as_unset() {
-        // silx _setCurrentLabel treats "" as no label -> falls back.
-        assert_eq!(resolved_axis_label(Some(""), Some("curve X")), "curve X");
-        // And an empty active label with no explicit -> empty.
+    fn axis_label_empty_active_falls_back_to_default() {
+        // silx _setCurrentLabel treats "" as no label -> falls back to default.
+        assert_eq!(resolved_axis_label(Some("Energy"), Some("")), "Energy");
+        // Active label wins over a default even when the default is set.
+        assert_eq!(resolved_axis_label(Some("Energy"), Some("Time")), "Time");
+        // Both empty / unset -> empty.
         assert_eq!(resolved_axis_label(Some(""), Some("")), "");
         assert_eq!(resolved_axis_label(None, Some("")), "");
     }
 
     #[test]
-    fn plot_axis_label_uses_explicit_then_active() {
+    fn plot_axis_label_active_overrides_default() {
         let mut plot = Plot::new(0);
         plot.x_label = Some("X axis".to_string());
-        // Explicit set -> wins even with an active curve label.
-        assert_eq!(plot.x_axis_label(Some("curve")), "X axis");
-        // No explicit on y -> active curve label.
+        // Active curve label overrides the explicit default (silx semantics).
+        assert_eq!(plot.x_axis_label(Some("curve")), "curve");
+        // Default shows when there is no active label.
+        assert_eq!(plot.x_axis_label(None), "X axis");
+        // No default on y -> active curve label.
         assert_eq!(plot.y_axis_label(Some("intensity")), "intensity");
-        // No explicit, no active -> empty.
+        // No default, no active -> empty.
         assert_eq!(plot.y2_axis_label(None), "");
+    }
+
+    #[test]
+    fn displayed_labels_resolve_active_override_against_default() {
+        let mut plot = Plot::new(0);
+        // Defaults set, no active override -> defaults are displayed.
+        plot.x_label = Some("Energy".to_string());
+        plot.y_label = Some("Counts".to_string());
+        assert_eq!(plot.displayed_x_label().as_deref(), Some("Energy"));
+        assert_eq!(plot.displayed_y_label().as_deref(), Some("Counts"));
+        // y2 has neither default nor override -> nothing drawn.
+        assert_eq!(plot.displayed_y2_label(), None);
+
+        // Active overrides win over the defaults (silx _setActiveItem).
+        plot.active_x_label = Some("Time".to_string());
+        plot.active_y_label = Some("Intensity".to_string());
+        assert_eq!(plot.displayed_x_label().as_deref(), Some("Time"));
+        assert_eq!(plot.displayed_y_label().as_deref(), Some("Intensity"));
+
+        // An empty override falls back to the default; an active y2 override with
+        // no y2 default still drives the y2 label.
+        plot.active_x_label = Some(String::new());
+        plot.active_y2_label = Some("Right".to_string());
+        assert_eq!(plot.displayed_x_label().as_deref(), Some("Energy"));
+        assert_eq!(plot.displayed_y2_label().as_deref(), Some("Right"));
     }
 
     #[test]
