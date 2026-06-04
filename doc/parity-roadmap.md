@@ -630,6 +630,51 @@ are **GPU/PlotWidget-UNVERIFIED**; the testable core (the pure merge) is unit-te
 - **Wave 10 complete**, `main` @ `d676c00`, 734 tests, full-workspace gate green. The on-screen highlight
   render is GPU/PlotWidget-UNVERIFIED (see boundary above).
 
+### Wave 11 — Marker drag + cursor (silx `DraggableMixIn.drag` → `setPosition`)
+Cross-cutting cluster (6 source files + 3 examples); one worktree-isolated implement + two parallel adversarial
+reviews (**both accept**, all six dimensions true), ff-merged preserving verified SHAs, then **one review-fix
+commit** for a structural finding (below). **Key architecture:** the marker source of truth is
+`WgpuBackend.items` (`BackendItem::Marker`); `plot.markers` is a per-frame, z-sorted **mirror** that
+`sync_plot_items` rebuilds every frame, so a drag persists through a new inherent
+`WgpuBackend::update_marker` (mirrors `update_image`), never by mutating the mirror alone. A parallel
+`plot.marker_handles: Vec<ItemHandle>` (populated alongside `plot.markers` in `sync_plot_items`, same
+length+order) bridges the handle-less mirror back to backend identity so `apply_interaction` (which holds only
+`&mut Plot`) can report the dragged marker. Verification boundary: `PlotWidget`/`PlotView` need a wgpu
+`RenderState` no crate test builds, so the grab/drag/precedence state machine, the cursor side-effect, the
+`update_marker` round-trip, `set_marker_position`/`marker_position`, and the `PlotResponse`/event wiring are
+**GPU/PlotWidget-UNVERIFIED**; the pure core is unit-tested.
+- **`eb924e8` — persistence + handle plumbing + pure helpers + public API + tests**. `Plot::marker_handles`;
+  `WgpuBackend::update_marker`/`marker` (inherent, no trait change); pure `Marker::pick` per-kind hit-test in
+  `core/marker.rs` (backend `pick_marker` now delegates to it — dedup, not duplicate); pure
+  `interaction::marker_at` (topmost **draggable** marker under cursor, rev/z-order, skips non-draggable) and
+  `interaction::marker_cursor` (drag-DOF size cursor); `PlotEvent::MarkerMoved`; public
+  `set_marker_position`/`marker_position` (silx `setPosition`/`getPosition`, constraint applied via
+  `Marker::drag`). Unit tests: `Marker::pick` (in/out radius, on/off span for v/h-line), `marker_at`
+  (topmost / skip-non-draggable / none-on-miss), `marker_cursor` (all 5 kind+constraint mappings).
+- **`8f6318a` — wire the drag into `apply_interaction`**. A draggable marker under the cursor at drag-start is
+  the **highest-precedence primary-drag consumer in every mode except MaskDraw**, pre-empting primary-drag pan,
+  the ROI-edge grab, and box-zoom (all gated on `!marker_dragging`); the marker size cursor takes precedence
+  over the ROI-edge cursor. Wheel zoom and secondary-drag pan are intentionally **not** gated (silx: only the
+  left-button item-drag branch competes with primary pan/zoom). `PlotWidget::show` persists the dragged marker
+  back to the backend item via `update_marker` and emits `PlotEvent::MarkerMoved`. *(Commit-split note:
+  `PlotEvent::MarkerMoved` + the public API landed in commit 1, not 2, because commit 1's `set_marker_position`
+  pushes the variant — an unknown variant would not compile; `#[allow]` is banned. The 3 examples gained a
+  `MarkerMoved` match arm as a forced `--all-targets` compile consequence of the exhaustive enum.)*
+- **`994c591` — review-fix (structural): key marker drag by stable handle, not mirror index.** **Finding
+  (reviewer 2, non-blocking):** `MarkerDrag` stored a `usize` index into `plot.markers`, the per-frame z-sorted
+  mirror; reusing that positional value across frames as the grabbed marker's identity is a dual meaning, so a
+  mid-drag rebuild/reorder of the mirror could shift the index onto a different marker (bounds-checked, no
+  crash, but wrong-marker move). **Structural fix (preferred over the index patch):** store the marker's stable
+  `ItemHandle` in `MarkerDrag` and re-resolve the mirror index from it each frame (drag-apply + drag cursor); a
+  marker removed mid-drag now no-ops instead of moving an adjacent one. **Anchor audit:** `RoiDrag.roi` is the
+  same shape but **distinct** — it indexes `plot.rois`, the source of truth `sync_plot_items` never rebuilds or
+  reorders (not a derived mirror), and is pre-existing (out of Wave 11 scope) → left as-is (see UNFIXED).
+- **UNFIXED (pre-existing, out of scope):** `RoiDrag` still keys an in-progress ROI drag by `usize` index into
+  `plot.rois`; robust today because that Vec is the truth and is not reordered per frame, but a handle/id-keyed
+  `RoiDrag` would be the same structural improvement. Not touched (Wave 11 scope is markers; needs user OK).
+- **Wave 11 complete**, `main` @ `994c591`, 741 tests, full-workspace gate green. The on-screen drag, cursor,
+  `update_marker` round-trip, and event/response wiring are GPU/PlotWidget-UNVERIFIED (see boundary above).
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
@@ -647,7 +692,7 @@ egui-silx has strong coverage of core axis features: linear/log/inverted axes, d
 | ☐ | L | S | Overlay-only replot optimization | `PlotWidget.py:719-730 (dirty='overlay')` | silx distinguishes dirty='overlay' (redraw legend, markers only; skip image/curve) from dirty=True (full redraw). egui-silx renders all layers every frame. |
 | ◐ | L | S | Separate foreground (axes/frame) and grid colors | `PlotWidget.py:setForegroundColor, setGridColor (separate calls); backends/_PlotFrameCore.py splits axis vs grid stroke` | egui-silx lumps frame/axes into 'foreground' color. silx allows independent frame stroke and grid color. Minor: egui chrome applies foreground to axis strokes and labels together; grid color is separa |
 
-## Interaction, events, panzoom, limits history  — 18✅ 5◐ 24☐
+## Interaction, events, panzoom, limits history  — 19✅ 5◐ 23☐
 
 egui-silx implements core panning and zooming, including wheel zoom anchored at cursor and box zoom, plus interaction mode switching (select/pan/zoom). Double-click reset and crosshair cursor are implemented. However, the signal/event architecture differs fundamentally: silx uses an extensive Qt signal system with fine-grained event callbacks (mouseClicked, mouseDoubleClicked, hover, markerMoving, drawingProgress, etc.) while egui-silx uses simple enums (PlotEvent) with discrete state changes only. Limits history (undo/redo stack) is completely missing. Drawing modes (polygon, rectangle, ellipse, line, freehand, etc.) are absent. Hover event signals are not emitted. Arrow-key panning is not implemented. Custom cursor shapes for ROI handle dragging are not set. Marker interaction callbacks are missing.
 
@@ -669,10 +714,10 @@ egui-silx implements core panning and zooming, including wheel zoom anchored at 
 | ☐ | L | L | Interaction state machine (ClickOrDrag, StateMachine) | `Interaction.py:87-198, PlotInteraction.py:153-209` | No explicit state machine architecture in egui-silx. silx uses StateMachine base class with State subclasses for each interaction mode (Idle, Drag, etc.). egui-silx uses imperative event handling with |
 | ☐ | L | M | Signal: hover (mouseMoved) with item label, type, draggable/selectable flags | `PlotInteraction.py:1135-1154, PlotEvents.py:73-85` | No hover event signals. silx emits hover with item metadata (label, type, whether draggable/selectable, data and pixel position). egui-silx only tracks crosshair rendering. |
 | ☐ | L | M | Signal: markerClicked with marker details and position | `PlotInteraction.py:1223-1241, PlotEvents.py:88-139` | No marker click event. silx emits structured markerClicked signal with marker name, position data, button, and draggable/selectable flags. egui-silx has no equivalent. |
-| ☐ | L | M | Signal: markerMoving/markerMoved (marker drag feedback) | `PlotInteraction.py:1276-1299, 1350` | No marker drag event signals. silx emits markerMoving (on each frame during drag) and markerMoved (on release) with updated position. egui-silx does not emit these. |
+| ◐ | L | M | Signal: markerMoving/markerMoved (marker drag feedback) | `PlotInteraction.py:1276-1299, 1350` | Wave 11 emits PlotEvent::MarkerMoved { handle } (and PlotResponse.marker_moved) each frame the marker is dragged — covers markerMoving feedback. Not yet split into a distinct on-release markerMoved, and the event carries the handle, not the full position/draggable payload. |
 | ☐ | L | M | Signal: curveClicked with curve indices and position | `PlotInteraction.py:1243-1261, PlotEvents.py:159-173` | No curve click event. silx emits curveClicked with nearest point indices, xdata/ydata arrays, and click position. egui-silx has no equivalent. |
 | ☐ | L | M | Signal: imageClicked with pixel (col, row) index and position | `PlotInteraction.py:1263-1272, PlotEvents.py:142-156` | No image click event. silx emits imageClicked with col/row/button/position. egui-silx has image_index picking support but no event emission. |
-| ◐ | L | M | Cursor shape change (resize cursors for draggable markers/handles) | `PlotInteraction.py:1165-1184` | ROI edge detection is implemented but cursor shape is never set. silx changes cursor to CURSOR_SIZE_HOR/VER/ALL depending on draggable marker type; egui-silx detects edge_at() but does not emit cursor |
+| ✅ | L | M | Cursor shape change (resize cursors for draggable markers/handles) | `PlotInteraction.py:1165-1184` | ROI-edge resize cursors were already set; Wave 11 adds the draggable-marker size cursor (marker_cursor: VLine→SizeHor, HLine→SizeVer, free Point→SizeAll, constrained Point→the free axis), shown on hover and during drag, taking precedence over the ROI-edge cursor. Matches silx CURSOR_SIZE_HOR/VER/ALL. |
 | ◐ | L | M | Selection area color and fill mode (hatch, solid, none) | `PlotInteraction.py:98-141` | egui-silx hardcodes semi-transparent rect with single color; does not support hatch fill or per-mode color configuration like silx. |
 | ☐ | L | M | Ellipse drawing interaction (select mode) | `PlotInteraction.py:681-765` | No ellipse draw mode. silx SelectEllipse converts 2-point drag into ellipse parameters (center, semi-axes) with eccentricity preservation. |
 | ☐ | L | M | Freehand/polyline drawing (select mode) | `PlotInteraction.py:955-1110` | No freehand/polylines/pencil draw modes. silx DrawFreeHand and SelectFreeLine allow continuous vertex accumulation with preview circle. |
@@ -704,7 +749,7 @@ egui-silx covers basic curve rendering (solid/dashed lines, single symbols, erro
 | ☐ | L | S | Scatter visualization parameter: binned_statistic_function (mean/count/sum) | `core.py:1325-1329, 1347 (VisualizationParameter.BINNED_STATISTIC_FUNCTION)` | Parameter for binned statistic mode. egui-silx has no binning support. |
 | ☐ | L | S | Scatter visualization parameter: binned_statistic_shape (grid dimensions) | `core.py:1325,1333 (VisualizationParameter.BINNED_STATISTIC_SHAPE)` | Parameter for binned statistic mode. egui-silx has no binning support. |
 
-## Items: Image, Marker, Shape, Complex  — 29✅ 3◐ 9☐
+## Items: Image, Marker, Shape, Complex  — 30✅ 4◐ 7☐
 
 egui-silx implements core image (scalar colormapped + RGBA direct), marker (point/vline/hline), and shape (polygon/rectangle/polyline/hline/vline) drawing. Colormaps support 8 built-in names with linear/log/sqrt/gamma normalization and a 256-entry LUT. Images support origin/scale placement, per-pixel alpha, and GPU tiling for large datasets. Markers support point symbols, text labels with background color, and line styling. Shapes support fill (convex only), outline styling with dashed gaps. Missing: image masking, image interpolation modes (locked to nearest), complex image modes (7 variants from silx), image aggregation/downsampling modes (max/min/mean), image stack/3D support, marker draggability/constraints, marker text anchor positioning, shape overlay flag (all shapes draw as overlay), and Line item (infinite y=slope*x+intercept).
 
@@ -712,13 +757,13 @@ egui-silx implements core image (scalar colormapped + RGBA direct), marker (poin
 |---|---|---|---|---|---|
 | ☐ | M | M | Image per-pixel alpha map | `items/image.py:462-500 (ImageData.getAlphaData/setAlphaData, alternative image with alpha)` | silx supports setData(data, alternative=None, alpha=alpha_array). ImageData struct has only global alpha: f32, no per-pixel alpha array or alternative RGBA image overlay. Implementation requires addin |
 | ☐ | M | M | Image masking (per-pixel validity mask) | `items/image.py:209-251 (getMaskData/setMaskData), 273-284 (getValueData applies mask as NaN)` | silx's ImageBase and ImageData support setMaskData(mask) to mark invalid pixels as NaN in getValueData. egui-silx ImagePixels::Scalar has no mask field. Requires extending ImageData struct and GPU pip |
-| ☐ | M | M | Marker draggability (isDraggable/drag callback) | `items/marker.py:52-67 (MarkerBase with DraggableMixIn), 177-206 (drag method, setPosition)` | silx's Marker has isDraggable() and drag(from_, to_) methods, emits sigDragStarted/sigDragFinished. egui-silx Marker is immutable data (no position setter), no drag event or constraint callback. Inter |
+| ✅ | M | M | Marker draggability (isDraggable/drag callback) | `items/marker.py:52-67 (MarkerBase with DraggableMixIn), 177-206 (drag method, setPosition)` | Wave 11: a draggable marker (is_draggable) is grabbed on primary drag (topmost via marker_at), follows the cursor through Marker::drag (constraint-aware), persists to the backend item, and reports via PlotResponse.marker_moved / PlotEvent::MarkerMoved. Public set_marker_position / marker_position (silx setPosition/getPosition). No separate sigDragStarted/sigDragFinished split (single move signal). |
 | ☐ | L | L | Image aggregation/downsampling modes (max/mean/min) | `items/image_aggregated.py:46-138 (ImageDataAggregated.Aggregation enum with NONE/MAX/MEAN/MIN, _getLevelOfDetails LOD reduction)` | egui-silx has no ImageDataAggregated equivalent. No support for setAggregationMode or dynamic LOD reduction. Large images tile at GPU limits but no aggregation strategy for display downsampling (all t |
 | ☐ | L | L | Complex image modes (7 variants: absolute/phase/real/imaginary/amplitude_phase/log10_amplitude_phase/square_amplitude) | `items/complex.py:105-378 (ImageComplexData class, ComplexMode enum with 7 modes, mode-specific colormaps and conversions)` | No ImageComplexData or complex image support. silx's complex modes convert complex input to float/RGBA for display with mode-dependent colormaps (e.g., phase as HSV, amplitude_phase as phase color + l |
 | ◐ | L | L | Shape fill concavity limitation (convex-only rasterization) | `items/shape.py (silx defers to backend, matplotlib/pygfx handle concave, but silx does not guarantee correctness)` | egui's convex_polygon rasterizer will render concave polygon fill incorrectly (as convex hull). silx does not formally restrict to convex, so a concave polygon may display differently. No warning or f |
 | ◐ | L | M | Image interpolation mode (nearest vs linear sampling) | `backends/BackendMatplotlib.py:805 (interpolation='nearest' hardcoded; silx backends via matplotlib accept 'nearest'/'bilinear'/etc.)` | Data sampler is hardcoded to Nearest (line 338-340), no option to use Linear. Colormap LUT sampler uses Linear (intentional for smooth color transitions). Need to expose interpolation mode control for |
 | ☐ | L | M | Image stack (3D array, show one frame at a time) | `items/image.py:593-669 (ImageStack class, setStackData/getStackData/setStackPosition)` | No ImageStack equivalent. silx allows setStackData(stack_3d, position) to display one 2D slice at a time, with lazy updates. egui-silx has no stack/frame concept; only single 2D ImageData. Would requi |
-| ☐ | L | M | Marker constraint function (horizontal/vertical/custom drag filter) | `items/marker.py:208-235 (getConstraint/_setConstraint with _horizontalConstraint/_verticalConstraint), 273-292 (Marker subclass overrides for constraint strings)` | silx allows setConstraint(fn) to filter drag coordinates or pass 'horizontal'/'vertical' strings for axis-aligned dragging. egui-silx Marker is data-only, no constraint field. Would require adding con |
+| ◐ | L | M | Marker constraint function (horizontal/vertical/custom drag filter) | `items/marker.py:208-235 (getConstraint/_setConstraint with _horizontalConstraint/_verticalConstraint), 273-292 (Marker subclass overrides for constraint strings)` | Wave 11 wires the horizontal/vertical presets (MarkerConstraint::Horizontal/Vertical) into the drag and the size cursor (Horizontal→SizeVer, Vertical→SizeHor). The arbitrary custom-callback form (setConstraint(fn)) is not supported — presets only. |
 | ☐ | L | M | Shape overlay flag (data layer vs separate overlay layer) | `items/shape.py:54-73 (_OverlayItem with isOverlay/setOverlay)` | silx's Shape has setOverlay(bool) to choose rendering layer (data vs overlay). egui-silx Shape has no overlay field; all shapes draw in one overlay pass (doc/design.md §8 notes this). To match silx be |
 | ☐ | L | M | Line item (infinite y = slope·x + intercept) | `items/shape.py:289-393 (Line class, distinct from Shape, infinite line with slope/intercept, computed vertices via visible bounds tracking)` | silx has a separate Line item for infinite lines (y = slope*x + intercept or vertical x = intercept). egui-silx has no Line equivalent. Would require a separate Line struct in core/ and rendering code |
 | ◐ | L | S | Marker text anchor/alignment (positioning relative to marker point) | `backends/BackendMatplotlib or similar: text drawn at marker point with implicit offset/anchor; silx does not expose anchor API directly in Marker but implicit in rendering` | silx's marker text positioning is fixed by the backend (typically offset from the point). egui-silx draws text at a fixed offset (likely to the right/below). No exposed anchor enum (e.g., TopLeft/Cent |
