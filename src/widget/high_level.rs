@@ -5526,12 +5526,12 @@ impl Plot2D {
     /// `mode='nearest'`), replacing it in place, and returns `true`. Returns
     /// `false` on any frame Apply was not clicked or no scalar image was active.
     ///
-    /// Place it inside an `egui::Window` (or any `Ui`) for the silx popup feel:
+    /// Render it into any `Ui`; the toolbar shows it in a detachable native
+    /// window via [`crate::widget::detached::show_detached`] for the silx popup
+    /// feel:
     ///
     /// ```ignore
-    /// egui::Window::new("Median filter").show(ctx, |ui| {
-    ///     plot.show_median_filter(ui, &mut params);
-    /// });
+    /// plot.show_median_filter(ui, &mut params);
     /// ```
     pub fn show_median_filter(
         &mut self,
