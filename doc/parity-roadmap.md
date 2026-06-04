@@ -63,7 +63,7 @@ as-of-sweep reference.
 | ☐ Missing | L | M | StateMachine base (ClickOrDrag hierarchy) | Interaction.py:87-198 | Imperative handling in `DrawState`/`plot_widget.rs`; no hierarchical state-machine base (functional parity achieved differently) |
 | ✔ Done (W14) | L | S | Marker drag-start/end callbacks (clicked/moving/moved triad) | PlotInteraction.py:1223-1350 | Full lifecycle: `MarkerDragStarted` (begin) → `MarkerMoved`×N (moving) → `MarkerDragFinished` (on-release moved); marker click arrives via `ItemClicked` from the unified picker |
 | ☐ Missing | L | S | Pencil preview circle during freehand draw | PlotInteraction.py:955-1110 (`updatePencilShape`) | Freehand accumulates vertices but shows no width preview circle around the cursor |
-| ☐ Missing | L | S | Cursor snap indicator in polygon mode | PlotInteraction.py:485-621 | Polygon snap-to-close logic exists but no visual snap indicator/preview line |
+| ✅ Done | L | S | Cursor snap indicator in polygon mode | PlotInteraction.py:485-621 | W15: `draw_polygon_first_point` renders silx's first-point close target — an unfilled box of half-size `close_threshold_px` around the first vertex — throughout the polygon draw (RoiCreate + `show_with_draw`); `plot_widget.rs`, `interaction.rs::close_threshold_px()` |
 
 ### items
 

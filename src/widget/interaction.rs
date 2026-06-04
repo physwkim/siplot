@@ -466,6 +466,12 @@ impl DrawState {
         self
     }
 
+    /// The polygon close / first-point snap threshold in pixels. Used to size
+    /// the on-plot first-point close target (silx `updateFirstPoint`).
+    pub fn close_threshold_px(&self) -> f32 {
+        self.close_threshold_px
+    }
+
     /// The active draw mode.
     pub fn mode(&self) -> DrawMode {
         self.mode

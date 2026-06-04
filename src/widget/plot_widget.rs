@@ -429,13 +429,22 @@ impl PlotView {
         // selection). Uses the default selection style; the draw overlay renders
         // the per-mode preview shape (silx `setSelectionArea`).
         if let Some((mode, points)) = &roi_preview {
-            draw_overlay(
-                ui.painter(),
-                &transform,
-                *mode,
-                points,
-                interaction::SelectionStyle::default(),
-            );
+            let sel_style = interaction::SelectionStyle::default();
+            draw_overlay(ui.painter(), &transform, *mode, points, sel_style);
+            // Polygon close target around the first vertex (silx updateFirstPoint).
+            // RoiCreate runs the default-threshold DrawState, so the box is sized
+            // by DRAW_CLOSE_THRESHOLD_PX.
+            if *mode == interaction::DrawMode::Polygon
+                && let Some(&first) = points.first()
+            {
+                draw_polygon_first_point(
+                    ui.painter(),
+                    &transform,
+                    first,
+                    interaction::DRAW_CLOSE_THRESHOLD_PX,
+                    sel_style.color,
+                );
+            }
         }
 
         PlotResponse {
@@ -487,6 +496,18 @@ impl PlotView {
         // Paint the in-progress preview overlay (the rubber band).
         if let Some(points) = draw.preview() {
             draw_overlay(ui.painter(), &transform, draw.mode(), &points, style);
+            // Polygon close target around the first vertex (silx updateFirstPoint).
+            if draw.mode() == interaction::DrawMode::Polygon
+                && let Some(&first) = points.first()
+            {
+                draw_polygon_first_point(
+                    ui.painter(),
+                    &transform,
+                    first,
+                    draw.close_threshold_px(),
+                    style.color,
+                );
+            }
         } else if let Some(interaction::DrawEvent::InProgress { mode, points }) = &event {
             draw_overlay(ui.painter(), &transform, *mode, points, style);
         }
@@ -576,6 +597,46 @@ fn draw_selection_polygon(
         outline.push(outline[0]);
     }
     painter.add(egui::Shape::dashed_line(&outline, stroke, 6.0, 4.0));
+}
+
+/// Paint silx's polygon "first_point" close target: an unfilled dashed box of
+/// half-size `threshold_px` (the snap radius) centered on the first vertex
+/// `first` (data space), marking where to click to close the polygon (silx
+/// `SelectPolygon.updateFirstPoint`, `PlotInteraction.py:505-522`, `fill=None`).
+/// Shown throughout the polygon draw, like silx (drawn from `enterState` on).
+fn draw_polygon_first_point(
+    painter: &egui::Painter,
+    transform: &Transform,
+    first: (f64, f64),
+    threshold_px: f32,
+    color: egui::Color32,
+) {
+    let corners = polygon_first_point_box(transform, first, threshold_px);
+    draw_selection_polygon(
+        painter,
+        &corners,
+        true,
+        interaction::SelectionStyle::new(interaction::FillMode::None, color),
+    );
+}
+
+/// The four pixel-space corners of the polygon first-point close target: a
+/// square of half-size `threshold_px` centered on the first vertex `first`
+/// (silx `updateFirstPoint` builds `(x±offset, y±offset)`,
+/// `PlotInteraction.py:510-515`, with `offset = dragThreshold`).
+fn polygon_first_point_box(
+    transform: &Transform,
+    first: (f64, f64),
+    threshold_px: f32,
+) -> [Pos2; 4] {
+    let c = transform.data_to_pixel(first.0, first.1);
+    let off = threshold_px;
+    [
+        Pos2::new(c.x - off, c.y - off),
+        Pos2::new(c.x - off, c.y + off),
+        Pos2::new(c.x + off, c.y + off),
+        Pos2::new(c.x + off, c.y - off),
+    ]
 }
 
 /// Feed this frame's primary-pointer press / move / release / bare-hover from
@@ -1808,6 +1869,31 @@ mod tests {
             before,
             plot.limits
         );
+    }
+
+    #[test]
+    fn polygon_first_point_box_is_centered_on_first_vertex() {
+        // silx's polygon close target (updateFirstPoint) is a box of half-size
+        // dragThreshold centered on the first vertex's pixel. Verify the corner
+        // geometry: centered on data_to_pixel(first), side = 2 * threshold.
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        let (r0, _area) = run_mode_frame(
+            &ctx,
+            &mut plot,
+            PlotInteractionMode::Zoom,
+            screen_input(egui::vec2(200.0, 200.0)),
+        );
+        let t = r0.transform;
+        let first = (3.0, 4.0);
+        let off = 4.0_f32;
+        let bb = Rect::from_points(&polygon_first_point_box(&t, first, off));
+        let c = t.data_to_pixel(first.0, first.1);
+        assert!((bb.center().x - c.x).abs() < 1e-3, "cx {bb:?} vs {c:?}");
+        assert!((bb.center().y - c.y).abs() < 1e-3, "cy {bb:?} vs {c:?}");
+        assert!((bb.width() - 2.0 * off).abs() < 1e-3, "w {}", bb.width());
+        assert!((bb.height() - 2.0 * off).abs() < 1e-3, "h {}", bb.height());
     }
 
     #[test]
