@@ -30,7 +30,8 @@ impl MaskTool {
     pub(crate) fn draw_mode(self) -> Option<DrawMode> {
         match self {
             MaskTool::Rectangle => Some(DrawMode::Rectangle),
-            // Ellipse / Polygon shape draws are wired in later waves.
+            MaskTool::Ellipse => Some(DrawMode::Ellipse),
+            // Polygon shape draw is wired in a later wave.
             _ => None,
         }
     }
@@ -677,7 +678,11 @@ impl MaskToolsWidget {
                 let (row, col, h, w) = rect_params_to_cells(*x, *y, *width, *height);
                 self.update_rectangle(level, row, col, h, w, true);
             }
-            // Ellipse / Polygon fills are wired in later waves (gated by
+            DrawParams::Ellipse { center, semi_axes } => {
+                let (crow, ccol, radius_r, radius_c) = ellipse_params_to_cells(*center, *semi_axes);
+                self.update_ellipse(level, crow, ccol, radius_r, radius_c, true);
+            }
+            // Polygon fill is wired in a later wave (gated by
             // `MaskTool::draw_mode`, so only the wired shapes can reach here).
             _ => return,
         }
@@ -1050,6 +1055,28 @@ pub(crate) fn rect_params_to_cells(
     height: f64,
 ) -> (i64, i64, i64, i64) {
     (y as i64, x as i64, height.abs() as i64, width.abs() as i64)
+}
+
+/// Convert a finished ellipse draw to mask array parameters
+/// `(crow, ccol, radius_r, radius_c)`, mirroring silx
+/// `MaskToolsWidget._plotDrawEvent`'s ellipse branch
+/// (`MaskToolsWidget.py:828-838`) with origin 0 / scale 1 (data == cell):
+/// the `center` is cast to `int64` (`crow = int(cy)`, `ccol = int(cx)`,
+/// truncating toward zero) while the radii stay floating-point (silx does *not*
+/// cast `size`). `DrawParams::Ellipse` stores `semi_axes` as `(x_semi, y_semi)`
+/// (`ellipse_semi_axes` returns `(x, y)`); silx maps `size[1]` (the y/row
+/// semi-axis) to `radius_r` and `size[0]` (the x/col semi-axis) to `radius_c`.
+/// The result feeds [`MaskToolsWidget::update_ellipse`].
+pub(crate) fn ellipse_params_to_cells(
+    center: (f64, f64),
+    semi_axes: (f64, f64),
+) -> (i64, i64, f32, f32) {
+    (
+        center.1 as i64,    // crow = int(center_y)
+        center.0 as i64,    // ccol = int(center_x)
+        semi_axes.1 as f32, // radius_r = y/row semi-axis
+        semi_axes.0 as f32, // radius_c = x/col semi-axis
+    )
 }
 
 /// Return a boolean fill mask (row-major, `height * width`) that is `true`
@@ -1475,6 +1502,41 @@ mod tests {
         w.fill_from_draw(&DrawParams::Point { x: 1.0, y: 1.0 });
         assert!(w.mask.iter().all(|&v| v == 0));
         assert!(!w.can_undo(), "a no-op fill must not commit");
+    }
+
+    #[test]
+    fn ellipse_params_to_cells_maps_axes_to_row_col() {
+        // DrawParams::Ellipse semi_axes = (x_semi, y_semi); silx maps the y/row
+        // semi-axis to radius_r and the x/col semi-axis to radius_c, and casts
+        // the center to int64 (truncate toward zero); radii stay float.
+        // center (5.7, 4.2), semi_axes (x=3.0, y=2.0) ->
+        // crow=int(4.2)=4, ccol=int(5.7)=5, radius_r=2.0, radius_c=3.0.
+        let (crow, ccol, rr, rc) = ellipse_params_to_cells((5.7, 4.2), (3.0, 2.0));
+        assert_eq!((crow, ccol), (4, 5));
+        assert_eq!((rr, rc), (2.0_f32, 3.0_f32));
+    }
+
+    #[test]
+    fn fill_from_draw_ellipse_masks_and_commits() {
+        // A finished ellipse draw masks an ellipse wider in columns than rows
+        // (semi_axes x=3 > y=2) and commits to the undo history.
+        let mut w = MaskToolsWidget::new(12, 12);
+        w.level = 1;
+        w.fill_from_draw(&DrawParams::Ellipse {
+            center: (5.0, 5.0),
+            semi_axes: (3.0, 2.0),
+        });
+        let at = |r: i64, c: i64| w.mask[(r * 12 + c) as usize];
+        assert_eq!(at(5, 5), 1, "center is masked");
+        // radius_c = 3 (col) > radius_r = 2 (row): a col offset of 2 is inside,
+        // the same row offset lands on the (strictly excluded) boundary.
+        assert_eq!(at(5, 7), 1, "col offset 2 (< col radius 3) is masked");
+        assert_eq!(
+            at(7, 5),
+            0,
+            "row offset 2 (== row radius 2) is excluded (strict <)"
+        );
+        assert!(w.can_undo(), "fill_from_draw must commit");
     }
 
     #[test]
