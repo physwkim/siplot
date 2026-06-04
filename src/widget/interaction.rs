@@ -940,6 +940,14 @@ pub enum CursorShape {
     SizeHor,
     /// Vertical resize (silx `CURSOR_SIZE_VER`, Qt `SizeVerCursor`).
     SizeVer,
+    /// Diagonal resize along the ↘↖ axis: top-left ↔ bottom-right corner (Qt
+    /// `SizeFDiagCursor`). silx maps all corner handles to `CURSOR_SIZE_ALL`;
+    /// egui-silx uses egui's native diagonal cursor for Rect corners, matching
+    /// egui's own window-corner resize affordance.
+    SizeNwse,
+    /// Diagonal resize along the ↗↙ axis: top-right ↔ bottom-left corner (Qt
+    /// `SizeBDiagCursor`); the egui-silx Rect-corner counterpart of `SizeNwse`.
+    SizeNesw,
     /// Move in both axes (silx `CURSOR_SIZE_ALL`, Qt `SizeAllCursor`).
     SizeAll,
     /// The default arrow cursor (silx `CURSOR_DEFAULT`, Qt `ArrowCursor`).
@@ -956,6 +964,8 @@ impl CursorShape {
         match self {
             CursorShape::SizeHor => egui::CursorIcon::ResizeHorizontal,
             CursorShape::SizeVer => egui::CursorIcon::ResizeVertical,
+            CursorShape::SizeNwse => egui::CursorIcon::ResizeNwSe,
+            CursorShape::SizeNesw => egui::CursorIcon::ResizeNeSw,
             CursorShape::SizeAll => egui::CursorIcon::Move,
             CursorShape::Default => egui::CursorIcon::Default,
         }
@@ -969,11 +979,17 @@ impl CursorShape {
 ///
 /// - [`RoiEdge::Left`] / [`RoiEdge::Right`] move only in X → [`CursorShape::SizeHor`].
 /// - [`RoiEdge::Top`] / [`RoiEdge::Bottom`] move only in Y → [`CursorShape::SizeVer`].
+/// - [`RoiEdge::TopLeft`] / [`RoiEdge::BottomRight`] resize diagonally along the
+///   ↘↖ axis → [`CursorShape::SizeNwse`].
+/// - [`RoiEdge::TopRight`] / [`RoiEdge::BottomLeft`] resize diagonally along the
+///   ↗↙ axis → [`CursorShape::SizeNesw`].
 /// - [`RoiEdge::Vertex`] moves in both axes → [`CursorShape::SizeAll`].
 pub fn cursor_for_edge(edge: RoiEdge) -> CursorShape {
     match edge {
         RoiEdge::Left | RoiEdge::Right => CursorShape::SizeHor,
         RoiEdge::Top | RoiEdge::Bottom => CursorShape::SizeVer,
+        RoiEdge::TopLeft | RoiEdge::BottomRight => CursorShape::SizeNwse,
+        RoiEdge::TopRight | RoiEdge::BottomLeft => CursorShape::SizeNesw,
         RoiEdge::Vertex(_) => CursorShape::SizeAll,
     }
 }
@@ -2006,6 +2022,11 @@ mod tests {
         // Vertical-only edges -> SizeVer.
         assert_eq!(cursor_for_edge(RoiEdge::Top), CursorShape::SizeVer);
         assert_eq!(cursor_for_edge(RoiEdge::Bottom), CursorShape::SizeVer);
+        // Diagonal corners: TL/BR share the ↘↖ axis, TR/BL the ↗↙ axis.
+        assert_eq!(cursor_for_edge(RoiEdge::TopLeft), CursorShape::SizeNwse);
+        assert_eq!(cursor_for_edge(RoiEdge::BottomRight), CursorShape::SizeNwse);
+        assert_eq!(cursor_for_edge(RoiEdge::TopRight), CursorShape::SizeNesw);
+        assert_eq!(cursor_for_edge(RoiEdge::BottomLeft), CursorShape::SizeNesw);
         // Free vertex -> SizeAll.
         assert_eq!(cursor_for_edge(RoiEdge::Vertex(0)), CursorShape::SizeAll);
         assert_eq!(cursor_for_edge(RoiEdge::Vertex(7)), CursorShape::SizeAll);
@@ -2028,6 +2049,14 @@ mod tests {
         assert_eq!(
             CursorShape::SizeVer.to_egui(),
             egui::CursorIcon::ResizeVertical
+        );
+        assert_eq!(
+            CursorShape::SizeNwse.to_egui(),
+            egui::CursorIcon::ResizeNwSe
+        );
+        assert_eq!(
+            CursorShape::SizeNesw.to_egui(),
+            egui::CursorIcon::ResizeNeSw
         );
         assert_eq!(CursorShape::SizeAll.to_egui(), egui::CursorIcon::Move);
         assert_eq!(CursorShape::Default.to_egui(), egui::CursorIcon::Default);

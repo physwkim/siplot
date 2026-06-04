@@ -21,6 +21,14 @@ pub enum RoiEdge {
     Bottom,
     /// Data `y` maximum (top of the data area).
     Top,
+    /// Bottom-left corner (`x` min, `y` min); diagonal resize of [`Roi::Rect`].
+    BottomLeft,
+    /// Bottom-right corner (`x` max, `y` min); diagonal resize of [`Roi::Rect`].
+    BottomRight,
+    /// Top-left corner (`x` min, `y` max); diagonal resize of [`Roi::Rect`].
+    TopLeft,
+    /// Top-right corner (`x` max, `y` max); diagonal resize of [`Roi::Rect`].
+    TopRight,
     /// Generic vertex handle at `index`; used by [`Roi::Point`], [`Roi::Line`],
     /// and [`Roi::Polygon`] variants.
     Vertex(usize),
@@ -190,7 +198,21 @@ impl Roi {
     /// The draggable edges this ROI exposes.
     fn edges(&self) -> Vec<RoiEdge> {
         match self {
-            Roi::Rect { .. } => vec![RoiEdge::Left, RoiEdge::Right, RoiEdge::Bottom, RoiEdge::Top],
+            // Four mid-edge handles (one axis each) plus four corner handles
+            // (both axes) so the rectangle resizes left/right, up/down, and
+            // diagonally. silx `RectangleROI` exposes the corners; the mid-edge
+            // handles are an egui-silx addition that preserves single-axis
+            // resize alongside the diagonal corners.
+            Roi::Rect { .. } => vec![
+                RoiEdge::Left,
+                RoiEdge::Right,
+                RoiEdge::Bottom,
+                RoiEdge::Top,
+                RoiEdge::BottomLeft,
+                RoiEdge::BottomRight,
+                RoiEdge::TopLeft,
+                RoiEdge::TopRight,
+            ],
             Roi::HRange { .. } => vec![RoiEdge::Bottom, RoiEdge::Top],
             Roi::VRange { .. } => vec![RoiEdge::Left, RoiEdge::Right],
             Roi::Point { .. } => vec![RoiEdge::Vertex(0)],
@@ -262,6 +284,10 @@ impl Roi {
                 RoiEdge::Right => egui::pos2(r.right(), r.center().y),
                 RoiEdge::Top => egui::pos2(r.center().x, r.top()),
                 RoiEdge::Bottom => egui::pos2(r.center().x, r.bottom()),
+                RoiEdge::BottomLeft => egui::pos2(r.left(), r.bottom()),
+                RoiEdge::BottomRight => egui::pos2(r.right(), r.bottom()),
+                RoiEdge::TopLeft => egui::pos2(r.left(), r.top()),
+                RoiEdge::TopRight => egui::pos2(r.right(), r.top()),
                 RoiEdge::Vertex(n) => self.vertex_pixel(t, *n).unwrap_or(r.center()),
             })
             .collect()
@@ -293,8 +319,30 @@ impl Roi {
                 best.map(|(e, _)| e)
             }
             _ => {
-                // Rect, HRange, VRange: existing rect-based edge detection.
+                // Rect, HRange, VRange: rect-based edge detection.
                 let r = self.screen_rect(t);
+                // Corner handles (Rect only) take priority: a cursor near a
+                // corner is also near both adjoining edges, so resolve corners
+                // first by Euclidean distance to the corner point. The closest
+                // in-range corner wins, giving diagonal resize precedence over
+                // single-axis edge resize at the rectangle's corners.
+                let mut best_corner: Option<(RoiEdge, f32)> = None;
+                for edge in self.edges() {
+                    let corner = match edge {
+                        RoiEdge::BottomLeft => egui::pos2(r.left(), r.bottom()),
+                        RoiEdge::BottomRight => egui::pos2(r.right(), r.bottom()),
+                        RoiEdge::TopLeft => egui::pos2(r.left(), r.top()),
+                        RoiEdge::TopRight => egui::pos2(r.right(), r.top()),
+                        _ => continue,
+                    };
+                    let dist = cursor.distance(corner);
+                    if dist <= grab_px && best_corner.is_none_or(|(_, d)| dist < d) {
+                        best_corner = Some((edge, dist));
+                    }
+                }
+                if let Some((edge, _)) = best_corner {
+                    return Some(edge);
+                }
                 let mut best: Option<(RoiEdge, f32)> = None;
                 for edge in self.edges() {
                     let dist = match edge {
@@ -323,7 +371,8 @@ impl Roi {
                             };
                             (cursor.y - ey).abs()
                         }
-                        RoiEdge::Vertex(_) => continue,
+                        // Corners handled above; vertices do not apply here.
+                        _ => continue,
                     };
                     if dist <= grab_px && best.is_none_or(|(_, d)| dist < d) {
                         best = Some((edge, dist));
@@ -345,6 +394,25 @@ impl Roi {
                 RoiEdge::Right => x.1 = dx.max(x.0),
                 RoiEdge::Bottom => y.0 = dy.min(y.1),
                 RoiEdge::Top => y.1 = dy.max(y.0),
+                // Corner handles move both the x and y edge they own, giving
+                // diagonal resize. x and y are independent tuples, so the two
+                // assignments never interfere.
+                RoiEdge::BottomLeft => {
+                    x.0 = dx.min(x.1);
+                    y.0 = dy.min(y.1);
+                }
+                RoiEdge::BottomRight => {
+                    x.1 = dx.max(x.0);
+                    y.0 = dy.min(y.1);
+                }
+                RoiEdge::TopLeft => {
+                    x.0 = dx.min(x.1);
+                    y.1 = dy.max(y.0);
+                }
+                RoiEdge::TopRight => {
+                    x.1 = dx.max(x.0);
+                    y.1 = dy.max(y.0);
+                }
                 RoiEdge::Vertex(_) => {}
             },
             Roi::HRange { y } => match edge {
@@ -845,6 +913,90 @@ mod tests {
         assert_eq!(roi.edge_at(&t(), pos2(50.0, 31.0), 4.0), Some(RoiEdge::Top));
         // Far from any edge -> None.
         assert_eq!(roi.edge_at(&t(), pos2(50.0, 50.0), 4.0), None);
+    }
+
+    #[test]
+    fn edge_at_corner_takes_priority_over_edges() {
+        let roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        // Screen corners: TL(20,30) TR(80,30) BL(20,70) BR(80,70).
+        // A cursor a pixel inside each corner is also within grab range of the
+        // two adjoining edges, so the corner must win.
+        assert_eq!(
+            roi.edge_at(&t(), pos2(21.0, 31.0), 4.0),
+            Some(RoiEdge::TopLeft)
+        );
+        assert_eq!(
+            roi.edge_at(&t(), pos2(79.0, 31.0), 4.0),
+            Some(RoiEdge::TopRight)
+        );
+        assert_eq!(
+            roi.edge_at(&t(), pos2(21.0, 69.0), 4.0),
+            Some(RoiEdge::BottomLeft)
+        );
+        assert_eq!(
+            roi.edge_at(&t(), pos2(79.0, 69.0), 4.0),
+            Some(RoiEdge::BottomRight)
+        );
+        // Mid-edge probes (far from every corner) still resolve to the edge.
+        assert_eq!(
+            roi.edge_at(&t(), pos2(21.0, 50.0), 4.0),
+            Some(RoiEdge::Left)
+        );
+        assert_eq!(roi.edge_at(&t(), pos2(50.0, 31.0), 4.0), Some(RoiEdge::Top));
+    }
+
+    #[test]
+    fn move_edge_corner_resizes_both_axes() {
+        let mut roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        // Top-right corner drag moves x.max and y.max together (diagonal).
+        roi.move_edge(RoiEdge::TopRight, (9.0, 9.0));
+        assert_eq!(
+            roi,
+            Roi::Rect {
+                x: (2.0, 9.0),
+                y: (3.0, 9.0)
+            }
+        );
+        // Bottom-left corner drag moves x.min and y.min together.
+        roi.move_edge(RoiEdge::BottomLeft, (1.0, 1.0));
+        assert_eq!(
+            roi,
+            Roi::Rect {
+                x: (1.0, 9.0),
+                y: (1.0, 9.0)
+            }
+        );
+        // Dragging a corner past the opposite one clamps on both axes.
+        roi.move_edge(RoiEdge::TopRight, (-5.0, -5.0));
+        assert_eq!(
+            roi,
+            Roi::Rect {
+                x: (1.0, 1.0),
+                y: (1.0, 1.0)
+            }
+        );
+    }
+
+    #[test]
+    fn handle_centers_includes_four_corners() {
+        let roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        // edges() order: Left, Right, Bottom, Top, BL, BR, TL, TR.
+        let centers = roi.handle_centers(&t());
+        assert_eq!(centers.len(), 8);
+        let corner = |c: Pos2| (c.x, c.y);
+        assert_eq!(corner(centers[4]), (20.0, 70.0)); // BottomLeft
+        assert_eq!(corner(centers[5]), (80.0, 70.0)); // BottomRight
+        assert_eq!(corner(centers[6]), (20.0, 30.0)); // TopLeft
+        assert_eq!(corner(centers[7]), (80.0, 30.0)); // TopRight
     }
 
     #[test]
