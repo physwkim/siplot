@@ -675,6 +675,59 @@ length+order) bridges the handle-less mirror back to backend identity so `apply_
 - **Wave 11 complete**, `main` @ `994c591`, 741 tests, full-workspace gate green. The on-screen drag, cursor,
   `update_marker` round-trip, and event/response wiring are GPU/PlotWidget-UNVERIFIED (see boundary above).
 
+### Wave 12 — On-plot ROI creation (all 11 shapes) + whole-ROI translate (silx `RegionOfInterestManager.start` → `setFirstShapePoints`)
+One worktree-isolated implement + two parallel adversarial reviews (**both accept**, all six dimensions —
+faithfulToSilx / additiveOnly / testMeaningful / precedenceCorrect / mappingComplete / unverifiedHonest — true),
+ff-merged preserving the verified SHAs, then **one review-fix commit**. **Key architecture:** the `DrawState`
+gesture machine (`DrawMode`/`DrawParams`/`on_press`/`on_move`/`on_release`/`preview`) and `show_with_draw`
+already existed (Wave 4), so this wave is a thin *caller-side* `DrawParams`→`Roi` mapping (a pure, testable core
+function) plus a `PlotInteractionMode::RoiCreate(RoiDrawKind)` mode that **reserves the primary drag** for the
+draw gesture (the same shape as Wave 6C-2's MaskDraw). Unlike markers, `plot.rois` **is the source of truth**
+(`sync_plot_items` never rebuilds or reorders it), so `RoiDrag` correctly keys by `usize` index into it — no
+mirror/handle indirection is needed here. **Verification-boundary correction (vs the Wave-11 note):**
+`apply_interaction` takes `&mut Plot` (a pure core type), so it *is* headlessly testable via
+`egui::Context::default()` + `ctx.run_ui` — wgpu paint callbacks are recorded into the painter, never executed —
+and the agent added 5 headless wiring tests (`run_mode_frame`) exploiting this. Only `PlotWidget::show` (needs a
+wgpu `RenderState` no crate test builds) and the actual on-screen render stay GPU/PlotWidget-UNVERIFIED.
+- **`7636cbd` — ROI-creation pure mapping (testable core).** `RoiDrawKind` (11 kinds, one per `Roi` variant);
+  `roi_draw_mode(kind)->DrawMode`; `roi_from_draw(kind, &DrawParams)->Option<Roi>` (the silx `setFirstShapePoints`
+  equivalent for all 11, incl. `arc_from_two_points`, a faithful port of silx `_circleEquation` /
+  `_createControlPointsFromFirstShape` circle-fit); `RoiGrab { Edge(RoiEdge), Translate }` +
+  `roi_grab_at(rois, transform, cursor, grab_px)->Option<(usize, RoiGrab)>` (handle-over-body, topmost-first);
+  new `DrawMode::Point` + `DrawParams::Point { x, y }` (single click → `Finished` immediately, for Point/Cross).
+  16 pure unit tests.
+- **`c00ec50` — wire on-plot creation + whole-ROI translate into `apply_interaction`.** The `RoiCreate` block
+  drives `DrawState` from temp memory, appends the finished `Roi`, **re-arms continuously** (silx default), and
+  surfaces a live `roi_preview`; `RoiDrag` gains `RoiGrab::Translate` → `Roi::translate(delta)` alongside the
+  existing edge-move. `mode_grabs_roi_edge` excludes `RoiCreate` (so a draw gesture is never stolen by an edge
+  grab); new `mode_allows_marker_drag` keeps marker drag out of create mode. `Interaction.roi_created` /
+  `roi_preview` added; preview rendered via `draw_overlay`. `run_mode_frame` test helper + 5 headless
+  apply-interaction wiring tests.
+- **`1512ed7` — public API + event + re-exports.** `PlotEvent::RoiCreated { index }` emitted in
+  `PlotWidget::show` (mirrors `RoiChanged`); `set_roi_create_mode(kind)`; `lib.rs` re-exports `RoiDrawKind`,
+  `RoiGrab`, `roi_draw_mode`, `roi_from_draw`, `roi_grab_at`, `arc_from_two_points`. *(Commit-split note:
+  `RoiCreated` forced a `--all-targets` match arm in the 3 examples — exhaustive-enum consequence, same shape as
+  Wave 11's `MarkerMoved`.)*
+- **`7ff440d` — review-fix (R1.1): strengthen the Point ROI-create test.** The reviewer's literal suggestion
+  (assert `roi_created == Some(0)` on the *press* frame) could be wrong — a no-move click likely fires `on_press`
+  via `clicked()` on the *release* frame, so a frame-pinned assertion is fragile. Fixed instead with a
+  frame-agnostic "reported **exactly once**" assertion (collect `roi_created` across both press and release
+  frames, assert `== vec![0]`), which catches both a missing report and a double-create regardless of egui frame
+  collapse. Verified passing.
+- **Documented deviations (silx-cited, not guessed):** `Roi::Ellipse` is axis-aligned (no orientation; does not
+  model `EllipseROI._orientation`); X/Y bands use `Roi::VRange`/`HRange` (silx shows single-line `VerticalLineROI`/
+  `HorizontalLineROI` as X/Y markers — distinct single-line kinds are still ☐); Arc/Band/Circle default geometry
+  (widths, radii, angle conventions) read from silx source and cited in the mapping doc-comments.
+- **UNFIXED (pre-existing, out of Wave 12 scope):** *(R2.1)* the `RoiDrag` apply block reads the in-progress drag
+  from temp memory **unconditionally of mode**, so a mid-drag mode switch can apply a stale grab one frame; this
+  is identical to `main`'s pre-Wave-12 behaviour (the same pattern the MarkerDrag/MaskDraw blocks use) and was not
+  introduced here. Also carried from Wave 11: `RoiDrag` keys by `usize` index — safe because `plot.rois` is the
+  truth, not a per-frame mirror, but a future id-keyed `RoiDrag` would be the uniform structural choice.
+- **Wave 12 complete**, `main` @ `7ff440d`, 762 tests, full-workspace gate green (clippy `-D warnings` clean,
+  doctest ok). The on-screen creation, preview overlay, continuous re-arm, and whole-ROI translate are
+  GPU/PlotWidget-UNVERIFIED; the `DrawParams`→`Roi` mapping and the `apply_interaction` wiring are headlessly
+  unit-tested.
+
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
 
@@ -807,13 +860,13 @@ egui-silx has a minimal but functional implementation of colormaps with 8 catalo
 | ◐ | L | S | Colormap copy/comparison/serialization | `/Users/stevek/codes/silx/src/silx/gui/colors.py:399-423, 960-1050` | silx Colormap has copy(), setFromColormap(), __eq__, restoreState(), saveState() for round-trip serialization and state management. egui-silx Colormap derives Clone/PartialEq but lacks setFromColormap |
 | ☐ | L | S | Colormap editability flag | `/Users/stevek/codes/silx/src/silx/gui/colors.py:351, 659-674` | silx Colormap._editable flag controls whether setName, setNormalization, etc. are allowed; raises NotEditableError if frozen. egui-silx Colormap has no editability concept. Required: add editable bool |
 
-## ROI system (creation, editing, manager, statistics)  — 7✅ 4◐ 26☐
+## ROI system (creation, editing, manager, statistics)  — 8✅ 10◐ 19☐
 
-egui-silx implements a minimal ROI core with 6 types (Rect, HRange, VRange, Point, Line, Polygon) supporting interactive dragging of edges via handle-detection in pure data space. The manager provides basic add/remove/list UI and event reporting. However, it lacks nearly all visual/behavioral richness of silx: no per-ROI color, naming/labels, selection highlighting, multiple interaction modes (Arc, Band, Circle, Ellipse missing entirely), handle-symbol customization, style properties (line width, style, gap color), creation-phase visual feedback, statistics calculation (mean, sum, integral, peaks), curves ROI integration with per-ROI curve stats tables, or ROI persistence/load features.
+egui-silx implements a ROI core with all 11 silx shape kinds (Rect, HRange, VRange, Point, Line, Polygon, Cross, Circle, Ellipse [axis-aligned], Arc, Band), supporting on-plot interactive creation for every kind (Wave 12: arm a draw shape, draw it, the ROI is appended), edge dragging via handle-detection, and whole-ROI translate — all in pure data space. The manager provides basic add/remove/list UI and event reporting (RoiChanged + RoiCreated). However, it still lacks much of silx's visual/behavioral richness: no per-ROI color, naming/labels, selection highlighting, handle-symbol customization, style properties (line width, style, gap color), specialized edit handles (Ellipse orientation, Circle/Arc radius handles, Band rotation, Arc start/end-angle sub-modes), statistics calculation (mean, sum, integral, peaks), curves ROI integration with per-ROI curve stats tables, or ROI persistence/load features.
 
 | | P | E | Feature | silx | gap |
 |---|---|---|---|---|---|
-| ◐ | H | L | Interactive ROI creation mode (draw mode vs select mode) | `tools/roi.py:833-885 (start/stop/isStarted/isDrawing)` | egui-silx supports passive ROI drag-editing but has no creation UI/mode toggle. No analog to CreateRoiModeAction or mode selection toolbar. |
+| ✅ | H | L | Interactive ROI creation mode (draw mode vs select mode) | `tools/roi.py:833-885 (start/stop/isStarted/isDrawing)` | Wave 12: `PlotInteractionMode::RoiCreate(RoiDrawKind)` arms a draw shape (silx `start(roiClass)`); the existing `DrawState` machine drives the gesture, `roi_from_draw` maps the finished `DrawParams`→`Roi` (silx `setFirstShapePoints`), the ROI is appended, the mode re-arms continuously (silx default), and a live preview overlay is surfaced during the gesture. Public `set_roi_create_mode(kind)` toggles draw vs select. Still missing the toolbar `CreateRoiModeAction`/mode-selection widget. On-screen creation is GPU/PlotWidget-UNVERIFIED; the `DrawParams`→`Roi` mapping and the `apply_interaction` wiring are headlessly unit-tested. |
 | ◐ | H | L | Manager ROI list as table widget (ROITable/CurvesROIWidget) | `CurvesROIWidget.py:62-400, ROITable:452-860` | egui shows a scrollable list with remove button per ROI and add buttons (Rect/HRange/VRange/Point/Line only). silx ROITable is a rich table with per-ROI stats columns (min/max/sum/mean/etc.), editable |
 | ☐ | H | L | ROI statistics calculation (mean, sum, min, max, integral, peaks) | `CurvesROIWidget.py:355-430, ROIStatsWidget.py (full file)` | silx calculates and displays ROI stats for curves and images; egui has no stats module or calculation. |
 | ☐ | H | L | CurvesROIWidget integration (ROI stats per curve item) | `CurvesROIWidget.py (entire file)` | silx CurvesROIWidget is a dedicated QWidget showing ROI table with per-curve stats; egui has no integration with curve items. |
@@ -824,22 +877,22 @@ egui-silx implements a minimal ROI core with 6 types (Rect, HRange, VRange, Poin
 | ☐ | H | M | ROI contains() point-in-region test | `items/roi.py:61-1599 (all ROI classes have contains method)` | silx ROI.contains(position) checks if point(s) are inside; egui Roi has no contains() method; needed for picking/stats. |
 | ☐ | H | M | Manager current ROI tracking (setCurrentRoi/getCurrentRoi) | `tools/roi.py:528-590` | silx tracks selected ROI with signal emission; egui has no per-ROI selection state; no highlight/focus mechanism. |
 | ☐ | H | S | ROI name/label (string identifier) | `items/_roi_base.py:77-92, CurvesROIWidget.py:594-640` | silx ROI has getName()/setName(); egui Roi enum has no name field; manager shows auto-generated descriptions only. |
-| ☐ | M | L | EllipseROI kind (center, radii, orientation handles) | `items/roi.py:950-1177` | Requires rotational geometry, axis-major/minor handles, and orientation state; absent from egui Roi enum. |
-| ☐ | M | M | CrossROI kind (point with cross marker) | `items/roi.py:133-185` | CrossROI uses a point with perpendicular line overlays; needs marker symbol control and composite item management. |
-| ☐ | M | M | CircleROI kind (center + radius handles) | `items/roi.py:800-950` | CircleROI uses circular geometry detection and center/radius editing; not in egui core Roi enum. |
+| ◐ | M | L | EllipseROI kind (center, radii, orientation handles) | `items/roi.py:950-1177` | `Roi::Ellipse` (axis-aligned center+radii) exists and Wave 12 adds on-plot creation (`RoiDrawKind::Ellipse`, drawn via the rectangle/ellipse drag, radii from the bbox half-extents). Still missing silx's rotational geometry, axis-major/minor handles, and orientation state — this port's `Roi::Ellipse` does not model `EllipseROI._orientation`. |
+| ◐ | M | M | CrossROI kind (point with cross marker) | `items/roi.py:133-185` | `Roi::Cross { center }` exists and Wave 12 adds on-plot creation (`RoiDrawKind::Cross`, single click via `DrawMode::Point`). Still missing marker-symbol control and the composite handle/label management silx attaches to the cross. |
+| ◐ | M | M | CircleROI kind (center + radius handles) | `items/roi.py:800-950` | `Roi::Circle { center, radius }` exists and Wave 12 adds on-plot creation (`RoiDrawKind::Circle`, 2-point line drag → center+radius, matching silx's line-shape circle creation). Editing is whole-ROI translate only; still missing the dedicated center/radius edit handles. |
 | ☐ | M | M | ROI handle symbols ('+', 's', 'o', custom glyphs) | `items/_roi_base.py:600-680 (addHandle/addLabelHandle/addTranslateHandle), PolygonROI:1244-1274` | silx ROI handles have symbol/style control ('+' for center, 's' for vertices, 'o' for close-polygon indicator); egui draws fixed 6px squares. |
 | ☐ | M | M | ROI line style (solid, dash, dot, gap color) | `items/_roi_base.py:600-680, RectangleROI:534-552` | silx ROI inherits LineMixIn with setLineStyle/setLineGapColor; egui draw_rois (chrome.rs) uses fixed solid 1.0 stroke, no dashes/gaps. |
-| ◐ | M | M | Manager signals (sigRoiAdded, sigRoiChanged, sigCurrentRoiChanged, sigInteractiveRoiCreated/Finalized) | `tools/roi.py:331-371` | egui emits RoiChanged when an edge moves; silx emits on add/remove/select/create/finalize. egui lacks finalization feedback and selection signals. |
-| ☐ | M | M | ROI creation phase UI (preview overlay, mode indicator, close-polygon handle) | `PolygonROI:1241-1256, tools/roi.py:493-510` | silx shows unclosed polyline while drawing polygon and displays a 'close' handle; egui has no creation-phase UI or visual feedback. |
+| ◐ | M | M | Manager signals (sigRoiAdded, sigRoiChanged, sigCurrentRoiChanged, sigInteractiveRoiCreated/Finalized) | `tools/roi.py:331-371` | egui emits `RoiChanged` when an edge moves and (Wave 12) `RoiCreated { index }` when an on-plot draw finishes (≈ silx `sigInteractiveRoiCreated`/added). Still missing `sigCurrentRoiChanged` (no selection state) and a distinct create-vs-finalize split (RoiCreated fires once on completion; no separate finalized signal). |
+| ◐ | M | M | ROI creation phase UI (preview overlay, mode indicator, close-polygon handle) | `PolygonROI:1241-1256, tools/roi.py:493-510` | Wave 12 surfaces a live preview overlay during the draw gesture (`Interaction.roi_preview` → `draw_overlay`), so the shape-in-progress is shown. Still missing the mode indicator and the polygon 'close' handle silx draws. On-screen preview is GPU-UNVERIFIED. |
 | ☐ | M | S | ROI line width customization | `items/_roi_base.py:600-680, RectangleROI:534-552` | silx setLineWidth()/getLineWidth(); egui hardcodes border stroke 1.0 and fill alpha 24; no width config. |
 | ◐ | M | S | ROI fill color and fill enable/disable | `items/Shape.py (shape draw), RectangleROI:531-539` | egui draws fixed semi-transparent fill (24 alpha); silx allows setFill(True/False). No configurable fill enable. |
 | ☐ | M | S | Manager ROI color default (setColor/getColor) | `tools/roi.py:782-797` | Manager stores default color; egui manager does not track or apply manager-level ROI color (buttons only). |
 | ☐ | M | S | ROI context menu (edit, delete, mode selection) | `tools/roi.py:625-642` | silx right-click on ROI shows menu with remove/mode-select options; egui manager shows no context menu. |
-| ☐ | L | L | ArcROI kind (circular arc with start/end angle) | `items/_arc_roi.py (full file)` | ArcROI supports start/end angle, radius, and interactive mode selection; completely absent from egui. |
-| ☐ | L | L | BandROI kind (rotatable rectangular band) | `items/_band_roi.py (full file)` | BandROI is a rectangle with rotation, collision, and edge snapping; absent from egui enum. |
+| ◐ | L | L | ArcROI kind (circular arc with start/end angle) | `items/_arc_roi.py (full file)` | `Roi::Arc { center, inner/outer radius, start/end angle }` exists and Wave 12 adds on-plot creation (`RoiDrawKind::Arc`, 2-point line drag; `arc_from_two_points` is a faithful port of silx `_circleEquation`/`_createControlPointsFromFirstShape`). Still missing the interactive sub-mode selection (start-angle vs radius editing) and the dedicated angle/radius handles. |
+| ◐ | L | L | BandROI kind (rotatable rectangular band) | `items/_band_roi.py (full file)` | `Roi::Band { begin, end, width }` exists and Wave 12 adds on-plot creation (`RoiDrawKind::Band`, 2-point line drag → begin/end with a default width). Still missing the rotation, collision, and edge-snapping handles silx attaches to the band. |
 | ☐ | L | M | HorizontalLineROI kind (single y coordinate) | `items/roi.py:373-435` | HorizontalLineROI is a single-y line spanning x; silx shows as YMarker. egui-silx does not distinguish from general HRange for single-line case. |
 | ☐ | L | M | VerticalLineROI kind (single x coordinate) | `items/roi.py:437-510` | VerticalLineROI is a single-x line spanning y; silx shows as XMarker. egui-silx does not distinguish from general VRange for single-line case. |
-| ☐ | L | M | ROI interaction modes (select, edit, focus constraints) | `items/_roi_base.py:135-230 (InteractionModeMixIn, RoiInteractionMode enum)` | silx Arc/Band ROI support multiple interaction modes (e.g., start-angle vs radius editing); egui has fixed 'drag edges' mode only. |
+| ◐ | L | M | ROI interaction modes (select, edit, focus constraints) | `items/_roi_base.py:135-230 (InteractionModeMixIn, RoiInteractionMode enum)` | Wave 12 adds a select-vs-create mode toggle and, within editing, both edge-drag and whole-ROI translate (`RoiGrab::Edge`/`RoiGrab::Translate`). Still missing silx's per-shape interaction sub-modes (e.g. Arc start-angle vs radius editing) — those remain a single fixed edit behaviour per kind. |
 | ☐ | L | M | ROI edge position constraints (vertical/horizontal snapping, ratio lock) | `items/_roi_base.py and specific ROI classes (e.g., Band with collision)` | silx ROIs can constrain edge movement (e.g., Band preventing overlap); egui move_edge() does basic min/max clamping only. |
 | ☐ | L | M | ROI save/load from file (dictdump format) | `CurvesROIWidget.py:194-210, roi save/load methods` | silx can persist ROI list to disk; egui has no serialization support. |
 | ☐ | L | S | ROI keyboard shortcuts / text input for named creation | `tools/roi.py (mode actions with text labels)` | silx actions have keyboard shortcuts and naming UI; egui buttons have no shortcuts. |
