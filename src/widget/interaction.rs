@@ -12,7 +12,7 @@
 use egui::{Pos2, Rect, Vec2};
 
 use crate::core::marker::{Marker, MarkerConstraint, MarkerKind};
-use crate::core::roi::RoiEdge;
+use crate::core::roi::{Roi, RoiEdge};
 use crate::core::transform::{Scale, Transform};
 
 /// Data limits `(x_min, x_max, y_min, y_max)`.
@@ -319,6 +319,11 @@ pub enum DrawMode {
     /// Continuous freehand polyline accumulated while dragging (silx
     /// `DrawFreeHand` / `SelectFreeLine`).
     FreeHand,
+    /// Single-click point capture (silx `_plotShape = "point"`, used by
+    /// `PointROI`/`CrossROI` whose `setFirstShapePoints` takes `points[0]`,
+    /// `items/roi.py:89`/`:176`). One press captures the data position and
+    /// finishes the draw immediately — no drag/release is needed.
+    Point,
 }
 
 /// A pointer sample fed to [`DrawState`]: the data-space position plus the
@@ -379,6 +384,9 @@ pub enum DrawParams {
     Polygon { vertices: Vec<(f64, f64)> },
     /// Freehand polyline vertices (silx `DrawFreeHand` / `SelectFreeLine`).
     FreeHand { vertices: Vec<(f64, f64)> },
+    /// A single captured point (silx `_plotShape = "point"`): the data-space
+    /// position of the click.
+    Point { x: f64, y: f64 },
 }
 
 /// An event emitted by [`DrawState`], mirroring silx's `drawingProgress` /
@@ -514,6 +522,18 @@ impl DrawState {
                 };
                 Some(self.freehand_progress())
             }
+            DrawMode::Point => {
+                // silx `_plotShape = "point"`: a single click finishes at once.
+                // The phase stays Idle (no in-progress preview), so move/release
+                // are no-ops and the next press starts a fresh point.
+                Some(DrawEvent::Finished {
+                    mode: DrawMode::Point,
+                    params: DrawParams::Point {
+                        x: input.data.0,
+                        y: input.data.1,
+                    },
+                })
+            }
         }
     }
 
@@ -563,6 +583,8 @@ impl DrawState {
                     None
                 }
             }
+            // Point finishes on press; a move is a no-op.
+            DrawMode::Point => None,
         }
     }
 
@@ -605,6 +627,8 @@ impl DrawState {
                     None
                 }
             }
+            // Point finished on press; a release is a no-op.
+            DrawMode::Point => None,
         }
     }
 
@@ -1000,6 +1024,303 @@ pub fn marker_at(markers: &[Marker], transform: &Transform, cursor: Pos2) -> Opt
         .rev()
         .find(|(_, m)| m.is_draggable && m.pick(transform, cursor))
         .map(|(i, _)| i)
+}
+
+// On-plot ROI creation ########################################################
+
+/// Which of the 11 ROI shapes an on-plot creation interaction produces, mirroring
+/// the `RegionOfInterest` subclasses silx arms via
+/// `RegionOfInterestManager.start(roiClass)` (`tools/roi.py`). Each kind maps to
+/// the draw shape silx's `_plotShape` selects ([`roi_draw_mode`]) and the
+/// `setFirstShapePoints` geometry it computes ([`roi_from_draw`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoiDrawKind {
+    /// Axis-aligned rectangle (silx `RectangleROI`).
+    Rect,
+    /// Horizontal band over a Y range, full X (our `Roi::HRange`).
+    HRange,
+    /// Vertical band over an X range, full Y (our `Roi::VRange`; silx
+    /// `HorizontalRangeROI` spans X with two vertical markers).
+    VRange,
+    /// Single point (silx `PointROI`).
+    Point,
+    /// Line segment (silx `LineROI`).
+    Line,
+    /// Polygon (silx `PolygonROI`).
+    Polygon,
+    /// Full-span cross-hairs at a point (silx `CrossROI`).
+    Cross,
+    /// Circle (silx `CircleROI`).
+    Circle,
+    /// Axis-aligned ellipse (silx `EllipseROI`).
+    Ellipse,
+    /// Annular sector (silx `ArcROI`).
+    Arc,
+    /// Rotatable band (silx `BandROI`).
+    Band,
+}
+
+/// The [`DrawMode`] silx arms for creating `kind`, matching each ROI class's
+/// `_plotShape` (`items/roi.py`, `items/_arc_roi.py:253`, `items/_band_roi.py:169`).
+///
+/// silx uses the 2-point `"line"` drag for `Line`/`Circle`/`Arc`/`Band` and for
+/// `HorizontalRangeROI`, computing the final geometry from the two points in
+/// `setFirstShapePoints`. `Point`/`Cross` use `"point"` (a single click). `Rect`
+/// uses `"rectangle"`. For `Ellipse` this port arms the silx `SelectEllipse`
+/// 2-point interaction (press = center, drag = perimeter point) so an
+/// axis-aligned ellipse is produced directly; silx's `EllipseROI._plotShape` is
+/// `"line"` with an oriented circle default (`items/roi.py:888`/`:953`), which
+/// our axis-aligned `Roi::Ellipse` does not model.
+pub fn roi_draw_mode(kind: RoiDrawKind) -> DrawMode {
+    match kind {
+        RoiDrawKind::Rect => DrawMode::Rectangle,
+        RoiDrawKind::Ellipse => DrawMode::Ellipse,
+        RoiDrawKind::Polygon => DrawMode::Polygon,
+        RoiDrawKind::Point | RoiDrawKind::Cross => DrawMode::Point,
+        RoiDrawKind::Line
+        | RoiDrawKind::Circle
+        | RoiDrawKind::HRange
+        | RoiDrawKind::VRange
+        | RoiDrawKind::Arc
+        | RoiDrawKind::Band => DrawMode::Line,
+    }
+}
+
+/// Build the [`Roi`] from a finished draw's [`DrawParams`], the
+/// `setFirstShapePoints` equivalent per ROI class (`items/roi.py`,
+/// `items/_arc_roi.py`, `items/_band_roi.py`). Returns `None` for a
+/// `(kind, params)` pair that [`roi_draw_mode`] can never produce together
+/// (e.g. an `HLine`/`VLine`/`FreeHand` params for any ROI kind), so an
+/// unexpected pairing is dropped rather than mis-built.
+///
+/// Geometry per kind (each silx default cited inline):
+/// - `Rect` <- `Rectangle{x,y,w,h}` (silx `_setBound`, `items/roi.py:558`).
+/// - `Line` <- `Line` endpoints (silx `setEndPoints`, `items/roi.py:254`).
+/// - `Polygon` <- `Polygon` vertices (silx `setPoints`, `items/roi.py:1236`).
+/// - `Point`/`Cross` <- `Point` (silx `setPosition(points[0])`,
+///   `items/roi.py:89`/`:176`).
+/// - `Circle` <- `Line`: `center = start`, `radius = |end - start|`
+///   (silx `CircleROI._setRay`, `items/roi.py:782`).
+/// - `Ellipse` <- `Ellipse{center, semi_axes}`: `radii = semi_axes` (the silx
+///   `SelectEllipse` interaction; see [`roi_draw_mode`]).
+/// - `HRange` <- `Line`: `y = (min, max)` of the two endpoint Ys (the band over
+///   a Y range; silx `HorizontalRangeROI.setFirstShapePoints` is the X analogue,
+///   `items/roi.py:1420`).
+/// - `VRange` <- `Line`: `x = (min, max)` of the two endpoint Xs (silx
+///   `HorizontalRangeROI.setFirstShapePoints`, `items/roi.py:1420`).
+/// - `Arc` <- `Line`: the faithful silx default arc from the 2 diameter points
+///   (silx `ArcROI.setFirstShapePoints` + `_createGeometryFromControlPoints`,
+///   `items/_arc_roi.py:363`/`:622`); see [`arc_from_two_points`].
+/// - `Band` <- `Line`: `begin = start`, `end = end`,
+///   `width = 0.1 * |end - begin|` (silx `BandGeometry.create` default width,
+///   `items/_band_roi.py:64-66`).
+pub fn roi_from_draw(kind: RoiDrawKind, params: &DrawParams) -> Option<Roi> {
+    match (kind, params) {
+        (
+            RoiDrawKind::Rect,
+            DrawParams::Rectangle {
+                x,
+                y,
+                width,
+                height,
+            },
+        ) => Some(Roi::Rect {
+            x: (*x, x + width),
+            y: (*y, y + height),
+        }),
+        (RoiDrawKind::Line, DrawParams::Line { start, end }) => Some(Roi::Line {
+            start: *start,
+            end: *end,
+        }),
+        (RoiDrawKind::Polygon, DrawParams::Polygon { vertices }) => Some(Roi::Polygon {
+            vertices: vertices.clone(),
+        }),
+        (RoiDrawKind::Point, DrawParams::Point { x, y }) => Some(Roi::Point { x: *x, y: *y }),
+        (RoiDrawKind::Cross, DrawParams::Point { x, y }) => Some(Roi::Cross { center: (*x, *y) }),
+        (RoiDrawKind::Ellipse, DrawParams::Ellipse { center, semi_axes }) => Some(Roi::Ellipse {
+            center: *center,
+            radii: *semi_axes,
+        }),
+        // Circle: center = first point, radius = distance to the second
+        // (silx CircleROI._setRay, items/roi.py:782).
+        (RoiDrawKind::Circle, DrawParams::Line { start, end }) => {
+            let r = (end.0 - start.0).hypot(end.1 - start.1);
+            Some(Roi::Circle {
+                center: *start,
+                radius: r,
+            })
+        }
+        // HRange: a Y band, bounded by the two endpoints' Ys (ordered).
+        (RoiDrawKind::HRange, DrawParams::Line { start, end }) => Some(Roi::HRange {
+            y: (start.1.min(end.1), start.1.max(end.1)),
+        }),
+        // VRange: an X band, bounded by the two endpoints' Xs (ordered).
+        (RoiDrawKind::VRange, DrawParams::Line { start, end }) => Some(Roi::VRange {
+            x: (start.0.min(end.0), start.0.max(end.0)),
+        }),
+        // Arc: the faithful silx default arc from the 2 diameter points.
+        (RoiDrawKind::Arc, DrawParams::Line { start, end }) => {
+            Some(arc_from_two_points(*start, *end))
+        }
+        // Band: begin/end from the 2 points, default width = 0.1 * length.
+        (RoiDrawKind::Band, DrawParams::Line { start, end }) => {
+            let width = 0.1 * (end.0 - start.0).hypot(end.1 - start.1);
+            Some(Roi::Band {
+                begin: *start,
+                end: *end,
+                width: width.max(0.0),
+            })
+        }
+        // Any other (kind, params) pair cannot be produced by roi_draw_mode.
+        _ => None,
+    }
+}
+
+/// The faithful silx `ArcROI` default geometry from two diameter points,
+/// porting `ArcROI.setFirstShapePoints` + `_createGeometryFromControlPoints`
+/// (`items/_arc_roi.py:363-385`, `:622-664`) and the public-geometry mapping in
+/// `getGeometry` / `getInnerRadius` / `getOuterRadius` (`:781-874`).
+///
+/// silx builds a curvature control point `mid` off the `point0 → point1` line,
+/// fits the circle through `(point0, mid, point1)`, and derives a `weight`
+/// (band thickness) of `0.2 * |point1 - point0|`. The public form our
+/// [`Roi::Arc`] stores is `center`, `inner_radius = radius - weight/2`
+/// (clamped ≥ 0), `outer_radius = radius + weight/2`, `start_angle`, `end_angle`.
+///
+/// `defaultCurvature = π/5`, `weightCoef = 0.20`
+/// (`items/_arc_roi.py:377-381`). For two coincident points the result is a
+/// degenerate zero-radius arc at the point (silx would special-case a closed
+/// circle; an on-plot drag never produces coincident diameter points, so this
+/// path is only a safe fallback).
+pub fn arc_from_two_points(point0: (f64, f64), point1: (f64, f64)) -> Roi {
+    // center of the diameter; normal rotated -90 deg (silx: (normal_y, -normal_x)).
+    let mid_center = ((point0.0 + point1.0) * 0.5, (point0.1 + point1.1) * 0.5);
+    let normal_raw = (point1.0 - mid_center.0, point1.1 - mid_center.1);
+    let normal = (normal_raw.1, -normal_raw.0);
+    let default_curvature = std::f64::consts::PI / 5.0;
+    let weight_coef = 0.20;
+    let mid = (
+        mid_center.0 - normal.0 * default_curvature,
+        mid_center.1 - normal.1 * default_curvature,
+    );
+    let distance = (point0.0 - point1.0).hypot(point0.1 - point1.1);
+    let weight = distance * weight_coef;
+
+    // Degenerate fallback: coincident points -> zero-radius arc at the point.
+    if distance == 0.0 {
+        return Roi::Arc {
+            center: point0,
+            inner_radius: 0.0,
+            outer_radius: 0.0,
+            start_angle: 0.0,
+            end_angle: 0.0,
+        };
+    }
+
+    // Circle through (point0, mid, point1) — silx _circleEquation, ported from
+    // the complex-number form (items/_arc_roi.py:986-996).
+    let (center, radius) = circle_through(point0, mid, point1);
+
+    // Start/mid/end angles from the fitted center (silx numpy.angle).
+    let angle = |p: (f64, f64)| (p.1 - center.1).atan2(p.0 - center.0);
+    let start_angle = angle(point0);
+    let mid_angle = angle(mid);
+    let mut end_angle = angle(point1);
+
+    // Disambiguate sweep direction (silx items/_arc_roi.py:652-660).
+    let two_pi = std::f64::consts::TAU;
+    let relative_mid = (end_angle - mid_angle + two_pi).rem_euclid(two_pi);
+    let relative_end = (end_angle - start_angle + two_pi).rem_euclid(two_pi);
+    if relative_mid < relative_end {
+        if end_angle < start_angle {
+            end_angle += two_pi;
+        }
+    } else if end_angle > start_angle {
+        end_angle -= two_pi;
+    }
+
+    let inner_radius = (radius - weight * 0.5).max(0.0);
+    let outer_radius = radius + weight * 0.5;
+    Roi::Arc {
+        center,
+        inner_radius,
+        outer_radius,
+        start_angle,
+        end_angle,
+    }
+}
+
+/// Center and radius of the circle through three points, porting silx
+/// `ArcROI._circleEquation` (`items/_arc_roi.py:986-996`). silx uses complex
+/// arithmetic:
+/// ```text
+/// x, y, z = complex(pt1), complex(pt2), complex(pt3)
+/// w = (z - x) / (y - x)
+/// c = (x - y) * (w - |w|^2) / (2j * w.imag) - x
+/// center = (-c.real, -c.imag);  radius = |c + x|
+/// ```
+/// Ported below with explicit complex multiply/divide. Collinear points yield
+/// `w.imag == 0`; the caller (`arc_from_two_points`) never passes collinear
+/// triples because `mid` is offset off the `pt1 → pt3` line.
+fn circle_through(pt1: (f64, f64), pt2: (f64, f64), pt3: (f64, f64)) -> ((f64, f64), f64) {
+    // Complex helpers on (re, im) tuples.
+    let sub = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0, a.1 - b.1);
+    let mul = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+    let div = |a: (f64, f64), b: (f64, f64)| {
+        let den = b.0 * b.0 + b.1 * b.1;
+        ((a.0 * b.0 + a.1 * b.1) / den, (a.1 * b.0 - a.0 * b.1) / den)
+    };
+    let (x, y, z) = (pt1, pt2, pt3);
+    let w = div(sub(z, x), sub(y, x));
+    let w_abs2 = w.0 * w.0 + w.1 * w.1;
+    // numerator: (x - y) * (w - |w|^2)
+    let num = mul(sub(x, y), (w.0 - w_abs2, w.1));
+    // denominator: 2j * w.imag  ==  (0, 2 * w.imag)
+    let den = (0.0, 2.0 * w.1);
+    let c = sub(div(num, den), x);
+    let center = (-c.0, -c.1);
+    // radius = |c + x|
+    let cx = (c.0 + x.0, c.1 + x.1);
+    let radius = (cx.0 * cx.0 + cx.1 * cx.1).sqrt();
+    (center, radius)
+}
+
+/// How an on-plot drag grabbed an existing ROI for editing, mirroring silx's
+/// `HandleBasedROI` interaction: either a specific edge/vertex handle
+/// ([`RoiGrab::Edge`], silx `handleDragUpdated`) or the whole-shape body
+/// ([`RoiGrab::Translate`], silx `addTranslateHandle` / drag-on-body).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RoiGrab {
+    /// A specific draggable edge/vertex handle was grabbed.
+    Edge(RoiEdge),
+    /// The ROI body (no handle under the cursor, but inside the shape) was
+    /// grabbed for a whole-ROI translate.
+    Translate,
+}
+
+/// Classify what an on-plot primary-drag grabs at `cursor` (screen pixels) over
+/// `rois`, mirroring silx's per-ROI hit priority: a handle wins over the body.
+/// Iterates topmost-first (last drawn = highest z); for each ROI returns
+/// [`RoiGrab::Edge`] when an edge handle is within `grab_px` of the cursor, else
+/// [`RoiGrab::Translate`] when the cursor's data position is inside the shape.
+/// Returns the `(index, grab)` of the first ROI that matches, or `None`. Pure,
+/// so the priority is unit-testable without a `Ui`.
+pub fn roi_grab_at(
+    rois: &[Roi],
+    transform: &Transform,
+    cursor: Pos2,
+    grab_px: f32,
+) -> Option<(usize, RoiGrab)> {
+    let data = transform.pixel_to_data(cursor);
+    for (i, roi) in rois.iter().enumerate().rev() {
+        if let Some(edge) = roi.edge_at(transform, cursor, grab_px) {
+            return Some((i, RoiGrab::Edge(edge)));
+        }
+        if roi.contains(data) {
+            return Some((i, RoiGrab::Translate));
+        }
+    }
+    None
 }
 
 /// Which mouse button a [`PlotPointerEvent`] carries, mirroring silx's
@@ -1947,5 +2268,290 @@ mod tests {
         assert_eq!(marker_at(&markers, &t, pos2(90.0, 10.0)), None);
         // Empty list: no hit.
         assert_eq!(marker_at(&[], &t, pos2(50.0, 50.0)), None);
+    }
+
+    // --- on-plot ROI creation: roi_draw_mode + roi_from_draw + DrawMode::Point ---
+
+    #[test]
+    fn roi_draw_mode_per_kind() {
+        use DrawMode as D;
+        use RoiDrawKind as K;
+        assert_eq!(roi_draw_mode(K::Rect), D::Rectangle);
+        assert_eq!(roi_draw_mode(K::Ellipse), D::Ellipse);
+        assert_eq!(roi_draw_mode(K::Polygon), D::Polygon);
+        assert_eq!(roi_draw_mode(K::Point), D::Point);
+        assert_eq!(roi_draw_mode(K::Cross), D::Point);
+        // The six 2-point "line"-drag kinds.
+        assert_eq!(roi_draw_mode(K::Line), D::Line);
+        assert_eq!(roi_draw_mode(K::Circle), D::Line);
+        assert_eq!(roi_draw_mode(K::HRange), D::Line);
+        assert_eq!(roi_draw_mode(K::VRange), D::Line);
+        assert_eq!(roi_draw_mode(K::Arc), D::Line);
+        assert_eq!(roi_draw_mode(K::Band), D::Line);
+    }
+
+    #[test]
+    fn draw_mode_point_finishes_on_press() {
+        // silx _plotShape "point": a single press finishes immediately with the
+        // captured data position; no move/release needed, phase stays idle.
+        let mut s = DrawState::new(DrawMode::Point);
+        let ev = s.on_press(di((3.5, 7.25), (35.0, 27.5))).expect("finished");
+        assert_eq!(
+            ev,
+            DrawEvent::Finished {
+                mode: DrawMode::Point,
+                params: DrawParams::Point { x: 3.5, y: 7.25 },
+            }
+        );
+        // Not active afterwards; move/release are no-ops; no preview.
+        assert!(!s.is_active());
+        assert!(s.on_move(di((9.0, 9.0), (90.0, 90.0))).is_none());
+        assert!(s.on_release(di((9.0, 9.0), (90.0, 90.0))).is_none());
+        assert!(s.preview().is_none());
+    }
+
+    // roi_from_draw: ONE assertion per kind (all 11), exact geometry.
+
+    #[test]
+    fn roi_from_draw_rect() {
+        let p = DrawParams::Rectangle {
+            x: 2.0,
+            y: 1.0,
+            width: 6.0,
+            height: 8.0,
+        };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::Rect, &p),
+            Some(Roi::Rect {
+                x: (2.0, 8.0),
+                y: (1.0, 9.0),
+            })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_line() {
+        let p = DrawParams::Line {
+            start: (1.0, 2.0),
+            end: (3.0, 4.0),
+        };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::Line, &p),
+            Some(Roi::Line {
+                start: (1.0, 2.0),
+                end: (3.0, 4.0),
+            })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_polygon() {
+        let p = DrawParams::Polygon {
+            vertices: vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)],
+        };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::Polygon, &p),
+            Some(Roi::Polygon {
+                vertices: vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)],
+            })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_point() {
+        let p = DrawParams::Point { x: 5.0, y: 6.0 };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::Point, &p),
+            Some(Roi::Point { x: 5.0, y: 6.0 })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_cross() {
+        // Cross consumes the same Point params, producing a Cross center.
+        let p = DrawParams::Point { x: 5.0, y: 6.0 };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::Cross, &p),
+            Some(Roi::Cross { center: (5.0, 6.0) })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_ellipse_radii_are_semi_axes() {
+        let p = DrawParams::Ellipse {
+            center: (1.0, 2.0),
+            semi_axes: (4.0, 2.5),
+        };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::Ellipse, &p),
+            Some(Roi::Ellipse {
+                center: (1.0, 2.0),
+                radii: (4.0, 2.5),
+            })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_circle_radius_is_distance() {
+        // silx CircleROI._setRay: center = start, radius = |end - start|.
+        let p = DrawParams::Line {
+            start: (1.0, 1.0),
+            end: (4.0, 5.0), // distance = sqrt(9+16) = 5
+        };
+        match roi_from_draw(RoiDrawKind::Circle, &p).expect("circle") {
+            Roi::Circle { center, radius } => {
+                assert_eq!(center, (1.0, 1.0));
+                assert!((radius - 5.0).abs() <= 1e-12, "{radius}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn roi_from_draw_hrange_orders_ys() {
+        // y descending in the drag -> ordered (min, max).
+        let p = DrawParams::Line {
+            start: (1.0, 7.0),
+            end: (9.0, 3.0),
+        };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::HRange, &p),
+            Some(Roi::HRange { y: (3.0, 7.0) })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_vrange_orders_xs() {
+        // x descending in the drag -> ordered (min, max).
+        let p = DrawParams::Line {
+            start: (8.0, 1.0),
+            end: (2.0, 9.0),
+        };
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::VRange, &p),
+            Some(Roi::VRange { x: (2.0, 8.0) })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_band_default_width_is_tenth_of_length() {
+        // silx BandGeometry.create default width = 0.1 * |end - begin|.
+        let p = DrawParams::Line {
+            start: (0.0, 0.0),
+            end: (10.0, 0.0), // length 10 -> width 1.0
+        };
+        match roi_from_draw(RoiDrawKind::Band, &p).expect("band") {
+            Roi::Band { begin, end, width } => {
+                assert_eq!(begin, (0.0, 0.0));
+                assert_eq!(end, (10.0, 0.0));
+                assert!((width - 1.0).abs() <= 1e-12, "{width}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn roi_from_draw_arc_matches_silx_default() {
+        // Faithful silx ArcROI default from diameter points (0,0)->(4,0).
+        // Reference values computed by replaying ArcROI.setFirstShapePoints +
+        // _createGeometryFromControlPoints + getGeometry (items/_arc_roi.py).
+        let p = DrawParams::Line {
+            start: (0.0, 0.0),
+            end: (4.0, 0.0),
+        };
+        match roi_from_draw(RoiDrawKind::Arc, &p).expect("arc") {
+            Roi::Arc {
+                center,
+                inner_radius,
+                outer_radius,
+                start_angle,
+                end_angle,
+            } => {
+                assert!((center.0 - 2.0).abs() <= 1e-9, "cx={}", center.0);
+                assert!(
+                    (center.1 - (-0.9632309002009949)).abs() <= 1e-9,
+                    "cy={}",
+                    center.1
+                );
+                assert!(
+                    (inner_radius - 1.8198679616369122).abs() <= 1e-9,
+                    "inner={inner_radius}"
+                );
+                assert!(
+                    (outer_radius - 2.619867961636912).abs() <= 1e-9,
+                    "outer={outer_radius}"
+                );
+                assert!(
+                    (start_angle - 2.692760559012144).abs() <= 1e-9,
+                    "start={start_angle}"
+                );
+                assert!(
+                    (end_angle - 0.4488320945776491).abs() <= 1e-9,
+                    "end={end_angle}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn roi_from_draw_rejects_impossible_pairings() {
+        // roi_draw_mode never pairs Rect with a Line params, etc. — such a pair
+        // is dropped rather than mis-built.
+        let line = DrawParams::Line {
+            start: (0.0, 0.0),
+            end: (1.0, 1.0),
+        };
+        assert_eq!(roi_from_draw(RoiDrawKind::Rect, &line), None);
+        assert_eq!(roi_from_draw(RoiDrawKind::Point, &line), None);
+        // An HLine params (no creation kind ever produces it) is dropped.
+        let hline = DrawParams::HLine { y: 3.0 };
+        assert_eq!(roi_from_draw(RoiDrawKind::HRange, &hline), None);
+    }
+
+    // --- roi_grab_at: edge wins over body, topmost wins, outside -> None ---
+
+    #[test]
+    fn roi_grab_at_edge_then_body_then_none() {
+        let t = pick_transform();
+        // Rect data x[2,8] y[3,7] -> screen left 20, right 80, top 30, bottom 70.
+        let rois = vec![Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        }];
+        // Near the left edge -> Edge(Left).
+        assert_eq!(
+            roi_grab_at(&rois, &t, pos2(21.0, 50.0), 4.0),
+            Some((0, RoiGrab::Edge(RoiEdge::Left)))
+        );
+        // Inside the body, away from any edge -> Translate.
+        assert_eq!(
+            roi_grab_at(&rois, &t, pos2(50.0, 50.0), 4.0),
+            Some((0, RoiGrab::Translate))
+        );
+        // Fully outside the shape -> None.
+        assert_eq!(roi_grab_at(&rois, &t, pos2(95.0, 95.0), 4.0), None);
+    }
+
+    #[test]
+    fn roi_grab_at_topmost_wins_with_overlap() {
+        let t = pick_transform();
+        // Two overlapping rects covering the cursor's body region; the second
+        // (drawn last, highest z) wins the translate grab.
+        let rois = vec![
+            Roi::Rect {
+                x: (1.0, 9.0),
+                y: (1.0, 9.0),
+            },
+            Roi::Rect {
+                x: (2.0, 8.0),
+                y: (2.0, 8.0),
+            },
+        ];
+        // Cursor at data (5,5) -> pixel (50,50): inside both, away from edges.
+        assert_eq!(
+            roi_grab_at(&rois, &t, pos2(50.0, 50.0), 4.0),
+            Some((1, RoiGrab::Translate))
+        );
     }
 }
