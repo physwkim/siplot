@@ -613,9 +613,85 @@ fn draw_median_filter_icon(painter: &egui::Painter, rect: egui::Rect, stroke: eg
 }
 
 /// Draw a labeled axis with a double-headed fit-arrow for the
+/// Shared glyph for the per-axis autoscale (silx `plot-xauto` / `plot-yauto`)
+/// and invert toggles. A prominent axis letter occupies the bulk of the icon
+/// while a double-headed arrow is tucked against one edge — the X arrow along
+/// the bottom, the Y arrow down the left — so the arrow and the letter never
+/// overlap. (The previous design ran the arrow through the centre and painted
+/// the letter on top of the shaft, which crowded the two together.) `inward`
+/// points the arrowheads toward each other (invert / flip) instead of outward
+/// (autoscale fit-to-extent), keeping the two actions visually distinct.
+fn draw_axis_arrow_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    axis: &str,
+    vertical: bool,
+    inward: bool,
+    stroke: egui::Stroke,
+) {
+    // Arrowhead barb length. Each head is a compact "V" spanning `a` along the
+    // shaft; `inward` flips which side the vertex sits on so the head points
+    // toward (invert) or away from (autoscale) the centre.
+    let a = 2.0;
+    let font = egui::FontId::proportional(11.0);
+    if vertical {
+        // Vertical double-arrow tucked against the left edge.
+        let x = rect.left() + 2.5;
+        let (ytop, ybot) = (rect.top() + 1.5, rect.bottom() - 1.5);
+        painter.line_segment([egui::pos2(x, ytop), egui::pos2(x, ybot)], stroke);
+        if inward {
+            // Heads point toward the centre (vertex inset, barbs at the ends).
+            painter.line_segment([egui::pos2(x, ytop + a), egui::pos2(x - a, ytop)], stroke);
+            painter.line_segment([egui::pos2(x, ytop + a), egui::pos2(x + a, ytop)], stroke);
+            painter.line_segment([egui::pos2(x, ybot - a), egui::pos2(x - a, ybot)], stroke);
+            painter.line_segment([egui::pos2(x, ybot - a), egui::pos2(x + a, ybot)], stroke);
+        } else {
+            // Heads point away from the centre (vertex at the ends).
+            painter.line_segment([egui::pos2(x, ytop), egui::pos2(x - a, ytop + a)], stroke);
+            painter.line_segment([egui::pos2(x, ytop), egui::pos2(x + a, ytop + a)], stroke);
+            painter.line_segment([egui::pos2(x, ybot), egui::pos2(x - a, ybot - a)], stroke);
+            painter.line_segment([egui::pos2(x, ybot), egui::pos2(x + a, ybot - a)], stroke);
+        }
+        // Axis letter centred in the area to the right of the arrow.
+        let lx = (x + a + rect.right()) * 0.5;
+        painter.text(
+            egui::pos2(lx, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            axis,
+            font,
+            stroke.color,
+        );
+    } else {
+        // Horizontal double-arrow tucked against the bottom edge.
+        let y = rect.bottom() - 2.0;
+        let (xl, xr) = (rect.left() + 1.5, rect.right() - 1.5);
+        painter.line_segment([egui::pos2(xl, y), egui::pos2(xr, y)], stroke);
+        if inward {
+            painter.line_segment([egui::pos2(xl + a, y), egui::pos2(xl, y - a)], stroke);
+            painter.line_segment([egui::pos2(xl + a, y), egui::pos2(xl, y + a)], stroke);
+            painter.line_segment([egui::pos2(xr - a, y), egui::pos2(xr, y - a)], stroke);
+            painter.line_segment([egui::pos2(xr - a, y), egui::pos2(xr, y + a)], stroke);
+        } else {
+            painter.line_segment([egui::pos2(xl, y), egui::pos2(xl + a, y - a)], stroke);
+            painter.line_segment([egui::pos2(xl, y), egui::pos2(xl + a, y + a)], stroke);
+            painter.line_segment([egui::pos2(xr, y), egui::pos2(xr - a, y - a)], stroke);
+            painter.line_segment([egui::pos2(xr, y), egui::pos2(xr - a, y + a)], stroke);
+        }
+        // Axis letter centred in the area above the arrow.
+        let ly = (rect.top() + (y - a)) * 0.5;
+        painter.text(
+            egui::pos2(rect.center().x, ly),
+            egui::Align2::CENTER_CENTER,
+            axis,
+            font,
+            stroke.color,
+        );
+    }
+}
+
 /// [`ToolbarIcon::AutoscaleX`] / [`ToolbarIcon::AutoscaleY`] toggles (silx
-/// `plot-xauto` / `plot-yauto`). The double arrow reads as "fit this axis to the
-/// data extent"; `vertical` selects the Y orientation, `axis` is the label.
+/// `plot-xauto` / `plot-yauto`): a double arrow pointing outward reads as "fit
+/// this axis to the data extent". `vertical` selects the Y orientation.
 fn draw_autoscale_icon(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -623,39 +699,7 @@ fn draw_autoscale_icon(
     vertical: bool,
     stroke: egui::Stroke,
 ) {
-    let center = rect.center();
-    let arrow = 3.0;
-    if vertical {
-        let top = egui::pos2(center.x, rect.top() + 2.0);
-        let bottom = egui::pos2(center.x, rect.bottom() - 2.0);
-        painter.line_segment([top, bottom], stroke);
-        painter.line_segment([top, top + egui::vec2(-arrow, arrow)], stroke);
-        painter.line_segment([top, top + egui::vec2(arrow, arrow)], stroke);
-        painter.line_segment([bottom, bottom + egui::vec2(-arrow, -arrow)], stroke);
-        painter.line_segment([bottom, bottom + egui::vec2(arrow, -arrow)], stroke);
-        painter.text(
-            egui::pos2(rect.right() - 2.0, center.y),
-            egui::Align2::RIGHT_CENTER,
-            axis,
-            egui::FontId::proportional(11.0),
-            stroke.color,
-        );
-    } else {
-        let left = egui::pos2(rect.left() + 2.0, center.y);
-        let right = egui::pos2(rect.right() - 2.0, center.y);
-        painter.line_segment([left, right], stroke);
-        painter.line_segment([left, left + egui::vec2(arrow, -arrow)], stroke);
-        painter.line_segment([left, left + egui::vec2(arrow, arrow)], stroke);
-        painter.line_segment([right, right + egui::vec2(-arrow, -arrow)], stroke);
-        painter.line_segment([right, right + egui::vec2(-arrow, arrow)], stroke);
-        painter.text(
-            egui::pos2(center.x, rect.top() + 1.0),
-            egui::Align2::CENTER_TOP,
-            axis,
-            egui::FontId::proportional(11.0),
-            stroke.color,
-        );
-    }
+    draw_axis_arrow_icon(painter, rect, axis, vertical, false, stroke);
 }
 
 /// Draw two overlapping document outlines for the [`ToolbarIcon::Copy`] button.
@@ -940,6 +984,10 @@ fn draw_log_icon(painter: &egui::Painter, rect: egui::Rect, axis: &str, color: C
     );
 }
 
+/// [`ToolbarIcon::InvertX`] / [`ToolbarIcon::InvertY`] toggles: the same axis
+/// letter + double-arrow glyph as autoscale, but the arrowheads point inward
+/// (toward each other) to read as "flip / reverse this axis" rather than "fit
+/// to extent", so the two toolbar buttons stay distinguishable.
 fn draw_axis_icon(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -947,95 +995,7 @@ fn draw_axis_icon(
     vertical: bool,
     stroke: egui::Stroke,
 ) {
-    let center = rect.center();
-    let arrow = 3.0;
-    if vertical {
-        painter.line_segment(
-            [
-                egui::pos2(center.x, rect.top()),
-                egui::pos2(center.x, rect.bottom()),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(center.x, rect.top()),
-                egui::pos2(center.x - arrow, rect.top() + arrow),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(center.x, rect.top()),
-                egui::pos2(center.x + arrow, rect.top() + arrow),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(center.x, rect.bottom()),
-                egui::pos2(center.x - arrow, rect.bottom() - arrow),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(center.x, rect.bottom()),
-                egui::pos2(center.x + arrow, rect.bottom() - arrow),
-            ],
-            stroke,
-        );
-        painter.text(
-            egui::pos2(rect.right() - 2.0, center.y),
-            egui::Align2::RIGHT_CENTER,
-            axis,
-            egui::FontId::proportional(11.0),
-            stroke.color,
-        );
-    } else {
-        painter.line_segment(
-            [
-                egui::pos2(rect.left(), center.y),
-                egui::pos2(rect.right(), center.y),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(rect.left(), center.y),
-                egui::pos2(rect.left() + arrow, center.y - arrow),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(rect.left(), center.y),
-                egui::pos2(rect.left() + arrow, center.y + arrow),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(rect.right(), center.y),
-                egui::pos2(rect.right() - arrow, center.y - arrow),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                egui::pos2(rect.right(), center.y),
-                egui::pos2(rect.right() - arrow, center.y + arrow),
-            ],
-            stroke,
-        );
-        painter.text(
-            egui::pos2(center.x, rect.top() + 1.0),
-            egui::Align2::CENTER_TOP,
-            axis,
-            egui::FontId::proportional(11.0),
-            stroke.color,
-        );
-    }
+    draw_axis_arrow_icon(painter, rect, axis, vertical, true, stroke);
 }
 
 fn draw_center_text(
