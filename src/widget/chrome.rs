@@ -646,15 +646,25 @@ pub fn draw_rois(
     style: &Style,
 ) {
     for r in rois {
-        let appearance = RoiAppearance {
-            color: Some(r.color.unwrap_or(default_color)),
-            name: (!r.name.is_empty()).then_some(r.name.as_str()),
-            selected: r.selected,
-            line_width: Some(r.line_width),
-            line_style: Some(r.line_style.to_line_style()),
-            fill: Some(r.fill),
-        };
+        let appearance = roi_appearance(r, default_color);
         draw_roi(painter, t, &r.roi, &appearance, style);
+    }
+}
+
+/// Resolve a [`ManagedRoi`]'s drawing overrides into a [`RoiAppearance`] (silx
+/// `RegionOfInterest` → draw style): the color falls back to `default_color`
+/// when the ROI has no override; an empty name becomes no label; width / style /
+/// fill / selection pass through. The `selected`-thicker-outline rule lives in
+/// [`draw_roi`], not here. Pure, so the resolution is unit-testable without a
+/// `Painter`.
+fn roi_appearance(managed: &ManagedRoi, default_color: Color32) -> RoiAppearance<'_> {
+    RoiAppearance {
+        color: Some(managed.color.unwrap_or(default_color)),
+        name: (!managed.name.is_empty()).then_some(managed.name.as_str()),
+        selected: managed.selected,
+        line_width: Some(managed.line_width),
+        line_style: Some(managed.line_style.to_line_style()),
+        fill: Some(managed.fill),
     }
 }
 
@@ -1362,6 +1372,38 @@ pub fn draw_colorbar(painter: &Painter, rect: Rect, cmap: &Colormap, style: &Sty
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roi_appearance_resolves_color_fallback_and_name() {
+        use crate::core::roi::{ManagedRoi, RoiLineStyle};
+        let roi = Roi::Point { x: 0.0, y: 0.0 };
+
+        // No override: color falls back to default_color; empty name -> no label.
+        let bare = ManagedRoi::new(roi.clone());
+        let a = roi_appearance(&bare, Color32::RED);
+        assert_eq!(a.color, Some(Color32::RED));
+        assert_eq!(a.name, None);
+        assert!(!a.selected);
+        assert_eq!(a.line_width, Some(1.0));
+        assert_eq!(a.line_style, Some(LineStyle::Solid));
+        assert_eq!(a.fill, Some(false));
+
+        // Explicit overrides pass through; the per-ROI color wins over default.
+        let mut styled = ManagedRoi::new(roi);
+        styled.color = Some(Color32::GREEN);
+        styled.name = "band".to_string();
+        styled.selected = true;
+        styled.line_width = 3.5;
+        styled.line_style = RoiLineStyle::Dashed;
+        styled.fill = true;
+        let b = roi_appearance(&styled, Color32::RED);
+        assert_eq!(b.color, Some(Color32::GREEN));
+        assert_eq!(b.name, Some("band"));
+        assert!(b.selected);
+        assert_eq!(b.line_width, Some(3.5));
+        assert_eq!(b.line_style, Some(LineStyle::Dashed));
+        assert_eq!(b.fill, Some(true));
+    }
 
     #[test]
     fn nice_ticks_lie_within_range_and_are_evenly_spaced() {
