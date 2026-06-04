@@ -984,21 +984,44 @@ impl CursorShape {
 /// - [`RoiEdge::TopRight`] / [`RoiEdge::BottomLeft`] resize diagonally along the
 ///   ↗↙ axis → [`CursorShape::SizeNesw`].
 /// - [`RoiEdge::Vertex`] moves in both axes → [`CursorShape::SizeAll`].
-pub fn cursor_for_edge(edge: RoiEdge) -> CursorShape {
+///
+/// The corner edges are labeled in *data* space (matching
+/// [`Roi::edge_at`](crate::core::roi::Roi::edge_at)), but the diagonal cursor
+/// must reflect the *screen* diagonal of the corner. An axis inversion mirrors
+/// that data edge's screen position; a horizontal mirror (X inverted) and a
+/// vertical mirror (Y inverted) each swap ↘↖ ↔ ↗↙, so the screen diagonal
+/// flips iff exactly one axis is inverted (both cancel). `t` supplies the
+/// per-axis inversion. The side cursors (`SizeHor`/`SizeVer`) are symmetric and
+/// axis-aligned, so inversion never changes them; only the corners flip.
+pub fn cursor_for_edge(edge: RoiEdge, t: &Transform) -> CursorShape {
+    let flip = t.x.inverted ^ t.y.inverted;
     match edge {
         RoiEdge::Left | RoiEdge::Right => CursorShape::SizeHor,
         RoiEdge::Top | RoiEdge::Bottom => CursorShape::SizeVer,
-        RoiEdge::TopLeft | RoiEdge::BottomRight => CursorShape::SizeNwse,
-        RoiEdge::TopRight | RoiEdge::BottomLeft => CursorShape::SizeNesw,
+        RoiEdge::TopLeft | RoiEdge::BottomRight => {
+            if flip {
+                CursorShape::SizeNesw
+            } else {
+                CursorShape::SizeNwse
+            }
+        }
+        RoiEdge::TopRight | RoiEdge::BottomLeft => {
+            if flip {
+                CursorShape::SizeNwse
+            } else {
+                CursorShape::SizeNesw
+            }
+        }
         RoiEdge::Vertex(_) => CursorShape::SizeAll,
     }
 }
 
 /// Cursor shape for an optional grabbed edge: the edge's shape when `Some`, the
 /// default arrow when `None` (nothing grabbable under the cursor). This is the
-/// shape the widget passes to egui each hover frame.
-pub fn cursor_for_grab(edge: Option<RoiEdge>) -> CursorShape {
-    edge.map(cursor_for_edge).unwrap_or_default()
+/// shape the widget passes to egui each hover frame. `t` resolves the corner
+/// diagonal against the axis orientation (see [`cursor_for_edge`]).
+pub fn cursor_for_grab(edge: Option<RoiEdge>, t: &Transform) -> CursorShape {
+    edge.map(|e| cursor_for_edge(e, t)).unwrap_or_default()
 }
 
 /// Cursor shape for a draggable marker, reflecting its drag degrees of freedom,
@@ -2017,28 +2040,93 @@ mod tests {
 
     #[test]
     fn cursor_shape_per_edge() {
+        // Non-inverted axes: data orientation == screen orientation.
+        let t = pick_transform();
         // Horizontal-only edges -> SizeHor.
-        assert_eq!(cursor_for_edge(RoiEdge::Left), CursorShape::SizeHor);
-        assert_eq!(cursor_for_edge(RoiEdge::Right), CursorShape::SizeHor);
+        assert_eq!(cursor_for_edge(RoiEdge::Left, &t), CursorShape::SizeHor);
+        assert_eq!(cursor_for_edge(RoiEdge::Right, &t), CursorShape::SizeHor);
         // Vertical-only edges -> SizeVer.
-        assert_eq!(cursor_for_edge(RoiEdge::Top), CursorShape::SizeVer);
-        assert_eq!(cursor_for_edge(RoiEdge::Bottom), CursorShape::SizeVer);
+        assert_eq!(cursor_for_edge(RoiEdge::Top, &t), CursorShape::SizeVer);
+        assert_eq!(cursor_for_edge(RoiEdge::Bottom, &t), CursorShape::SizeVer);
         // Diagonal corners: TL/BR share the ↘↖ axis, TR/BL the ↗↙ axis.
-        assert_eq!(cursor_for_edge(RoiEdge::TopLeft), CursorShape::SizeNwse);
-        assert_eq!(cursor_for_edge(RoiEdge::BottomRight), CursorShape::SizeNwse);
-        assert_eq!(cursor_for_edge(RoiEdge::TopRight), CursorShape::SizeNesw);
-        assert_eq!(cursor_for_edge(RoiEdge::BottomLeft), CursorShape::SizeNesw);
+        assert_eq!(cursor_for_edge(RoiEdge::TopLeft, &t), CursorShape::SizeNwse);
+        assert_eq!(
+            cursor_for_edge(RoiEdge::BottomRight, &t),
+            CursorShape::SizeNwse
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::TopRight, &t),
+            CursorShape::SizeNesw
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::BottomLeft, &t),
+            CursorShape::SizeNesw
+        );
         // Free vertex -> SizeAll.
-        assert_eq!(cursor_for_edge(RoiEdge::Vertex(0)), CursorShape::SizeAll);
-        assert_eq!(cursor_for_edge(RoiEdge::Vertex(7)), CursorShape::SizeAll);
+        assert_eq!(
+            cursor_for_edge(RoiEdge::Vertex(0), &t),
+            CursorShape::SizeAll
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::Vertex(7), &t),
+            CursorShape::SizeAll
+        );
+    }
+
+    #[test]
+    fn cursor_shape_corner_diagonal_flips_under_single_axis_inversion() {
+        // The corner cursor reflects the SCREEN diagonal. On an inverted-Y image
+        // plot the data TopLeft corner (x.min, y.max) is drawn at screen
+        // bottom-left, whose diagonal is ↗↙ (SizeNesw), not ↘↖ — so the corner
+        // cursors swap. Sides stay axis-symmetric. (This was the user-reported
+        // "코너 화살표 방향이 90도 틀어짐" under inverted Y.)
+        let mut inv_y = pick_transform();
+        inv_y.y.inverted = true;
+        assert_eq!(
+            cursor_for_edge(RoiEdge::TopLeft, &inv_y),
+            CursorShape::SizeNesw
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::BottomRight, &inv_y),
+            CursorShape::SizeNesw
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::TopRight, &inv_y),
+            CursorShape::SizeNwse
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::BottomLeft, &inv_y),
+            CursorShape::SizeNwse
+        );
+        // Sides unaffected by inversion.
+        assert_eq!(cursor_for_edge(RoiEdge::Left, &inv_y), CursorShape::SizeHor);
+        assert_eq!(cursor_for_edge(RoiEdge::Top, &inv_y), CursorShape::SizeVer);
+
+        // Both axes inverted: the two mirrors cancel, diagonals return to the
+        // non-inverted mapping.
+        let mut inv_xy = pick_transform();
+        inv_xy.x.inverted = true;
+        inv_xy.y.inverted = true;
+        assert_eq!(
+            cursor_for_edge(RoiEdge::TopLeft, &inv_xy),
+            CursorShape::SizeNwse
+        );
+        assert_eq!(
+            cursor_for_edge(RoiEdge::TopRight, &inv_xy),
+            CursorShape::SizeNesw
+        );
     }
 
     #[test]
     fn cursor_for_grab_defaults_when_nothing_grabbed() {
+        let t = pick_transform();
         // None -> Default (nothing under the cursor).
-        assert_eq!(cursor_for_grab(None), CursorShape::Default);
+        assert_eq!(cursor_for_grab(None, &t), CursorShape::Default);
         // Some(edge) -> that edge's shape.
-        assert_eq!(cursor_for_grab(Some(RoiEdge::Left)), CursorShape::SizeHor);
+        assert_eq!(
+            cursor_for_grab(Some(RoiEdge::Left), &t),
+            CursorShape::SizeHor
+        );
     }
 
     #[test]

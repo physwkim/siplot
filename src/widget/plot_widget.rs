@@ -920,7 +920,7 @@ fn apply_interaction(
             .iter()
             .rev()
             .find_map(|managed| managed.roi.edge_at(view, p, ROI_GRAB_PX));
-        let shape = interaction::cursor_for_grab(grabbed);
+        let shape = interaction::cursor_for_grab(grabbed, view);
         if shape != interaction::CursorShape::Default {
             ui.ctx().set_cursor_icon(shape.to_egui());
         }
