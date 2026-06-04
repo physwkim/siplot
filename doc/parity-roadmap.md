@@ -4,7 +4,9 @@ Generated from an 11-agent parity sweep of `silx.gui.plot` against the
 egui-silx implementation. Scope (per project decision): **silx.gui.plot +
 adjacent silx.gui** (colors, data-adjacent GUI widgets).
 
-**Totals:** 397 features — 165 Done, 49 Partial, 183 Missing.
+**Totals (as-of-sweep):** 397 features — 165 Done, 49 Partial, 183 Missing.
+**Re-baselined 2026-06-04 (main @ `d04232a`):** ≈191 Done · 130 open (10 H / 48 M /
+34 L) — see [Remaining work (re-baselined 2026-06-04)](#remaining-work-re-baselined-2026-06-04-main--d04232a).
 
 Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/M/L.
 
@@ -12,91 +14,201 @@ Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/
 > baseline**; landed work is recorded in the Progress log so the baseline stays
 > a stable reference. Follow-ups that a wave deliberately deferred are listed too.
 
-## Remaining work (live, code-verified 2026-06-02)
+## Remaining work (re-baselined 2026-06-04, main @ d04232a)
 
-The per-area tables further down are the **frozen** as-of-sweep baseline and
-over-count what is left. This section is the **live** view: every Missing/Partial
-baseline row was re-audited against the code on `main` after Waves 1–5 (audit
-workflow `wf_cceb6655-482`, then 5 rows hand-corrected against Wave 4–5 code).
-These numbers supersede the table headers below.
+These figures supersede the older **"Remaining work (live, code-verified
+2026-06-02)"** view, which was frozen before Waves 10–12 and the ~18 commits that
+landed after the Wave-12 progress-log entry (detached windows; Arc/Band/Circle/
+Ellipse/Rect handle-drag editing; the `apply_curve_alpha` double-premultiply fix;
+the R2.1 mid-drag mode-switch fix; legend icon styling; active-curve axis labels;
+right-click zoom menu; vertical-colorbar/rotated-Y-label centering fixes). An
+8-slice read-only recon (workflow `wf_b2b09dc2-620`) re-derived **every** status
+from the code on `main` rather than trusting the stale status column:
+**191 features Done** (counts-based, approximate) vs **130 still open** (Partial +
+Missing, deduped; four stale "Missing" interaction rows dropped because their own
+evidence shows them implemented — log-aware pan/zoom, float32-safe limits, overflow
+protection). The tables below enumerate the **92 explicitly-tracked open rows** with
+a priority (10 H / 48 M / 34 L), each traced to a silx ref; the climb to 130 comes
+from per-slice tallies that include un-enumerated lower-detail gaps. P = priority,
+E = effort. The frozen per-area baseline tables further down are kept only as the
+as-of-sweep reference.
 
-Re-audited every open baseline row against `main` → **90 closed by Waves 1–5**;
-the rest splits **52 deferred-wiring · 74 not-started · 7 blocked** (±1: one
-source section's tally and row-list disagreed by one). With the 165 done at
-sweep time, ≈255 / 397 features now land.
+### core-axes-ticks
 
-### A. Next — chrome / actions wave (52: primitive is on `main`, only hookup left)
-The core type/algorithm exists and is tested; what is missing is the UI/render
-hookup. Grouped by where the wiring lands.
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ☐ Missing | M | M | Per-axis timezone support | items/axis.py:278-294 (get/setTimeZone) | No timezone field on Plot/axis; `dtime_ticks.rs` is UTC-only, no `setTimeZone` API |
+| ◐ Partial | L | M | Overlay-only replot optimization | PlotWidget.py:719-730 (`_setDirtyPlot`, overlay vs True) | `DirtyState::Overlay` is tracked but `plot_widget.rs` never checks `dirty()` to skip curve/image uploads; all layers render every frame |
 
-**→ `high_level.rs` (toolbar / API hub):**
-- **Toolbar actions:** Save (PNG/SVG via `save_graph_with_format`), Zoom-Back
-  (`LimitsHistory`), X/Y per-axis autoscale toggles (`set_x_autoscale`/…),
-  Zoom-Mode + axes menu, Pan-with-arrow-keys toggle, Show-Axis toggle
-  (`axes_displayed`), Grid toggle, Aspect menu, X-origin-invert; the
-  InteractiveModeToolBar / CurveToolBar / ImageToolBar composites.
-- **ROI:** interactive creation mode; ROITable rich-stats columns (wire
-  `image_roi_stats`/`curve_roi_stats`); manager add/finalize signals; handle-symbol
-  render.
-- **Colormap:** percentile-autoscale bounds + ColormapDialog Stddev3/Percentile
-  (need raw-pixel access) + NaN-color control; `ColorBarWidget` + `AlphaSlider`
-  into ImageView/ScatterView.
-- **Mask:** file save/load dialog (`.npy` core exists), colormap overlay, mode-vs-pan
-  switch, pencil drag→`draw_line`.
-- ScatterView mask-tools panel; RadarView into ImageView; cross-profile UI;
-  ROI-scoped stats display.
+### interaction-events-panzoom
 
-**→ `chrome.rs` (rendering):**
-- Datetime tick labels (`dtime_ticks`), foreground/grid color split (`grid_color`),
-  draw-mode rubber-band → drawingProgress/Finished signals, mouseClicked +
-  selection-area emit, interaction-state-machine surfacing.
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ☐ Missing | H | M | Specific item-click signals (curveClicked/markerClicked/imageClicked) | PlotInteraction.py:1223-1261, PlotEvents.py:88-173 | `PlotPointerEvent` carries generic Clicked/DoubleClicked/Moved without item identity; no per-item callbacks with label/position/button/flags |
+| ☐ Missing | M | M | Hover event signals with item metadata | PlotInteraction.py:1135-1154, PlotEvents.py:73-85 | `Moved` carries only position/button; no hover signal with item label/type/draggable/selectable like `prepareHoverSignal` |
+| ◐ Partial | M | S | DrawingProgress / DrawingFinished event wiring | PlotInteraction.py:529-532, PlotEvents.py:34-55 | `DrawEvent` enums emit from `DrawState` but are not wired into the `PlotWidget` callback surface or consumed by `high_level.rs` |
+| ☐ Missing | M | M | ItemsInteraction state machine (item picking/dragging) | PlotInteraction.py:1115-1350 | Picking helpers (`nearest_point`, `image_index`) exist but are not wired into a unified picker/state machine |
+| ◐ Partial | L | S | Marker drag-finished vs drag-moving signal split | PlotInteraction.py:1276-1299, 1350 | `MarkerMoved` fires every frame; not split into a distinct on-release signal, carries handle not full payload |
+| ◐ Partial | L | S | Selection-area color/fill-mode styling | PlotInteraction.py:98-141 | Preview hardcoded as a semi-transparent single-color rect; silx `setSelectionArea` accepts hatch/solid/none fill + per-mode colors |
+| ◐ Partial | L | S | Limits-changed event with actual range values | PlotEvents.py:176-184 | `LimitsChanged` carries x/y/y2 tuples internally but is not routed to `PlotResponse`; `high_level.rs` emits a bare flag without range data |
+| ◐ Partial | L | M | Axis constraints (min/maxXRange, min/maxYRange) | panzoom.py:222-366 | `AxisConstraints` clamps post-zoom; missing silx `ViewConstraints` adaptive expansion / `allow_scaling` normalization |
+| ☐ Missing | L | M | StateMachine base (ClickOrDrag hierarchy) | Interaction.py:87-198 | Imperative handling in `DrawState`/`plot_widget.rs`; no hierarchical state-machine base (functional parity achieved differently) |
+| ☐ Missing | L | S | Marker drag-start/end callbacks (clicked/moving/moved triad) | PlotInteraction.py:1223-1350 | Only per-frame `MarkerMoved` during drag; not split into markerClicked/markerMoving/markerMoved |
+| ☐ Missing | L | S | Pencil preview circle during freehand draw | PlotInteraction.py:955-1110 (`updatePencilShape`) | Freehand accumulates vertices but shows no width preview circle around the cursor |
+| ☐ Missing | L | S | Cursor snap indicator in polygon mode | PlotInteraction.py:485-621 | Polygon snap-to-close logic exists but no visual snap indicator/preview line |
 
-**→ GPU backend / render path:**
-- Scatter SOLID / IrregularGrid / RegularGrid / BinnedStatistic viz + their params
-  (`GridMajorOrder`, `BinnedStatisticFunction`) + per-mode picking (`scatter_viz` →
-  triangle/image path); per-point alpha (`PointsViz`); image interpolation
-  (nearest/linear) + aggregation (max/mean/min) mode selectors; image masking
-  (`ScalarMask::apply` before upload); marker drag + constraint hookup.
+### items
 
-### B. Not yet started (73)
-- **Composite views — largest gap (24):** ScatterView colorbar / position-info /
-  profile / selection-mask API; StackView perspective-select / 3D-transpose /
-  dim-labels / aggregation / 3D-profile / calibration; ImageView side-histogram
-  toggle / valueChanged / getHistogram / profile-window-behavior / aggregation
-  action; CompareImages v/h-line separators / composite-RGB / alignment modes /
-  affine tracking / keypoint toggle / status bar; ComplexImageView amplitude-range
-  dialog; ImageStack URL table.
-- **Toolbars / tool-buttons (17):** OutputToolBar (Copy/Save/Print), Copy-to-clipboard,
-  Print, Zoom-In/Out factor buttons, LimitsToolBar editable fields, ColorBarAction
-  toggle, Curve-style cycling, Pixel-intensity histogram, Median-filter, Scatter-viz /
-  Symbol / Profile / Ruler / Profile-option tool-buttons, Close-polygon action,
-  Data-aggregation selector.
-- **ROI editing UX (8):** CurvesROIWidget + ROIStatsWidget display, creation-phase
-  preview UI, context menu, interaction modes, edge constraints, dictdump save/load,
-  keyboard/naming.
-- **Mask UX polish (7):** active-item sync, transparency slider, Ctrl mask/unmask
-  toggle, load-colormap-range button, per-level color, pan/browse tool, pencil
-  spin+slider sync.
-- **Event signals (6):** hover / markerClicked / markerMoving / curveClicked /
-  imageClicked / doubleClicked structured callbacks (types partly stubbed in
-  `interaction.rs`, not emitted).
-- **Curve/Hist/Scatter polish (2):** histogram bin alignment, histogram filled-region picking.
-- **Stats/Profile/Print/Selection (4):** profile line-width/method,
-  profile-over-stack, print preview, ItemsSelectionDialog.
-- **Backend render (3):** time-series X-axis render, GPU async stats/histogram,
-  postRedisplay.
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ◐ Partial | M | M | Histogram bin alignment (left/center/right) | histogram.py:53-85 (`_computeEdges`, `setData(align=)`) | `histogram_step_values` is always center-aligned; no alignment parameter on the public API |
+| ◐ Partial | M | L | Scatter mode-specific picking | scatter.py:804-860 | Points-mode picking works; Solid/RegularGrid/IrregularGrid/BinnedStatistic render but have no mode-specific picking |
+| ◐ Partial | M | M | Image per-pixel validity mask before upload | items/image.py:209-251 | `ScalarMask` + Plot2D wiring (`8ef46c2`) exist; pre-upload mask application in the GPU render path still pending |
+| ◐ Partial | M | L | Marker custom-callback constraint | items/marker.py:208-235 | H/V presets wired (Wave 11); arbitrary `setConstraint(fn)` callback form unsupported |
+| ☐ Missing | M | M | Histogram filled-region picking | histogram.py:244-290 (`__pickFilledHistogram`) | No histogram-specific picking (data-space bounds, searchsorted bin index, y-range check) |
+| ☐ Missing | M | L | Image per-pixel alpha map | items/image.py:462-500 (get/setAlphaData) | `ImageData` has only global `alpha:f32`; no per-pixel alpha array (needs shader) |
+| ◐ Partial | L | L | Marker text anchor/alignment | items/marker.py | `TextAnchor` enum defined but egui text drawn at a fixed offset; anchor not wired to render |
+| ☐ Missing | L | M | Shape overlay-flag separate data layer | items/shape.py:54-73 (`isOverlay`) | `shape.is_overlay` ignored; all shapes draw in one overlay pass |
+| ☐ Missing | L | L | ImageStack lazy URL/HDF5 loading | items/image.py:593-669 | Pre-loaded in-memory only; no URL/HDF5 lazy load or prefetch (out of declared scope) |
+| ☐ Missing | L | L | CompareImages SIFT keypoint alignment | CompareImages.py | Basic modes only; no SIFT/affine alignment (out of scope) |
 
-### C. Blocked / out of scope (7)
-- **Needs a `.wgsl` shader change** (runtime-unverifiable here — no GPU / no `naga`):
-  line joins (round/bevel/miter), line caps (butt/round/square), image per-pixel
-  alpha map.
-- **Needs `silx.io`-equivalent codecs / threading** (out of declared scope):
-  ImageStack lazy URL loading + prefetch queue; CompareImages SIFT keypoint
-  detection/alignment.
-- **N/A to this backend:** OpenGL-backend toggle (egui-wgpu only).
+### roi
 
-Per-row closed/deferred detail also lives in each Wave's "Deferred follow-ups" in the
-Progress log below.
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ☐ Missing | H | S | Per-instance ROI color on the **live** plot | items/_roi_base.py:389-405 | `draw_roi` honors `RoiAppearance.color` (chrome.rs:732) and `RoiManagerWidget` feeds real appearance (roi_manager.rs:223-235), but the live render `plot_widget.rs:353 → draw_rois` passes `RoiAppearance::default()` and `plot.rois` is bare `Roi` — **two decoupled ROI collections**, manager metadata not plumbed to the interactive ROIs |
+| ☐ Missing | H | M | ROI label/name text on the live plot | items/_roi_base.py:492-511 (`_updateText`) | `draw_roi` renders `appearance.name` (chrome.rs:916) but the live `draw_rois` path passes no name; `plot.rois` carries no label (same two-collection cause) |
+| ☐ Missing | H | S | ROI selection/highlight on the live plot | tools/roi.py:528-590 (`setHighlighted`) | `draw_roi` thickens stroke when `appearance.selected` (chrome.rs:736) but the live `draw_rois` path passes `selected:false`; no current-ROI plumbed to the renderer (same cause) |
+| ☐ Missing | H | L | CurvesROIWidget integration | CurvesROIWidget.py:62-400 | No dedicated dock widget with ROI table + per-curve ROI stats |
+| ☐ Missing | H | L | ROIStatsWidget display | ROIStatsWidget.py | No dock widget showing min/max/mean/sum/integral for a selected ROI + item (`image_roi_stats`/`curve_roi_stats` already compute these) |
+| ◐ Partial | M | M | EllipseROI orientation/rotation | items/roi.py:875-1177 | Axis-aligned only; missing rotational geometry / `_orientation` field |
+| ◐ Partial | M | M | CircleROI dedicated handle UI | items/roi.py:727-950 | On-plot creation done; editing is whole-ROI translate + center/radius map, no dedicated handle UI |
+| ◐ Partial | M | M | CrossROI marker symbols | items/roi.py:133-185 | Creation works; missing marker-symbol control + composite handle/label management |
+| ◐ Partial | M | L | ArcROI interaction sub-modes | items/_arc_roi.py | Polar editing present; silx default ThreePointMode sub-mode + toggle UI missing |
+| ◐ Partial | M | S | Manager `sigCurrentRoiChanged` signal | tools/roi.py:346-347 | `RoiChanged`/`RoiCreated` present; distinct current-ROI-changed signal on selection missing |
+| ☐ Missing | M | M | ROI handle-symbol customization | items/_roi_base.py:600-680 | All handles render as fixed 6px squares; no `+` center / `s` vertex / `o` close-polygon glyphs |
+| ☐ Missing | M | M | ROI line style (dash/dot) on canvas | items/_roi_base.py (LineMixIn) | `line_style` metadata tracked but the render path draws a fixed solid stroke (same two-collection cause) |
+| ☐ Missing | M | S | ROI line width on canvas | items/_roi_base.py:245 | `line_width` metadata exists but `draw_rois` hardcodes 1.0pt (same cause) |
+| ☐ Missing | M | S | Manager default-color application | tools/roi.py:782-797 | Manager has no color field; `DEFAULT_ROI_COLOR` hardcoded; color buttons don't apply |
+| ☐ Missing | M | M | ROI edge-position constraints | items/_roi_base.py + per-class | `move_edge` does basic min/max clamping only; no inner>outer prevention, ratio lock, snapping |
+| ◐ Partial | L | L | BandROI edge constraints/collision | items/_band_roi.py | Geometry + corner handles present; missing edge-snapping, collision detection, rotation sub-mode |
+| ◐ Partial | L | M | ROI creation preview polish | tools/roi.py:493-510 | Live overlay present; missing polygon close-handle indicator + mode-label overlay during creation |
+| ◐ Partial | L | S | ROI fill enable/disable toggle | items/roi.py:531-539 | Fixed semi-transparent fill (alpha 24); no `setFill(True/False)` toggle |
+| ☐ Missing | L | S | Distinct Horizontal/VerticalLineROI kinds | items/roi.py:366-510 | Uses HRange/VRange only; no single-Y/single-X spanning-line ROI with X/YMarker |
+| ☐ Missing | L | M | ROI right-click context menu | tools/roi.py:625-642 (`_feedContextMenu`) | No remove / mode-select right-click menu |
+| ☐ Missing | L | L | ROI save/load from file | CurvesROIWidget.py:194-210 (dictdump) | No `Serialize` on `Roi`; no file I/O in the manager |
+| ☐ Missing | L | M | ROI keyboard shortcuts + naming UI | tools/roi.py mode actions | No shortcut bindings (e.g. R for Rect) or named-creation dialog |
+
+### colormap-colorbar-mask
+
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ◐ Partial | H | M | ColormapDialog Stddev3/Percentile from raw pixels | ColormapDialog.py:240-280 | Selector exists but applies MinMax because the dialog isn't fed the raw pixel array via `setHistogram()` (Plot2D `get_image_pixels_raw` exists — wire it) |
+| ☐ Missing | H | M | Mask drawing tool: Rectangle | MaskToolsWidget.py:805-826 | `MaskTool::Rectangle` variant exists but no on-plot drawing implementation |
+| ☐ Missing | H | M | Mask drawing tool: Polygon | MaskToolsWidget.py:840-847 | `MaskTool::Polygon` variant exists but no fill-drawing implementation |
+| ☐ Missing | H | L | Mask drawing tool: Ellipse | MaskToolsWidget.py:828-838 | `MaskTool::Ellipse` variant exists but no fill-drawing implementation |
+| ☐ Missing | M | M | Colormap catalog: matplotlib-dynamic loading | colors.py:938-955 | Fixed 15-entry catalog; silx loads all matplotlib colormaps dynamically at runtime |
+| ☐ Missing | M | M | ColormapDialog histogram display | ColormapDialog.py:336-380 | No histogram overlay of the data distribution over the colormap range; no `setHistogram` API |
+| ☐ Missing | M | M | Mask threshold UI (below/between/above) | _BaseMaskToolsWidget.py:265-294 | `ThresholdMode` enum exists but no UI (mode selector / min-max / Apply) or apply logic |
+| ◐ Partial | M | L | Mask file save (npy/edf/tif/h5/msk) | MaskToolsWidget.py:104-141 | `.npy` encode/decode exists; no file dialog and missing EDF/TIFF/HDF5/msk formats |
+| ☐ Missing | M | L | Mask file load (npy/edf/tif/h5/msk) | MaskToolsWidget.py:589-629 | No load dialog or logic; silx has format filter + auto-detect + HDF5 dataset selection |
+| ☐ Missing | M | S | Mask transparency/alpha slider UI | _BaseMaskToolsWidget.py:554-577 | `alpha` field exists (0.8 default) but no slider UI to control overlay opacity |
+| ☐ Missing | M | S | Mask Mask/Unmask toggle + Ctrl modifier | _BaseMaskToolsWidget.py:790-810 | Pencil/eraser are separate tools; no Mask/Unmask radios or Ctrl-modifier toggle |
+| ◐ Partial | M | S | Mask invert per-level UI | _BaseMaskToolsWidget.py:207-218 | `invert()` exists but no UI button or Ctrl+I shortcut |
+| ☐ Missing | M | S | Mask not-finite (NaN/Inf) button | _BaseMaskToolsWidget.py:296-304 | No `updateNotFinite` method or "Mask not finite values" button |
+| ☐ Missing | L | S | Mask per-level color override UI | _BaseMaskToolsWidget.py:394-398 | `overrides` field exists but no UI or get/`setMaskColors` API |
+
+### composites
+
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ◐ Partial | M | S | ImageView `getHistogram()` public API | ImageView.py:699-725 | Private `rebuild_histograms` exists; `active_image_histogram` returns `ValueStats`, not a `{data, extent}` dict |
+| ◐ Partial | M | S | ImageView side-histogram show/hide API | ImageView.py:552-559 | Histograms in fixed layout; no `is/setSideHistogramDisplayed()` |
+| ◐ Partial | M | S | ImageView `valueChanged` signal | ImageView.py:381-390 | Cursor tracked internally but not emitted as a `(row, col, value)` callback |
+| ◐ Partial | M | M | ScatterView position-info panel API | ScatterView.py:90-101 | `PositionInfo` not embedded in the composite (exists in core, not wired) |
+| ◐ Partial | M | S | ScatterView get/setSelectionMask API | ScatterView.py:412-418 | Mask widget exists but no public selection-mask accessors |
+| ☐ Missing | M | M | StackView perspective selection | StackView.py:364-397 | No perspective enum/UI to pick the browse dimension; 1D frame browser only |
+| ☐ Missing | M | M | StackView 3D transposition | StackView.py:409-441 | No axis reordering/transpose; frames stored as flat `Vec<Vec<f32>>` |
+| ☐ Missing | M | S | StackView dimension labels | StackView.py:799-827 | No per-dimension label API; frame counter uses generic "frame N" |
+| ☐ Missing | M | M | CompareImages vline separator mode | CompareImages.py:124-133 | Modes OnlyA/OnlyB/HalfHalf/Subtract only; no draggable vertical-line separator mode |
+| ☐ Missing | M | M | ComplexImageView amplitude-range dialog | ComplexImageView.py:50-155 | No dialog to set displayed max amplitude + log10 delta at runtime |
+| ☐ Missing | L | L | StackView 3D-profile toolbar | StackView.py:948-951 | No `Profile3DToolBar`; profiles not extracted across the stack dimension |
+| ☐ Missing | L | M | StackView calibration (per-axis scale/origin) | StackView.py:551-566 | No `Calibration` objects / axis-transform API |
+
+### actions-toolbars
+
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ◐ Partial | M | M | Print: native dialog + printer submission | actions/io.py:747-845 | `print_graph()` GPU-readback shim exists; no native printer dialog or print-to-device backend |
+| ◐ Partial | M | M | ColormapAction floating-dialog toggle | actions/control.py:352-448 | Dialog wired to views but no toolbar toggle button that opens/closes it |
+| ◐ Partial | M | M | ScatterToolBar viz-mode selector button | tools/toolbars.py:273-362 | Dispatch implemented; mode selector lives in the ScatterView panel, not the main toolbar |
+| ◐ Partial | M | S | ProfileOption + line-width/method (sum vs mean) | PlotToolButtons.py:227-301 | Width/method selectors in panels; extraction always computes mean; no standalone toolbar button |
+| ◐ Partial | M | S | ProfileToolButton (1D vs 2D selector) | PlotToolButtons.py:304-391 | Dimension selector in view panels, not a standalone toolbar button |
+| ◐ Partial | M | M | SymbolToolButton (marker symbol + size) | PlotToolButtons.py:394+ | Selector exists in ScatterView UI; not wired as a toolbar button |
+| ◐ Partial | M | M | ScatterVisualizationToolButton | PlotToolButtons.py:550+ | Viz-mode selector in the ScatterView panel, not the toolbar |
+| ☐ Missing | L | L | SaveAction PDF/EPS/JPEG | PlotWidget.py:3232-3242 | PNG/PPM/SVG/TIFF only; `from_extension` rejects pdf/eps/jpeg |
+| ☐ Missing | L | S | Y2AxisAutoScaleAction | PlotWidget.py | `y2_autoscale` flag modeled but not exposed as a toolbar action |
+| ☐ Missing | L | S | ClosePolygonInteractionAction | actions/control.py:651+ | ROI draw has polygon snap-close but no dedicated action/button |
+| ☐ — | L | S | OpenGLAction (backend selector) | actions/control.py | N/A: egui-silx is wgpu-only (intentional) |
+| ☐ Missing | L | M | LimitsToolBar (editable X/Y min/max fields) | tools/toolbars.py | Limit APIs exist but no toolbar row of editable axis-limit spinners |
+
+### stats-profile-fit-positioninfo
+
+| status | P | E | feature | silx ref | gap |
+|---|---|---|---|---|---|
+| ◐ Partial | M | M | Stats context (viewport/ROI masking, live binding) | stats/stats.py:143-600 | Pure engine; no live plot-state binding, item-change signals, or auto-recompute on viewport change |
+| ◐ Partial | M | M | StatsWidget live item binding | StatsWidget.py:200-700 | Table UI present but not docked to a plot; no live binding to active curve/image |
+| ☐ Missing | M | M | Profile line width / method (mean vs sum) | tools/profile/rois.py:220-260 | `line_profile`/`rect_profile` have no width/method params; always mean |
+| ◐ Partial | M | M | Fit range-selection UI (xmin/xmax) | FitWidget.py:336-361 | `fit_range` model works; no UI input fields or interactive on-plot range selection |
+| ☐ Missing | M | M | PositionInfo snapping to nearest item | tools/PositionInfo.py:179-292 | Caller-fed cursor; no SNAPPING_CURVE/SCATTER logic or `SNAP_THRESHOLD_DIST` picking |
+| ◐ Partial | M | M | FitWidget UI extras (editable params/constraints/peak-search/bg) | silx.gui.fit.FitWidget | Results table renders; missing editable param input, constraints UI, multi-peak UI, background-model selector |
+| ◐ Partial | L | S | Profile cross-profile dual-curve display | tools/profile/rois.py:663-700 | H/V extracted separately; UI shows them in one window not simultaneously |
+| ☐ Missing | L | L | Profile over stack (slice across 3D dim) | tools/profile/rois.py:1058-1165 | No stack-aware profile variants |
+| ☐ Missing | L | L | Fit background subtraction (const/poly/strip/snip) | silx.math.fit.bgtheories.py | Peak models assume flat background; no selectable background subtraction |
+| ☐ Missing | L | L | Fit parameter constraints (POSITIVE/FIXED/QUOTED/…) | fitmanager.py:421-430 | `leastsq` has no constraint enforcement; bare Levenberg-Marquardt |
+| ☐ Missing | L | L | Fit multi-peak search | fittheories `peak_search()` | Single-peak fits only; no multi-peak discovery |
+| ☐ Missing | L | L | Fit non-peak theories (step/exp/atan/poly) | fittheories | Only Gaussian/Lorentzian/PseudoVoigt + linear |
+| ☐ Missing | L | L | Standalone RadarView overview widget | tools/RadarView.py:139-300 | RadarView is wired into views; no standalone full-data-thumbnail widget |
+| ☐ Missing | L | L | Print preview dialog | PrintPreviewToolButton.py | No print-preview page with movable/resizable rect |
+| ◐ Partial | L | L | ItemsSelectionDialog reuse | ItemsSelectionDialog.py | Dialog exists (Wave 6B-1) but isn't reused by fit/stats tools |
+
+### Top candidate next waves (re-baselined 2026-06-04)
+
+1. **ROI on-canvas styling + selection feedback** (M, ~9 rows, top H cluster) —
+   close the largest H-priority cluster in one file-disjoint area (`chrome.rs`
+   `draw_rois` + `plot_widget.rs` + `roi_manager.rs`/`core/plot.rs`): per-instance
+   color, name label, selection highlight, line width/style, handle symbols, manager
+   default color. **Structural cause is one thing:** `plot.rois` (bare `Roi`) and
+   `RoiManagerWidget`'s `Vec<ManagedRoi>` (full metadata) are two decoupled
+   collections, and the live render path feeds `RoiAppearance::default()`. The fix is
+   to unify them / plumb `ManagedRoi` appearance into the live `draw_rois` — not new
+   data, just wiring + a structural join. Prereq for ROI context-menu and
+   selection-driven stats UX.
+2. **Mask drawing tools + threshold/finite ops** (L, ~8 rows) — three H-priority
+   Missing draw tools (Rectangle/Polygon/Ellipse) + threshold UI, invert/transparency/
+   not-finite controls, Mask/Unmask toggle. Enum variants + `ImageMask` buffer +
+   `MaskHistory` already exist (`mask_tools.rs`); this wave wires interaction + UI on
+   done primitives. Biggest functional hole in the image workflow.
+3. **Structured item-click + hover signals** (M, ~5 rows, 1 H) — replace the
+   anonymous `PlotPointerEvent` with item-identified callbacks (curveClicked/
+   markerClicked/imageClicked + hover metadata + drag triad), routing the existing
+   `nearest_point`/`image_index` pickers through a unified picker. Lives in
+   `interaction.rs`/`plot_widget.rs`/`high_level.rs`; disjoint from ROI/mask render.
+   Unblocks selection-driven features (stats binding, ROI selection, draw-event
+   consumption). **Headlessly testable** via `apply_interaction` + `ctx.run_ui`.
+4. **ROI stats dock widgets** (L, 2 H rows) — `CurvesROIWidget` + `ROIStatsWidget`;
+   the compute (`image_roi_stats`/`curve_roi_stats`) already exists, so it's widget
+   construction + binding. Consumes the selection feedback from wave 3.
+5. **StackView 3D depth** (L, ~5 rows) — perspective selection, 3D transposition,
+   dimension labels, calibration, 3D-profile toolbar. Turns the 1D frame browser into
+   a true volume browser. Self-contained in `image_stack.rs`.
+6. **ColormapDialog completeness** (M, ~3 rows, 1 H) — Stddev3/Percentile from raw
+   pixels (wire `Plot2D::get_image_pixels_raw` → `setHistogram`), histogram-distribution
+   overlay, matplotlib-dynamic catalog. Localized to `colormap_dialog.rs` + a small
+   Plot2D accessor.
+
+The frozen as-of-sweep per-area tables below are kept only as the original reference;
+the re-baselined view above supersedes their status columns.
 
 ## Progress log
 
@@ -727,6 +839,38 @@ wgpu `RenderState` no crate test builds) and the actual on-screen render stay GP
   doctest ok). The on-screen creation, preview overlay, continuous re-arm, and whole-ROI translate are
   GPU/PlotWidget-UNVERIFIED; the `DrawParams`→`Roi` mapping and the `apply_interaction` wiring are headlessly
   unit-tested.
+
+### Post-Wave-12 commits (landed on `main`, unlogged until the 2026-06-04 re-baseline)
+These shipped after the Wave-12 progress entry as individual one-commit-per-feature fixes (not run as a
+labelled wave), so they were not in the Progress log; the 2026-06-04 re-baseline folds them into the Done count.
+- **ROI handle-drag editing** for the kinds Wave-12 creation left ◐: `e9b046b` Rect corner/diagonal resize,
+  `6b9e5d0` Band, `fc14807` Arc (incl. start/end-angle via `Vertex(2)`/`Vertex(3)`), `cac2edf` Circle/Ellipse
+  regression tests; `2dbbb8e` cancels an in-progress ROI drag on a mid-drag mode switch (**closes the Wave-12
+  R2.1 UNFIXED** — the stale-grab-one-frame window).
+- **`cd0338d`** fixes the `apply_curve_alpha` double-premultiply on the shared curve/line path (**closes the
+  long-standing cross-wave UNFIXED**, kodex `162cc1a8`).
+- **Detached tool windows:** `4c39632` detached-window helper sharing placement maths with `profile_window`;
+  `dea42fd` shows all floating tool windows as detachable native OS windows; `a8bb863` doc-example update.
+- **Active-curve axis labels** (silx `_setActiveItem`): `2de1a8e` swap in the active curve's labels, `f2ce5b5`
+  example; **right-click zoom menu** `b389721` (replaces double-click reset).
+- **Rotated-label centering fixes:** `b7b62bd` off-center Y / clipped y2 labels; `fbe7f6e` wrong-sign vertical
+  colorbar legend centering.
+- **Curve legend icons** (silx `CurveLegendsWidget`/`LegendIcon`): `6fb9f33` line style + color + marker,
+  `c0f38dc` example, `525dfac` legend in `high_level_active_curve_labels`, `d04232a` drop the icon bounding box.
+
+### Re-baseline (2026-06-04, recon workflow `wf_b2b09dc2-620`)
+The "Remaining work (live, code-verified 2026-06-02)" view was stale (frozen pre-Wave-10, before the commits
+above). An 8-slice read-only recon (Explore agents, one per silx.gui.plot slice → synthesis) re-derived every
+status from the code on `main`, ignoring the old status column. Result: **≈191 Done · 130 open** (92 enumerated
+rows: 10 H / 48 M / 34 L). The new view replaced the 2026-06-02 section at the top of this file; the candidate
+next-wave list is recorded there. Two prior cross-wave UNFIXED items were verified **closed** by the post-Wave-12
+commits (`apply_curve_alpha` double-premultiply; ROI mid-drag stale-grab). One precision correction over the
+recon's raw output: the H-priority "ROI per-instance color/label/selection on canvas" is recorded as a
+**two-decoupled-collections** structural gap — `chrome::draw_roi` + `RoiAppearance` already render color
+(chrome.rs:732), name (`:916`), and selection-width (`:736`), and `RoiManagerWidget` feeds real appearance
+(roi_manager.rs:223-235), but the live plot render (`plot_widget.rs:353 → draw_rois`) passes
+`RoiAppearance::default()` over a bare `plot.rois: Vec<Roi>`; the fix is to plumb/join `ManagedRoi` metadata into
+the live render path, not to add new render code.
 
 
 ## PlotWidget core, axes, frame, ticks  — 25✅ 2◐ 7☐
