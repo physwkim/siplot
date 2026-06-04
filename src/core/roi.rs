@@ -282,20 +282,57 @@ impl Roi {
 
     /// Screen-space midpoints of this ROI's draggable edges, for drawing handle
     /// marks (one per edge, in [`Roi::edges`] order).
+    ///
+    /// Each handle is located by the *data* point its [`RoiEdge`] names (mapped
+    /// through the transform), not by the screen-rect's geometric corners — so,
+    /// like [`Roi::edge_at`] / [`Roi::move_edge`], it stays correct under an
+    /// inverted axis (where e.g. the data `Top` = y.max edge is drawn at the
+    /// bottom of the screen).
     pub fn handle_centers(&self, t: &Transform) -> Vec<Pos2> {
-        let r = self.screen_rect(t);
+        let mid = |a: f64, b: f64| (a + b) * 0.5;
+        let center = || self.screen_rect(t).center();
         self.edges()
             .iter()
-            .map(|edge| match edge {
-                RoiEdge::Left => egui::pos2(r.left(), r.center().y),
-                RoiEdge::Right => egui::pos2(r.right(), r.center().y),
-                RoiEdge::Top => egui::pos2(r.center().x, r.top()),
-                RoiEdge::Bottom => egui::pos2(r.center().x, r.bottom()),
-                RoiEdge::BottomLeft => egui::pos2(r.left(), r.bottom()),
-                RoiEdge::BottomRight => egui::pos2(r.right(), r.bottom()),
-                RoiEdge::TopLeft => egui::pos2(r.left(), r.top()),
-                RoiEdge::TopRight => egui::pos2(r.right(), r.top()),
-                RoiEdge::Vertex(n) => self.vertex_pixel(t, *n).unwrap_or(r.center()),
+            .map(|edge| match self {
+                Roi::Rect { x, y } => {
+                    let (dx, dy) = match edge {
+                        RoiEdge::Left => (x.0, mid(y.0, y.1)),
+                        RoiEdge::Right => (x.1, mid(y.0, y.1)),
+                        RoiEdge::Bottom => (mid(x.0, x.1), y.0),
+                        RoiEdge::Top => (mid(x.0, x.1), y.1),
+                        RoiEdge::BottomLeft => (x.0, y.0),
+                        RoiEdge::BottomRight => (x.1, y.0),
+                        RoiEdge::TopLeft => (x.0, y.1),
+                        RoiEdge::TopRight => (x.1, y.1),
+                        RoiEdge::Vertex(_) => (mid(x.0, x.1), mid(y.0, y.1)),
+                    };
+                    t.data_to_pixel(dx, dy)
+                }
+                // HRange spans the full width: handles sit at the area's
+                // horizontal centre, at the data y of each edge.
+                Roi::HRange { y } => {
+                    let cx = (t.area.left() + t.area.right()) * 0.5;
+                    let dy = match edge {
+                        RoiEdge::Bottom => y.0,
+                        RoiEdge::Top => y.1,
+                        _ => mid(y.0, y.1),
+                    };
+                    egui::pos2(cx, t.data_to_pixel(t.x.min, dy).y)
+                }
+                Roi::VRange { x } => {
+                    let cy = (t.area.top() + t.area.bottom()) * 0.5;
+                    let dx = match edge {
+                        RoiEdge::Left => x.0,
+                        RoiEdge::Right => x.1,
+                        _ => mid(x.0, x.1),
+                    };
+                    egui::pos2(t.data_to_pixel(dx, t.y.min).x, cy)
+                }
+                // Vertex-handled shapes: each edge is a stored vertex.
+                _ => match edge {
+                    RoiEdge::Vertex(n) => self.vertex_pixel(t, *n).unwrap_or_else(center),
+                    _ => center(),
+                },
             })
             .collect()
     }
@@ -326,57 +363,116 @@ impl Roi {
                 best.map(|(e, _)| e)
             }
             _ => {
-                // Rect, HRange, VRange: rect-based edge detection.
-                let r = self.screen_rect(t);
+                // Rect, HRange, VRange: edge detection by *data* identity.
+                //
+                // Each [`RoiEdge`] names a data edge (`Left`=x.min, `Right`=x.max,
+                // `Bottom`=y.min, `Top`=y.max) — that is how [`Roi::move_edge`]
+                // applies it. So `edge_at` must locate each edge by its data
+                // identity too: compute the data edge's screen coordinate through
+                // the transform rather than reading a geometric screen top/left.
+                // Under an inverted axis (e.g. an image plot, where Y is flipped
+                // so data y.max sits at the *bottom* of the screen) the two differ
+                // — a screen-geometry label would map a grab to the opposite data
+                // edge, collapsing a rectangle on corner/edge drag. Deriving the
+                // label from data identity keeps `edge_at` and `move_edge`
+                // consistent on every axis orientation.
+                let area = t.area;
+                // Screen coords of each present data edge (x: Left/Right, y:
+                // Bottom/Top), plus the screen-space spans the perpendicular
+                // probe must fall within.
+                let (lx, rx, by, ty, x_span, y_span) = match self {
+                    Roi::Rect { x, y } => {
+                        let lx = t.data_to_pixel(x.0, y.0).x;
+                        let rx = t.data_to_pixel(x.1, y.0).x;
+                        let by = t.data_to_pixel(x.0, y.0).y;
+                        let ty = t.data_to_pixel(x.0, y.1).y;
+                        (
+                            Some(lx),
+                            Some(rx),
+                            Some(by),
+                            Some(ty),
+                            (lx.min(rx), lx.max(rx)),
+                            (ty.min(by), ty.max(by)),
+                        )
+                    }
+                    Roi::HRange { y } => {
+                        let by = t.data_to_pixel(t.x.min, y.0).y;
+                        let ty = t.data_to_pixel(t.x.min, y.1).y;
+                        (
+                            None,
+                            None,
+                            Some(by),
+                            Some(ty),
+                            (area.left(), area.right()),
+                            (ty.min(by), ty.max(by)),
+                        )
+                    }
+                    Roi::VRange { x } => {
+                        let lx = t.data_to_pixel(x.0, t.y.min).x;
+                        let rx = t.data_to_pixel(x.1, t.y.min).x;
+                        (
+                            Some(lx),
+                            Some(rx),
+                            None,
+                            None,
+                            (lx.min(rx), lx.max(rx)),
+                            (area.top(), area.bottom()),
+                        )
+                    }
+                    _ => unreachable!("outer match restricts this arm to Rect/HRange/VRange"),
+                };
                 // Corner handles (Rect only) take priority: a cursor near a
                 // corner is also near both adjoining edges, so resolve corners
                 // first by Euclidean distance to the corner point. The closest
                 // in-range corner wins, giving diagonal resize precedence over
                 // single-axis edge resize at the rectangle's corners.
+                let corner_pos = |edge: RoiEdge| -> Option<Pos2> {
+                    Some(match edge {
+                        RoiEdge::BottomLeft => egui::pos2(lx?, by?),
+                        RoiEdge::BottomRight => egui::pos2(rx?, by?),
+                        RoiEdge::TopLeft => egui::pos2(lx?, ty?),
+                        RoiEdge::TopRight => egui::pos2(rx?, ty?),
+                        _ => return None,
+                    })
+                };
                 let mut best_corner: Option<(RoiEdge, f32)> = None;
                 for edge in self.edges() {
-                    let corner = match edge {
-                        RoiEdge::BottomLeft => egui::pos2(r.left(), r.bottom()),
-                        RoiEdge::BottomRight => egui::pos2(r.right(), r.bottom()),
-                        RoiEdge::TopLeft => egui::pos2(r.left(), r.top()),
-                        RoiEdge::TopRight => egui::pos2(r.right(), r.top()),
-                        _ => continue,
-                    };
-                    let dist = cursor.distance(corner);
-                    if dist <= grab_px && best_corner.is_none_or(|(_, d)| dist < d) {
-                        best_corner = Some((edge, dist));
+                    if let Some(corner) = corner_pos(edge) {
+                        let dist = cursor.distance(corner);
+                        if dist <= grab_px && best_corner.is_none_or(|(_, d)| dist < d) {
+                            best_corner = Some((edge, dist));
+                        }
                     }
                 }
                 if let Some((edge, _)) = best_corner {
                     return Some(edge);
                 }
+                let (x_lo, x_hi) = x_span;
+                let (y_lo, y_hi) = y_span;
                 let mut best: Option<(RoiEdge, f32)> = None;
                 for edge in self.edges() {
                     let dist = match edge {
-                        // Vertical edges: cursor must be within the rect's y span.
+                        // Vertical edges: cursor must be within the y span.
                         RoiEdge::Left | RoiEdge::Right => {
-                            if cursor.y < r.top() - grab_px || cursor.y > r.bottom() + grab_px {
+                            if cursor.y < y_lo - grab_px || cursor.y > y_hi + grab_px {
                                 continue;
                             }
-                            let ex = if edge == RoiEdge::Left {
-                                r.left()
-                            } else {
-                                r.right()
-                            };
-                            (cursor.x - ex).abs()
+                            let ex = if edge == RoiEdge::Left { lx } else { rx };
+                            match ex {
+                                Some(ex) => (cursor.x - ex).abs(),
+                                None => continue,
+                            }
                         }
-                        // Horizontal edges: cursor must be within the rect's x span.
+                        // Horizontal edges: cursor must be within the x span.
                         RoiEdge::Bottom | RoiEdge::Top => {
-                            if cursor.x < r.left() - grab_px || cursor.x > r.right() + grab_px {
+                            if cursor.x < x_lo - grab_px || cursor.x > x_hi + grab_px {
                                 continue;
                             }
-                            // Top edge = data y.max = screen top (smaller y).
-                            let ey = if edge == RoiEdge::Top {
-                                r.top()
-                            } else {
-                                r.bottom()
-                            };
-                            (cursor.y - ey).abs()
+                            let ey = if edge == RoiEdge::Top { ty } else { by };
+                            match ey {
+                                Some(ey) => (cursor.y - ey).abs(),
+                                None => continue,
+                            }
                         }
                         // Corners handled above; vertices do not apply here.
                         _ => continue,
@@ -1029,6 +1125,139 @@ mod tests {
         )
     }
 
+    // Like `t()`, but with the Y axis INVERTED — an image plot (`Plot2D::new`
+    // calls `set_y_inverted(true)`), where data y.max sits at the *top* of the
+    // screen (smaller screen-y) and y.min at the bottom is flipped: data y=0 ->
+    // screen y=0 (top), data y=10 -> screen y=100 (bottom).
+    fn t_inv() -> Transform {
+        let mut y = crate::core::transform::Axis::linear(0.0, 10.0);
+        y.inverted = true;
+        Transform::with_axes(
+            crate::core::transform::Axis::linear(0.0, 10.0),
+            y,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0)),
+        )
+    }
+
+    #[test]
+    fn edge_at_corner_keeps_data_identity_under_inverted_y() {
+        // Image-plot orientation: an inverted Y axis must NOT swap which data
+        // corner a screen grab maps to. The data corner (x.min, y.max) = TopLeft
+        // is drawn at the screen *bottom*-left under inversion; grabbing it must
+        // still report `TopLeft`, so `move_edge(TopLeft)` resizes the grabbed
+        // corner instead of the opposite one (which collapsed the rect before).
+        let roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        let t = t_inv();
+        // data y=3 -> screen 30; data y=7 -> screen 70. data x=2 -> 20, 8 -> 80.
+        // So screen-top-left (20,30) is data (x.min, y.min) = BottomLeft;
+        // screen-bottom-left (20,70) is data (x.min, y.max) = TopLeft.
+        assert_eq!(
+            roi.edge_at(&t, pos2(20.0, 30.0), 4.0),
+            Some(RoiEdge::BottomLeft)
+        );
+        assert_eq!(
+            roi.edge_at(&t, pos2(20.0, 70.0), 4.0),
+            Some(RoiEdge::TopLeft)
+        );
+        assert_eq!(
+            roi.edge_at(&t, pos2(80.0, 30.0), 4.0),
+            Some(RoiEdge::BottomRight)
+        );
+        assert_eq!(
+            roi.edge_at(&t, pos2(80.0, 70.0), 4.0),
+            Some(RoiEdge::TopRight)
+        );
+    }
+
+    #[test]
+    fn corner_drag_under_inverted_y_tracks_cursor_without_collapse() {
+        // A full grab→move on the visual-bottom-left corner under inverted Y:
+        // it must resize that corner (move x.min and y.max) to the cursor, not
+        // collapse the rectangle (the pre-fix behaviour set the wrong y edge).
+        let roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        let t = t_inv();
+        // Under inversion py = 10·y: data y.min=3 -> screen 30 (top), y.max=7 ->
+        // screen 70 (bottom). So the visual bottom-left handle @ (20,70) is data
+        // (x.min=2, y.max=7) = TopLeft.
+        let grab = pos2(20.0, 70.0);
+        let edge = roi.edge_at(&t, grab, 4.0).expect("corner grabbed");
+        assert_eq!(edge, RoiEdge::TopLeft);
+        // Drag it to screen (10, 90) = data (1, 9): x.min -> 1, y.max -> 9, with
+        // y.min (3) untouched. The grabbed corner tracks the cursor; no collapse.
+        let mut moved = roi.clone();
+        moved.move_edge(edge, t.pixel_to_data(pos2(10.0, 90.0)));
+        assert_eq!(
+            moved,
+            Roi::Rect {
+                x: (1.0, 8.0),
+                y: (3.0, 9.0)
+            },
+            "x.min and y.max follow the cursor; y.min untouched; no collapse"
+        );
+    }
+
+    #[test]
+    fn side_edge_under_inverted_y_maps_to_correct_data_edge() {
+        // Under inversion (py = 10·y) data y.min=3 is drawn at the screen TOP
+        // (30) and y.max=7 at the screen BOTTOM (70). edge_at must report the
+        // *data* edge by identity, so the screen-top probe is the data Bottom
+        // (y.min) edge and the screen-bottom probe is the data Top (y.max) edge.
+        let roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        let t = t_inv();
+        assert_eq!(
+            roi.edge_at(&t, pos2(50.0, 30.0), 4.0),
+            Some(RoiEdge::Bottom)
+        );
+        assert_eq!(roi.edge_at(&t, pos2(50.0, 70.0), 4.0), Some(RoiEdge::Top));
+        // Dragging the screen-top edge (data Bottom = y.min) up to screen y=10
+        // (data y=1) moves y.min, so the visual top edge tracks the cursor.
+        let mut moved = roi.clone();
+        moved.move_edge(RoiEdge::Bottom, t.pixel_to_data(pos2(50.0, 10.0)));
+        let Roi::Rect { x, y } = moved else {
+            panic!("still a rect")
+        };
+        assert!((x.0 - 2.0).abs() < 1e-9 && (x.1 - 8.0).abs() < 1e-9);
+        assert!(
+            (y.0 - 1.0).abs() < 1e-9 && (y.1 - 7.0).abs() < 1e-9,
+            "y.min tracks the cursor to data 1; y.max untouched: {y:?}"
+        );
+    }
+
+    #[test]
+    fn circle_perimeter_resize_works_under_inverted_y() {
+        // The circle perimeter handle stays grabbable and resizes correctly under
+        // an inverted Y axis (it uses a data-distance radius, not a screen label).
+        let mut circ = Roi::Circle {
+            center: (5.0, 5.0),
+            radius: 2.0,
+        };
+        let t = t_inv();
+        // Perimeter handle at data (center.x + r, center.y) = (7, 5).
+        let handle = t.data_to_pixel(7.0, 5.0);
+        assert_eq!(circ.edge_at(&t, handle, 6.0), Some(RoiEdge::Vertex(1)));
+        // Drag it out to data x=8: radius becomes 3.
+        circ.move_edge(
+            RoiEdge::Vertex(1),
+            t.pixel_to_data(t.data_to_pixel(8.0, 5.0)),
+        );
+        assert_eq!(
+            circ,
+            Roi::Circle {
+                center: (5.0, 5.0),
+                radius: 3.0
+            }
+        );
+    }
+
     #[test]
     fn rect_screen_rect_flips_y() {
         let roi = Roi::Rect {
@@ -1140,6 +1369,26 @@ mod tests {
         assert_eq!(corner(centers[5]), (80.0, 70.0)); // BottomRight
         assert_eq!(corner(centers[6]), (20.0, 30.0)); // TopLeft
         assert_eq!(corner(centers[7]), (80.0, 30.0)); // TopRight
+    }
+
+    #[test]
+    fn handle_centers_keep_data_identity_under_inverted_y() {
+        // Under inverted Y (py = 10·y): data y.min=3 -> screen 30 (top), y.max=7
+        // -> screen 70 (bottom). Each handle must sit at its DATA point: the
+        // data Bottom (y.min) handle is drawn at the screen top, Top at the
+        // bottom — matching edge_at/move_edge so the drawn marks line up with
+        // the grab targets.
+        let roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        let centers = roi.handle_centers(&t_inv());
+        let corner = |c: Pos2| (c.x, c.y);
+        // edges() order: Left, Right, Bottom, Top, BL, BR, TL, TR.
+        assert_eq!(corner(centers[2]), (50.0, 30.0)); // Bottom = y.min @ screen top
+        assert_eq!(corner(centers[3]), (50.0, 70.0)); // Top = y.max @ screen bottom
+        assert_eq!(corner(centers[4]), (20.0, 30.0)); // BottomLeft (x.min, y.min)
+        assert_eq!(corner(centers[6]), (20.0, 70.0)); // TopLeft (x.min, y.max)
     }
 
     #[test]
