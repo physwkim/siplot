@@ -1475,16 +1475,28 @@ mod tests {
         let (_r0, area) = run_mode_frame(&ctx, &mut plot, mode, screen_input(screen));
         let click_px = area.center();
 
-        // Press (Point finishes on press), then release to complete the egui click.
-        let _ = run_mode_frame(&ctx, &mut plot, mode, press_at(screen, click_px));
-        let (resp, _a) = run_mode_frame(&ctx, &mut plot, mode, release_at(screen, click_px));
+        // Press then release form a single egui click; the Point ROI finishes
+        // on the click. egui collapses press/drag/click frames unpredictably in
+        // the headless harness, so assert on the click as a whole rather than on
+        // one specific frame.
+        let (press_resp, _a) = run_mode_frame(&ctx, &mut plot, mode, press_at(screen, click_px));
+        let (release_resp, _a) =
+            run_mode_frame(&ctx, &mut plot, mode, release_at(screen, click_px));
 
-        // The press frame created the ROI; assert one Point ROI now exists and
-        // the create index was reported on the press frame.
+        // Exactly one Point ROI was created, and its create index (0) was
+        // reported exactly once across the click's frames — this catches both a
+        // missing report and a double-create (re-fire on both frames).
         assert_eq!(plot.rois.len(), 1);
         assert!(matches!(plot.rois[0], crate::core::roi::Roi::Point { .. }));
-        // roi_created is set on the frame the draw finished (the press frame).
-        let _ = resp; // the release frame itself reports None.
+        let reported: Vec<usize> = [press_resp.roi_created, release_resp.roi_created]
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(
+            reported,
+            vec![0],
+            "create index reported exactly once on the finishing frame"
+        );
     }
 
     #[test]
