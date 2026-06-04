@@ -16,7 +16,18 @@ state-machine (M), marker drag-start/end triad (L), markerMoving/markerMoved spl
 silx `prepareHoverSignal` payload (`selectable` omitted as structurally constant); the marker drag now emits
 `MarkerDragStarted`→`MarkerMoved`×N→`MarkerDragFinished` (silx `beginDrag`/`drag`/`endDrag`).
 
-Status legend: ✅ Done · ◐ Partial · ☐ Missing. Effort S/M/L. Priority H/M/L.
+**After Wave 15 (PlotWidget interaction-events + panzoom + draw feedback, main, not pushed):** ≈212 Done · ~109 open
+— 6 rows closed: `LimitsChanged` carries the new `{x,y,y2}` ranges (row 61), RoiCreate draw events surface as
+`DrawingProgress`/`DrawingFinished` (row 57), axis-constraint adaptive normalization mirroring silx `ViewConstraints`
+allow_scaling=True — max-range capped to the position window + a wider-than-window view snaps to it (row 62),
+box-zoom and draw previews unified onto one selection-overlay renderer with silx Zoom's `fill="none"` dashed outline
+(row 60), the polygon first-point close target box (row 66), and the pencil brush-footprint preview circle (row 65).
+Rows 49 / 63 (overlay-only replot, StateMachine base) and their re-baseline duplicates resolved as **N/A** — functional
+parity achieved differently (immediate-mode + persistent GPU buffers make redraw always-on and uploads event-driven;
+imperative `apply_interaction` dispatch replaces the silx state-machine hierarchy). This closes the enumerated
+interaction-events-panzoom open rows.
+
+Status legend: ✅ Done · ◐ Partial · ☐ Missing · ✅ N/A (resolved: parity achieved differently). Effort S/M/L. Priority H/M/L.
 
 > This file tracks the port. The per-area tables below are the **as-of-sweep
 > baseline**; landed work is recorded in the Progress log so the baseline stays
@@ -46,7 +57,7 @@ as-of-sweep reference.
 | status | P | E | feature | silx ref | gap |
 |---|---|---|---|---|---|
 | ☐ Missing | M | M | Per-axis timezone support | items/axis.py:278-294 (get/setTimeZone) | No timezone field on Plot/axis; `dtime_ticks.rs` is UTC-only, no `setTimeZone` API |
-| ◐ Partial | L | M | Overlay-only replot optimization | PlotWidget.py:719-730 (`_setDirtyPlot`, overlay vs True) | `DirtyState::Overlay` is tracked but `plot_widget.rs` never checks `dirty()` to skip curve/image uploads; all layers render every frame |
+| ✅ N/A | L | M | Overlay-only replot optimization | PlotWidget.py:719-730 (`_setDirtyPlot`, overlay vs True) | Resolved W15 — not a gap. silx's `_dirty` defers redraws for a *retained* backend; egui-silx is immediate-mode with persistent GPU buffers: curve/image data uploads only on add/update (event-driven), the per-frame `prepare` only re-decimates a *changed* view + writes cheap uniforms, `paint` draws from persistent buffers. There is no per-frame full upload to skip; a `dirty()` gate would be speculative + can't skip egui's frame paint. `DirtyState`/`dirty()` remain as a faithful silx-concept port (set, not consumed in production) |
 
 ### interaction-events-panzoom
 
@@ -60,7 +71,7 @@ as-of-sweep reference.
 | ✅ Done | L | S | Selection-area color/fill-mode styling | PlotInteraction.py:98-141 | W15: box-zoom rubber band and draw preview share one `draw_selection_polygon` renderer honoring `FillMode` (Hatch/Solid/None) + color. Box-zoom now renders silx Zoom's `fill="none"` dashed outline instead of a hardcoded solid rect (`plot_widget.rs`). Public per-mode color setter not exposed (no consumer) |
 | ✔ Done (W15) | L | S | Limits-changed event with actual range values | PlotEvents.py:176-184 | `PlotEvent::LimitsChanged{x,y,y2}` now carries the new left-axis `(min,max)` ranges and the optional right axis, built from the post-change snapshot in `push_limits_changed_if` |
 | ✅ Done | L | M | Axis constraints (min/maxXRange, min/maxYRange) | panzoom.py:222-366 | `AxisConstraints::apply` mirrors silx `ViewConstraints` (allow_scaling=True): max-range capped to the position window (`update` sanity), and a view wider than the window snaps to it (`normalize` adaptive expansion) — W15, `core/plot.rs` |
-| ☐ Missing | L | M | StateMachine base (ClickOrDrag hierarchy) | Interaction.py:87-198 | Imperative handling in `DrawState`/`plot_widget.rs`; no hierarchical state-machine base (functional parity achieved differently) |
+| ✅ N/A | L | M | StateMachine base (ClickOrDrag hierarchy) | Interaction.py:87-198 | Resolved — not a gap. silx's `StateMachine`/`ClickOrDrag` class hierarchy is an implementation structure, not a user-facing feature; egui-silx achieves the same interaction behavior with `DrawState` + the imperative `apply_interaction` dispatch (functional parity achieved differently) |
 | ✔ Done (W14) | L | S | Marker drag-start/end callbacks (clicked/moving/moved triad) | PlotInteraction.py:1223-1350 | Full lifecycle: `MarkerDragStarted` (begin) → `MarkerMoved`×N (moving) → `MarkerDragFinished` (on-release moved); marker click arrives via `ItemClicked` from the unified picker |
 | ✅ Done | L | S | Pencil preview circle during freehand draw | PlotInteraction.py:955-1110 (`updatePencilShape`) | W15: `ImageView::draw_brush_preview` paints the silx pencil footprint — an unfilled circle of radius `brush_size/2` (13 pts, `pencil_preview_circle`) at the cursor in MaskDraw mode, idle + painting (`high_level.rs`, `mask_tools.rs`) |
 | ✅ Done | L | S | Cursor snap indicator in polygon mode | PlotInteraction.py:485-621 | W15: `draw_polygon_first_point` renders silx's first-point close target — an unfilled box of half-size `close_threshold_px` around the first vertex — throughout the polygon draw (RoiCreate + `show_with_draw`); `plot_widget.rs`, `interaction.rs::close_threshold_px()` |
@@ -948,10 +959,10 @@ egui-silx has strong coverage of core axis features: linear/log/inverted axes, d
 | ◐ | H | S | Data range computation (getDataRange for bounds auto-expand) | `PlotWidget.py:908-918, resetZoom:3331-3350` | egui-silx computes and applies data bounds. silx's getDataRange returns (x, y, yright) tuples, each (min, max) or None. egui-silx stores bounds per data type but logic is similar. The gap is that egui |
 | ☐ | M | L | TIME_SERIES / datetime axis tick mode (TickMode enum) | `items/axis.py:43-48, 296-308, _utils/dtime_ticklayout.py (entire file)` | silx supports datetime.datetime tick labels and timezone-aware formatting on axes via setTickMode(TickMode.TIME_SERIES). egui-silx only supports numeric ticks. Missing: DtUnit enum, bestUnit(), calcTi |
 | ☐ | L | M | Data margin ratios for resetZoom (setDataMargins / getDataMargins) | `PlotWidget.py:3251-3270, resetZoom:3352-3397 margin expansion logic` | silx setDataMargins(xMin, xMax, yMin, yMax) stores per-side margin ratios, applied by resetZoom to expand limits around visible data. egui-silx has axes_margins (space reserved in gutters) but not dat |
-| ☐ | L | M | Dirty flag and replot lifecycle (_setDirtyPlot, replot, autoreplot) | `PlotWidget.py:719-730, 3309-3311, 3279-3289` | silx uses _dirty flag (True \| 'overlay') to defer redraws; replot() forces immediate render; autoreplot toggles auto-redraw on change. egui-silx renders every frame without caching. Not a correctness |
+| ✅ N/A | L | M | Dirty flag and replot lifecycle (_setDirtyPlot, replot, autoreplot) | `PlotWidget.py:719-730, 3309-3311, 3279-3289` | Resolved W15 — not a gap. silx's `_dirty`/`replot`/`autoreplot` are a retained-backend deferral mechanism; egui-silx is immediate-mode (egui owns the frame loop) with persistent GPU buffers, so redraw is always-on and uploads are event-driven. `DirtyState` exists as a faithful port (set, not consumed). Not a correctness issue. |
 | ☐ | L | M | Axis label fallback to active curve label | `items/axis.py:187-218 (setLabel, _setCurrentLabel; PlotWidget handles active curve label swapping)` | silx axis.setLabel() sets the default, but PlotWidget swaps in the active curve's label if one is set. egui-silx stores a single label string per axis with no fallback logic. |
 | ☐ | L | S | Axis visibility toggle (setAxesDisplayed / isAxesDisplayed) | `PlotWidget.py:2838-2855` | silx allows hiding axes/frame/ticks entirely via setAxesDisplayed(false), which zeroes axes margins. egui-silx chrome always draws frame and ticks. Missing: visibility flag in Plot, conditional axis/f |
-| ☐ | L | S | Overlay-only replot optimization | `PlotWidget.py:719-730 (dirty='overlay')` | silx distinguishes dirty='overlay' (redraw legend, markers only; skip image/curve) from dirty=True (full redraw). egui-silx renders all layers every frame. |
+| ✅ N/A | L | S | Overlay-only replot optimization | `PlotWidget.py:719-730 (dirty='overlay')` | Resolved W15 — not a gap. egui-silx is immediate-mode with persistent GPU buffers (data uploaded on add/update, not per frame); there is no per-frame full upload for dirty='overlay' to skip. Parity achieved differently. |
 | ◐ | L | S | Separate foreground (axes/frame) and grid colors | `PlotWidget.py:setForegroundColor, setGridColor (separate calls); backends/_PlotFrameCore.py splits axis vs grid stroke` | egui-silx lumps frame/axes into 'foreground' color. silx allows independent frame stroke and grid color. Minor: egui chrome applies foreground to axis strokes and labels together; grid color is separa |
 
 ## Interaction, events, panzoom, limits history  — 19✅ 5◐ 23☐
@@ -973,7 +984,7 @@ egui-silx implements core panning and zooming, including wheel zoom anchored at 
 | ☐ | M | M | Floating-point overflow protection during pan/zoom | `PlotInteraction.py:233-289, panzoom.py:114-118` | No overflow checks. silx clips to FLOAT32_SAFE_MIN/MAX after pan/zoom; egui-silx merely checks is_valid() (non-degenerate), but does not protect against silent overflow. |
 | ☐ | L | L | Signal: drawingProgress (real-time feedback during shape drawing) | `PlotInteraction.py:529-532, 789-792, 903-906, etc., PlotEvents.py:34-55` | No drawing modes or signals. silx emits drawingProgress for each vertex added during polygon/rectangle/ellipse/line/polyline drawing. egui-silx has no draw mode. |
 | ☐ | L | L | Signal: drawingFinished (on shape completion) | `PlotInteraction.py:545-548, 800-803, 911-914, etc., PlotEvents.py:34-55` | No drawing mode completion signal. silx emits drawingFinished with final points and parameters. |
-| ☐ | L | L | Interaction state machine (ClickOrDrag, StateMachine) | `Interaction.py:87-198, PlotInteraction.py:153-209` | No explicit state machine architecture in egui-silx. silx uses StateMachine base class with State subclasses for each interaction mode (Idle, Drag, etc.). egui-silx uses imperative event handling with |
+| ✅ N/A | L | L | Interaction state machine (ClickOrDrag, StateMachine) | `Interaction.py:87-198, PlotInteraction.py:153-209` | Resolved — not a gap. Implementation structure, not a user feature; egui-silx achieves the same interaction behavior with imperative `apply_interaction` dispatch + `DrawState`. Functional parity achieved differently. |
 | ☐ | L | M | Signal: hover (mouseMoved) with item label, type, draggable/selectable flags | `PlotInteraction.py:1135-1154, PlotEvents.py:73-85` | No hover event signals. silx emits hover with item metadata (label, type, whether draggable/selectable, data and pixel position). egui-silx only tracks crosshair rendering. |
 | ☐ | L | M | Signal: markerClicked with marker details and position | `PlotInteraction.py:1223-1241, PlotEvents.py:88-139` | No marker click event. silx emits structured markerClicked signal with marker name, position data, button, and draggable/selectable flags. egui-silx has no equivalent. |
 | ✅ (W14) | L | M | Signal: markerMoving/markerMoved (marker drag feedback) | `PlotInteraction.py:1276-1299, 1350` | Now split: `MarkerMoved{handle}` each frame during the drag (silx `markerMoving`) plus a distinct on-release `MarkerDragFinished{handle}` (silx `markerMoved`), bracketed by `MarkerDragStarted{handle}`. Each event carries the handle; position is read via `PlotWidget::marker_position`. |
