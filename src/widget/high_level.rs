@@ -1623,7 +1623,7 @@ fn curve_spec_legend_visual(spec: &CurveSpec<'_>, kind: PlotItemKind) -> LegendV
             .copied()
             .unwrap_or_else(|| fallback_legend_color(kind)),
     };
-    LegendVisual::new(color)
+    LegendVisual::curve(color, spec.line_style.clone(), spec.symbol)
 }
 
 fn image_spec_legend_visual(spec: &ImageSpec<'_>, kind: PlotItemKind) -> LegendVisual {
@@ -1890,10 +1890,19 @@ struct ItemRecord {
     hidden_line_style: Option<LineStyle>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct LegendVisual {
     color: Color32,
     secondary: Option<Color32>,
+    /// Curve line style, so the legend icon shows dashed / dotted / solid /
+    /// none exactly as the curve draws (silx `LegendIcon.setLineStyle`).
+    /// Non-curve kinds leave this at [`LineStyle::Solid`]; their swatch branches
+    /// ignore it.
+    line_style: LineStyle,
+    /// Curve marker symbol drawn at the icon center (silx
+    /// `LegendIcon.setSymbol`). `None` means no marker, matching a curve created
+    /// with `symbol: None`.
+    symbol: Option<Symbol>,
 }
 
 const LEGEND_ROW_HEIGHT: f32 = 24.0;
@@ -1906,6 +1915,8 @@ impl LegendVisual {
         Self {
             color,
             secondary: None,
+            line_style: LineStyle::Solid,
+            symbol: None,
         }
     }
 
@@ -1913,6 +1924,19 @@ impl LegendVisual {
         Self {
             color,
             secondary: Some(secondary),
+            line_style: LineStyle::Solid,
+            symbol: None,
+        }
+    }
+
+    /// Curve icon carrying the curve's line style and marker symbol (silx
+    /// `LegendIcon` built from the curve's `CurveStyle`).
+    fn curve(color: Color32, line_style: LineStyle, symbol: Option<Symbol>) -> Self {
+        Self {
+            color,
+            secondary: None,
+            line_style,
+            symbol,
         }
     }
 }
@@ -2232,13 +2256,33 @@ fn draw_legend_swatch(
     );
     match kind {
         PlotItemKind::Curve => {
-            painter.line_segment(
-                [
-                    egui::pos2(rect.left() + 4.0, rect.center().y),
-                    egui::pos2(rect.right() - 4.0, rect.center().y),
-                ],
-                egui::Stroke::new(2.0, visual.color),
-            );
+            // silx `LegendIcon`: a full-width line in the curve's style, plus the
+            // curve's marker symbol centered on it.
+            let y = rect.center().y;
+            let a = egui::pos2(rect.left() + 4.0, y);
+            let b = egui::pos2(rect.right() - 4.0, y);
+            if visual.line_style.draws_line() {
+                let stroke = egui::Stroke::new(2.0, visual.color);
+                match visual.line_style.painter_dashes(stroke.width) {
+                    None => {
+                        painter.line_segment([a, b], stroke);
+                    }
+                    Some((dashes, gaps, offset)) => {
+                        for shape in egui::Shape::dashed_line_with_offset(
+                            &[a, b],
+                            stroke,
+                            &dashes,
+                            &gaps,
+                            offset,
+                        ) {
+                            painter.add(shape);
+                        }
+                    }
+                }
+            }
+            if let Some(symbol) = visual.symbol {
+                draw_legend_symbol(painter, rect.center(), 4.0, symbol, visual.color);
+            }
         }
         PlotItemKind::Histogram => {
             let fill = visual.color.linear_multiply(0.45);
@@ -2325,6 +2369,143 @@ fn draw_legend_swatch(
                 stroke,
             );
         }
+    }
+}
+
+/// Draw a curve's marker [`Symbol`] centered at `center` with half-extent
+/// `half`, filled in `color` (silx `LegendIcon` symbol path). Filled glyphs
+/// (circle / square / diamond / triangle / point / pixel) are drawn solid;
+/// stroke glyphs (cross / plus / lines / ticks / carets) use a `color` stroke.
+/// Mirrors the legend symbol the curve renderer draws at each vertex so the icon
+/// matches the plotted marker.
+fn draw_legend_symbol(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    half: f32,
+    symbol: Symbol,
+    color: Color32,
+) {
+    let c = center;
+    let stroke = egui::Stroke::new(1.5, color);
+    // Apex-then-arms helper for the open carets.
+    let caret = |apex: egui::Pos2, arm_a: egui::Pos2, arm_b: egui::Pos2| {
+        painter.line_segment([apex, arm_a], stroke);
+        painter.line_segment([apex, arm_b], stroke);
+    };
+    match symbol {
+        Symbol::Circle => {
+            painter.circle_filled(c, half, color);
+        }
+        Symbol::Point => {
+            painter.circle_filled(c, half * 0.6, color);
+        }
+        Symbol::Pixel => {
+            painter.rect_filled(
+                egui::Rect::from_center_size(c, egui::Vec2::splat(half * 0.9)),
+                0.0,
+                color,
+            );
+        }
+        Symbol::Square => {
+            painter.rect_filled(
+                egui::Rect::from_center_size(c, egui::Vec2::splat(half * 2.0)),
+                0.0,
+                color,
+            );
+        }
+        Symbol::Diamond => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x, c.y - half),
+                    egui::pos2(c.x + half, c.y),
+                    egui::pos2(c.x, c.y + half),
+                    egui::pos2(c.x - half, c.y),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        Symbol::Triangle => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x, c.y - half),
+                    egui::pos2(c.x + half, c.y + half),
+                    egui::pos2(c.x - half, c.y + half),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        Symbol::Cross => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - half, c.y - half),
+                    egui::pos2(c.x + half, c.y + half),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - half, c.y + half),
+                    egui::pos2(c.x + half, c.y - half),
+                ],
+                stroke,
+            );
+        }
+        Symbol::Plus => {
+            painter.line_segment(
+                [egui::pos2(c.x, c.y - half), egui::pos2(c.x, c.y + half)],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x - half, c.y), egui::pos2(c.x + half, c.y)],
+                stroke,
+            );
+        }
+        Symbol::VerticalLine => {
+            painter.line_segment(
+                [egui::pos2(c.x, c.y - half), egui::pos2(c.x, c.y + half)],
+                stroke,
+            );
+        }
+        Symbol::HorizontalLine => {
+            painter.line_segment(
+                [egui::pos2(c.x - half, c.y), egui::pos2(c.x + half, c.y)],
+                stroke,
+            );
+        }
+        Symbol::TickLeft => {
+            painter.line_segment([egui::pos2(c.x - half, c.y), c], stroke);
+        }
+        Symbol::TickRight => {
+            painter.line_segment([c, egui::pos2(c.x + half, c.y)], stroke);
+        }
+        Symbol::TickUp => {
+            painter.line_segment([egui::pos2(c.x, c.y - half), c], stroke);
+        }
+        Symbol::TickDown => {
+            painter.line_segment([c, egui::pos2(c.x, c.y + half)], stroke);
+        }
+        Symbol::CaretLeft => caret(
+            egui::pos2(c.x - half, c.y),
+            egui::pos2(c.x + half, c.y - half),
+            egui::pos2(c.x + half, c.y + half),
+        ),
+        Symbol::CaretRight => caret(
+            egui::pos2(c.x + half, c.y),
+            egui::pos2(c.x - half, c.y - half),
+            egui::pos2(c.x - half, c.y + half),
+        ),
+        Symbol::CaretUp => caret(
+            egui::pos2(c.x, c.y - half),
+            egui::pos2(c.x - half, c.y + half),
+            egui::pos2(c.x + half, c.y + half),
+        ),
+        Symbol::CaretDown => caret(
+            egui::pos2(c.x, c.y + half),
+            egui::pos2(c.x - half, c.y - half),
+            egui::pos2(c.x + half, c.y - half),
+        ),
     }
 }
 
@@ -3975,7 +4156,7 @@ impl PlotWidget {
                     self.legend_label(record),
                     self.active_item == Some(record.handle),
                     visible,
-                    record.visual,
+                    record.visual.clone(),
                 )
             })
             .collect();
@@ -8112,6 +8293,38 @@ mod tests {
         let shown = set_line_visibility(hidden, true, &mut cache);
         assert_eq!(shown, LineStyle::Dashed);
         assert_eq!(cache, None);
+    }
+
+    #[test]
+    fn curve_legend_visual_carries_line_style_and_symbol() {
+        // The legend icon must reflect the curve's own line style and marker
+        // (silx LegendIcon built from the curve's CurveStyle), so the side panel
+        // shows dashed / dotted / solid + the symbol, not just the color.
+        let x = [0.0, 1.0];
+        let y = [0.0, 1.0];
+
+        let mut dashed = CurveSpec::new(&x, &y, Color32::RED);
+        dashed.line_style = LineStyle::Dashed;
+        dashed.symbol = Some(Symbol::Square);
+        let v = curve_spec_legend_visual(&dashed, PlotItemKind::Curve);
+        assert_eq!(v.color, Color32::RED);
+        assert_eq!(v.line_style, LineStyle::Dashed);
+        assert_eq!(v.symbol, Some(Symbol::Square));
+
+        // Marker-only (no line): the icon draws no line and shows the marker.
+        let mut markers = CurveSpec::new(&x, &y, Color32::BLUE);
+        markers.line_style = LineStyle::None;
+        markers.symbol = Some(Symbol::Circle);
+        let v = curve_spec_legend_visual(&markers, PlotItemKind::Scatter);
+        assert_eq!(v.line_style, LineStyle::None);
+        assert!(!v.line_style.draws_line());
+        assert_eq!(v.symbol, Some(Symbol::Circle));
+
+        // A plain solid curve: solid line, no marker (the CurveSpec defaults).
+        let v =
+            curve_spec_legend_visual(&CurveSpec::new(&x, &y, Color32::GREEN), PlotItemKind::Curve);
+        assert_eq!(v.line_style, LineStyle::Solid);
+        assert_eq!(v.symbol, None);
     }
 
     #[test]
