@@ -544,24 +544,55 @@ pub fn draw_labels(
             style.text,
         );
     }
-    // Left Y label: rotate a quarter turn counter-clockwise (reads bottom→top).
+    // Left Y label: rotate a quarter turn counter-clockwise (reads bottom→top),
+    // centered in the left gutter strip.
     if let Some(t) = labels.y {
-        let galley = painter.layout_no_wrap(t.to_owned(), label_font.clone(), style.text);
-        let pos = pos2(full.left() + LABEL_H * 0.5, area.center().y);
-        painter.add(egui::Shape::Text(
-            TextShape::new(pos, galley, style.text)
-                .with_angle_and_anchor(-std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER),
-        ));
+        draw_rotated_label(
+            painter,
+            pos2(full.left() + LABEL_H * 0.5, area.center().y),
+            -std::f32::consts::FRAC_PI_2,
+            t,
+            label_font.clone(),
+            style.text,
+        );
     }
-    // Right y2 label: rotate a quarter turn clockwise (reads top→bottom).
+    // Right y2 label: rotate a quarter turn clockwise (reads top→bottom),
+    // centered in the right gutter strip.
     if with_y2 && let Some(t) = labels.y2 {
-        let galley = painter.layout_no_wrap(t.to_owned(), label_font, style.text);
-        let pos = pos2(full.right() - LABEL_H * 0.5, area.center().y);
-        painter.add(egui::Shape::Text(
-            TextShape::new(pos, galley, style.text)
-                .with_angle_and_anchor(std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER),
-        ));
+        draw_rotated_label(
+            painter,
+            pos2(full.right() - LABEL_H * 0.5, area.center().y),
+            std::f32::consts::FRAC_PI_2,
+            t,
+            label_font,
+            style.text,
+        );
     }
+}
+
+/// Draw `text` rotated by `angle` (a quarter turn) so its visual center lands
+/// exactly at `center`.
+///
+/// epaint's [`TextShape::with_angle_and_anchor`] with [`Align2::CENTER_CENTER`]
+/// lands the galley center at `pos + galley_center`, not at `pos` (the `a1`
+/// rotation term cancels, leaving a `+galley_center` offset). Left uncorrected,
+/// that pushes a long left label into the data area and a long right (y2) label
+/// past the gutter and out of the clip rect entirely. Pre-subtracting the galley
+/// center cancels the offset so both axis labels sit centered in their gutters
+/// regardless of length.
+fn draw_rotated_label(
+    painter: &Painter,
+    center: Pos2,
+    angle: f32,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) {
+    let galley = painter.layout_no_wrap(text.to_owned(), font, color);
+    let pos = center - galley.rect.center().to_vec2();
+    painter.add(egui::Shape::Text(
+        TextShape::new(pos, galley, color).with_angle_and_anchor(angle, Align2::CENTER_CENTER),
+    ));
 }
 
 /// Format a coordinate with decimals scaled to the visible span.
@@ -1618,5 +1649,52 @@ mod tests {
             y2lab.right() < y2_only.right(),
             "y2 label grows the right gutter"
         );
+    }
+
+    /// A rotated axis label must land its *visual* center exactly at the target
+    /// gutter point — for both the left (−90°) and right/y2 (+90°) turns, at any
+    /// label length. Guards the [`draw_rotated_label`] correction: epaint's
+    /// `with_angle_and_anchor(_, CENTER_CENTER)` otherwise offsets the center by
+    /// `+galley_center`, which pushes a long y2 label out of the clip rect.
+    #[test]
+    fn rotated_label_visual_center_lands_at_target() {
+        use egui::epaint::TextShape;
+
+        let ctx = egui::Context::default();
+        let mut galley = None;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            galley = Some(ui.painter().layout_no_wrap(
+                "Temperature [\u{b0}C]".to_owned(),
+                FontId::proportional(12.0),
+                Color32::WHITE,
+            ));
+        });
+        let galley = galley.expect("run closure executes once");
+        // A non-trivial label so the offset is large enough to matter.
+        assert!(galley.rect.width() > 40.0, "fixture label should be wide");
+
+        let target = Pos2::new(1124.0, 456.0);
+        for angle in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
+            // Corrected placement (mirrors `draw_rotated_label`).
+            let pos = target - galley.rect.center().to_vec2();
+            let fixed = TextShape::new(pos, galley.clone(), Color32::WHITE)
+                .with_angle_and_anchor(angle, Align2::CENTER_CENTER);
+            let c = fixed.visual_bounding_rect().center();
+            assert!(
+                (c.x - target.x).abs() < 1.0 && (c.y - target.y).abs() < 1.0,
+                "angle={angle}: corrected center {c:?} should equal target {target:?}"
+            );
+
+            // The naive placement (pos == target) is offset by +galley_center
+            // (here ~half the label width, tens of px), i.e. it does NOT land at
+            // the target — that was the rendered bug.
+            let naive = TextShape::new(target, galley.clone(), Color32::WHITE)
+                .with_angle_and_anchor(angle, Align2::CENTER_CENTER);
+            let nc = naive.visual_bounding_rect().center();
+            assert!(
+                (nc - target).length() > 10.0,
+                "angle={angle}: naive center {nc:?} must be offset from target {target:?}"
+            );
+        }
     }
 }
