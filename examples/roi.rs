@@ -11,7 +11,7 @@
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, pos2};
-use egui_silx::{CurveData, Plot, PlotView, Roi, install, set_curve};
+use egui_silx::{CurveData, ManagedRoi, Plot, PlotView, Roi, install, set_curve};
 
 const N: usize = 200;
 
@@ -43,11 +43,11 @@ impl RoiApp {
         let mut plot = Plot::new(0);
         plot.limits = (-0.5, 10.5, 0.0, 9.0);
         plot.rois = vec![
-            Roi::Rect {
+            ManagedRoi::new(Roi::Rect {
                 x: (2.0, 5.0),
                 y: (3.0, 7.0),
-            },
-            Roi::HRange { y: (1.0, 2.0) },
+            }),
+            ManagedRoi::new(Roi::HRange { y: (1.0, 2.0) }),
         ];
 
         Self { plot }
@@ -60,7 +60,7 @@ impl eframe::App for RoiApp {
             let out = PlotView::new().show(ui, &mut self.plot);
             // Report the bounds of whichever region's edge is being dragged.
             if let Some(i) = out.roi_changed {
-                let text = match self.plot.rois[i] {
+                let text = match self.plot.rois[i].roi {
                     Roi::Rect { x, y } => {
                         format!(
                             "rect #{i}  x=[{:.2}, {:.2}]  y=[{:.2}, {:.2}]",

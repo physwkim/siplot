@@ -12,7 +12,7 @@
 use egui::{Pos2, Rect, Vec2};
 
 use crate::core::marker::{Marker, MarkerConstraint, MarkerKind};
-use crate::core::roi::{Roi, RoiEdge};
+use crate::core::roi::{ManagedRoi, Roi, RoiEdge};
 use crate::core::transform::{Scale, Transform};
 
 /// Data limits `(x_min, x_max, y_min, y_max)`.
@@ -1322,13 +1322,14 @@ pub enum RoiGrab {
 /// Returns the `(index, grab)` of the first ROI that matches, or `None`. Pure,
 /// so the priority is unit-testable without a `Ui`.
 pub fn roi_grab_at(
-    rois: &[Roi],
+    rois: &[ManagedRoi],
     transform: &Transform,
     cursor: Pos2,
     grab_px: f32,
 ) -> Option<(usize, RoiGrab)> {
     let data = transform.pixel_to_data(cursor);
-    for (i, roi) in rois.iter().enumerate().rev() {
+    for (i, managed) in rois.iter().enumerate().rev() {
+        let roi = &managed.roi;
         if let Some(edge) = roi.edge_at(transform, cursor, grab_px) {
             return Some((i, RoiGrab::Edge(edge)));
         }
@@ -2544,10 +2545,10 @@ mod tests {
     fn roi_grab_at_edge_then_body_then_none() {
         let t = pick_transform();
         // Rect data x[2,8] y[3,7] -> screen left 20, right 80, top 30, bottom 70.
-        let rois = vec![Roi::Rect {
+        let rois = vec![ManagedRoi::new(Roi::Rect {
             x: (2.0, 8.0),
             y: (3.0, 7.0),
-        }];
+        })];
         // Near the left edge -> Edge(Left).
         assert_eq!(
             roi_grab_at(&rois, &t, pos2(21.0, 50.0), 4.0),
@@ -2568,14 +2569,14 @@ mod tests {
         // Two overlapping rects covering the cursor's body region; the second
         // (drawn last, highest z) wins the translate grab.
         let rois = vec![
-            Roi::Rect {
+            ManagedRoi::new(Roi::Rect {
                 x: (1.0, 9.0),
                 y: (1.0, 9.0),
-            },
-            Roi::Rect {
+            }),
+            ManagedRoi::new(Roi::Rect {
                 x: (2.0, 8.0),
                 y: (2.0, 8.0),
-            },
+            }),
         ];
         // Cursor at data (5,5) -> pixel (50,50): inside both, away from edges.
         assert_eq!(

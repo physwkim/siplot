@@ -10,7 +10,7 @@ use egui::{Color32, Rect};
 use crate::core::backend::ItemHandle;
 use crate::core::colormap::Colormap;
 use crate::core::marker::Marker;
-use crate::core::roi::Roi;
+use crate::core::roi::{DEFAULT_ROI_COLOR, ManagedRoi};
 use crate::core::shape::{Line, Shape};
 use crate::core::transform::{Axis, Margins, Scale, Transform, keep_aspect_limits};
 use crate::core::triangles::Triangles;
@@ -277,9 +277,22 @@ pub struct Plot {
     /// over the data area (silx `setGraphCursor`, `doc/design.md` §13 C1).
     pub crosshair: bool,
     /// Regions of interest drawn over the data area with draggable edge
-    /// handles. Dragging an edge updates that ROI's bounds in place and the
-    /// widget reports the changed index (`doc/design.md` §13 C3).
-    pub rois: Vec<Roi>,
+    /// handles, each carrying its own appearance (color, name, selection,
+    /// line width/style, fill — silx `RegionOfInterest`). Dragging an edge
+    /// updates that ROI's geometry in place and the widget reports the changed
+    /// index (`doc/design.md` §13 C3).
+    pub rois: Vec<ManagedRoi>,
+    /// Default ROI outline color applied to ROIs without an explicit color
+    /// override (silx `RegionOfInterestManager.getColor`/`setColor`, default
+    /// red). The render resolves each ROI's color as
+    /// `managed.color.unwrap_or(roi_color)`.
+    pub roi_color: Color32,
+    /// Index of the current/highlighted ROI, or `None` (silx
+    /// `RegionOfInterestManager.getCurrentRoi`). Private so
+    /// [`Self::set_current_roi`] is the sole writer of each ROI's `selected`
+    /// flag, keeping "exactly the current ROI is highlighted" true by
+    /// construction.
+    current_roi: Option<usize>,
     /// Point / line markers drawn over the data area (silx `addMarker`). Each is
     /// a static overlay; the widget draws the list every frame.
     pub markers: Vec<Marker>,
@@ -412,6 +425,8 @@ impl Plot {
             y2: None,
             crosshair: false,
             rois: Vec::new(),
+            roi_color: DEFAULT_ROI_COLOR,
+            current_roi: None,
             markers: Vec::new(),
             marker_handles: Vec::new(),
             shapes: Vec::new(),
@@ -441,6 +456,34 @@ impl Plot {
             autoreplot: true,
             x_tick_mode: TickMode::Numeric,
             lines: Vec::new(),
+        }
+    }
+
+    /// The index of the current/highlighted ROI, or `None` (silx
+    /// `RegionOfInterestManager.getCurrentRoi`).
+    pub fn current_roi(&self) -> Option<usize> {
+        self.current_roi
+    }
+
+    /// Set the current ROI by index, or `None` to clear it (silx
+    /// `RegionOfInterestManager.setCurrentRoi`): the previous current ROI loses
+    /// its highlight and the new one gains it. An out-of-range index clears the
+    /// selection. This is the sole writer of every ROI's `selected` flag, so the
+    /// invariant "exactly the current ROI is highlighted" holds by construction.
+    pub fn set_current_roi(&mut self, index: Option<usize>) {
+        self.current_roi = match index {
+            Some(i) if i < self.rois.len() => Some(i),
+            _ => None,
+        };
+        self.sync_roi_selection();
+    }
+
+    /// Mirror [`Self::current_roi`] onto each ROI's `selected` flag so exactly
+    /// the current ROI is highlighted (silx highlights only the current ROI).
+    fn sync_roi_selection(&mut self) {
+        let current = self.current_roi;
+        for (i, r) in self.rois.iter_mut().enumerate() {
+            r.selected = Some(i) == current;
         }
     }
 
@@ -1404,5 +1447,50 @@ mod tests {
         assert_eq!(left.x, right.x);
         // Sanity: the lock actually widened X beyond the raw [0, 10].
         assert!(left.x.min < 0.0 && left.x.max > 10.0, "{:?}", left.x);
+    }
+
+    // --- current-ROI selection invariant (Plot is the single owner) ---
+
+    fn point_roi(i: usize) -> ManagedRoi {
+        ManagedRoi::new(crate::core::roi::Roi::Point {
+            x: i as f64,
+            y: 0.0,
+        })
+    }
+
+    #[test]
+    fn roi_color_defaults_to_silx_red() {
+        assert_eq!(Plot::new(0).roi_color, Color32::RED);
+    }
+
+    #[test]
+    fn set_current_roi_highlights_exactly_one() {
+        let mut plot = Plot::new(0);
+        plot.rois = (0..3).map(point_roi).collect();
+
+        plot.set_current_roi(Some(1));
+        assert_eq!(plot.current_roi(), Some(1));
+        assert!(!plot.rois[0].selected);
+        assert!(plot.rois[1].selected);
+        assert!(!plot.rois[2].selected);
+
+        // Switching the current ROI moves the single highlight.
+        plot.set_current_roi(Some(2));
+        assert!(!plot.rois[1].selected);
+        assert!(plot.rois[2].selected);
+
+        // Clearing removes every highlight.
+        plot.set_current_roi(None);
+        assert_eq!(plot.current_roi(), None);
+        assert!(plot.rois.iter().all(|r| !r.selected));
+    }
+
+    #[test]
+    fn set_current_roi_out_of_range_clears_selection() {
+        let mut plot = Plot::new(0);
+        plot.rois = vec![point_roi(0)];
+        plot.set_current_roi(Some(1));
+        assert_eq!(plot.current_roi(), None);
+        assert!(!plot.rois[0].selected);
     }
 }

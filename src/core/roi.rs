@@ -6,9 +6,16 @@
 //! [`Roi::edge_at`] and [`Roi::move_edge`] and emits a change when an edge moves
 //! (silx `RegionOfInterest`, `doc/design.md` §13 C3).
 
-use egui::{Pos2, Rect};
+use egui::{Color32, Pos2, Rect};
 
+use crate::core::items::LineStyle;
 use crate::core::transform::Transform;
+
+/// silx `RegionOfInterestManager._color` default (`rgba("red")`).
+pub const DEFAULT_ROI_COLOR: Color32 = Color32::RED;
+
+/// silx `RegionOfInterest._DEFAULT_LINEWIDTH` (`items/_roi_base.py:245`).
+pub const DEFAULT_ROI_LINE_WIDTH: f32 = 1.0;
 
 /// A draggable edge of an ROI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -748,6 +755,83 @@ impl Roi {
                 shift(begin);
                 shift(end);
             }
+        }
+    }
+}
+
+/// Per-ROI outline stroke style (silx `LineMixIn` `setLineStyle`/`getLineStyle`,
+/// `items/_roi_base.py`). A reduced three-value catalog matching the ROI styles
+/// silx exposes through the manager. The default is [`RoiLineStyle::Solid`]
+/// (silx `_DEFAULT_LINESTYLE = "-"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RoiLineStyle {
+    /// Continuous line (silx `"-"`).
+    #[default]
+    Solid,
+    /// Dashed line (silx `"--"`).
+    Dashed,
+    /// Dotted line (silx `":"`).
+    Dotted,
+}
+
+impl RoiLineStyle {
+    /// Map to the shared painter [`LineStyle`] so chrome can emit the dash
+    /// segments (silx maps the same `"-"`/`"--"`/`":"` codes to its line styles).
+    pub fn to_line_style(self) -> LineStyle {
+        match self {
+            RoiLineStyle::Solid => LineStyle::Solid,
+            RoiLineStyle::Dashed => LineStyle::Dashed,
+            RoiLineStyle::Dotted => LineStyle::Dotted,
+        }
+    }
+
+    /// A short label for the per-ROI style selector.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            RoiLineStyle::Solid => "─",
+            RoiLineStyle::Dashed => "╌",
+            RoiLineStyle::Dotted => "┈",
+        }
+    }
+}
+
+/// A region of interest plus the metadata silx keeps on its `RegionOfInterest`:
+/// an optional per-ROI color (falls back to the manager default, silx
+/// `useManagerColor`), a display name (silx `getName`/`setName`), whether it is
+/// currently selected/highlighted (silx `setHighlighted`), and the per-ROI
+/// outline styling silx stores via `LineMixIn` (`setLineWidth`/`setLineStyle`,
+/// `items/_roi_base.py`) plus the shape fill flag (silx `RectangleROI`
+/// `setFill`, `items/roi.py:531-552`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ManagedRoi {
+    /// Pure geometry of the region of interest.
+    pub roi: Roi,
+    /// Per-ROI color override; `None` uses the manager's default color.
+    pub color: Option<Color32>,
+    /// Display name (may be empty).
+    pub name: String,
+    /// Whether this ROI is the highlighted/current one.
+    pub selected: bool,
+    /// Outline line width in logical points (silx `setLineWidth`, default 1.0).
+    pub line_width: f32,
+    /// Outline stroke style (silx `setLineStyle`, default solid).
+    pub line_style: RoiLineStyle,
+    /// Whether the ROI's interior is filled (silx `setFill`, default `false`).
+    pub fill: bool,
+}
+
+impl ManagedRoi {
+    /// Wrap `roi` with default metadata: no color override, empty name, not
+    /// selected, solid 1.0-width outline, unfilled (silx defaults).
+    pub fn new(roi: Roi) -> Self {
+        Self {
+            roi,
+            color: None,
+            name: String::new(),
+            selected: false,
+            line_width: DEFAULT_ROI_LINE_WIDTH,
+            line_style: RoiLineStyle::default(),
+            fill: false,
         }
     }
 }
@@ -1717,5 +1801,26 @@ mod tests {
         let mut v = Roi::VRange { x: (2.0, 8.0) };
         v.translate(1.5, -0.5);
         assert_eq!(v, Roi::VRange { x: (3.5, 9.5) });
+    }
+
+    // --- ManagedRoi / RoiLineStyle ---
+
+    #[test]
+    fn new_managed_roi_uses_silx_style_defaults() {
+        // silx RegionOfInterest defaults: linewidth 1.0, solid, unfilled.
+        let r = ManagedRoi::new(Roi::Point { x: 0.0, y: 0.0 });
+        assert_eq!(r.color, None);
+        assert!(r.name.is_empty());
+        assert!(!r.selected);
+        assert_eq!(r.line_width, 1.0);
+        assert_eq!(r.line_style, RoiLineStyle::Solid);
+        assert!(!r.fill);
+    }
+
+    #[test]
+    fn roi_line_style_maps_to_painter_line_style() {
+        assert_eq!(RoiLineStyle::Solid.to_line_style(), LineStyle::Solid);
+        assert_eq!(RoiLineStyle::Dashed.to_line_style(), LineStyle::Dashed);
+        assert_eq!(RoiLineStyle::Dotted.to_line_style(), LineStyle::Dotted);
     }
 }

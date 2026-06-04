@@ -42,7 +42,7 @@ pub use crate::core::plot::{
     AxisConstraints, DataMargins, DataRange, DirtyState, GraphGrid, Plot, PlotId, TickMode,
     resolved_axis_label,
 };
-pub use crate::core::roi::{Roi, RoiEdge};
+pub use crate::core::roi::{ManagedRoi, Roi, RoiEdge, RoiLineStyle};
 pub use crate::core::scatter_viz::{
     BinnedStatistic, BinnedStatisticFunction, GridImage, GridMajorOrder, PointsViz, RegularGrid,
     Triangulation, binned_statistic, delaunay, detect_regular_grid, interpolate,
@@ -97,7 +97,7 @@ pub use crate::widget::profile_window::ProfileWindow;
 pub use crate::widget::radar_view::{
     DataRect, RadarMapping, RadarResponse, RadarView, clamp_viewport, point_in_rect,
 };
-pub use crate::widget::roi_manager::{ManagedRoi, RoiManagerWidget};
+pub use crate::widget::roi_manager::RoiManagerWidget;
 pub use crate::widget::roi_stats::{RoiStats, curve_roi_stats, image_roi_stats, roi_x_span};
 pub use crate::widget::scatter_mask::{ScatterMaskWidget, point_in_polygon};
 pub use crate::widget::stats_widget::{

@@ -21,7 +21,7 @@ use crate::core::colormap::{AutoscaleMode, Colormap};
 use crate::core::items::{Baseline, LineStyle, ScalarMask, Symbol};
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::plot::{DataRange, GraphGrid, Plot, PlotId};
-use crate::core::roi::Roi;
+use crate::core::roi::{ManagedRoi, Roi};
 use crate::core::scatter_viz::GridImage;
 use crate::core::shape::{Shape, ShapeKind};
 use crate::core::transform::{Margins, Scale, YAxis};
@@ -298,7 +298,7 @@ pub enum PlotEvent {
     RoiChanged { index: usize },
     /// A new ROI was created at `index` by an on-plot draw in
     /// [`PlotInteractionMode::RoiCreate`] (silx `RegionOfInterestManager`
-    /// shape-finished). Read it with `plot().rois[index]`.
+    /// shape-finished). Read its geometry with `plot().rois[index].roi`.
     RoiCreated { index: usize },
     /// All ROIs were cleared.
     RoisCleared,
@@ -5307,17 +5307,17 @@ impl PlotWidget {
     }
 
     pub fn add_roi(&mut self, roi: Roi) -> usize {
-        self.backend.plot_mut().rois.push(roi);
+        self.backend.plot_mut().rois.push(ManagedRoi::new(roi));
         let index = self.backend.plot().rois.len() - 1;
         self.events.push(PlotEvent::RoiChanged { index });
         index
     }
 
-    pub fn rois(&self) -> &[Roi] {
+    pub fn rois(&self) -> &[ManagedRoi] {
         &self.backend.plot().rois
     }
 
-    pub fn rois_mut(&mut self) -> &mut [Roi] {
+    pub fn rois_mut(&mut self) -> &mut [ManagedRoi] {
         &mut self.backend.plot_mut().rois
     }
 
@@ -5340,9 +5340,9 @@ impl PlotWidget {
         egui::ScrollArea::vertical()
             .max_height(200.0)
             .show(ui, |ui| {
-                for (i, roi) in self.backend.plot().rois.iter().enumerate() {
+                for (i, managed) in self.backend.plot().rois.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        let desc = roi_description(roi);
+                        let desc = roi_description(&managed.roi);
                         ui.label(desc);
                         if ui.small_button("×").on_hover_text("Remove").clicked() {
                             remove_idx = Some(i);

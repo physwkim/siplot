@@ -14,7 +14,7 @@ use crate::core::dtime_ticks;
 use crate::core::items::LineStyle;
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::plot::{GraphGrid, TickMode};
-use crate::core::roi::{HandleKind, Roi};
+use crate::core::roi::{HandleKind, ManagedRoi, Roi};
 use crate::core::shape::{Line, Shape, ShapeKind};
 use crate::core::transform::{Axis, Scale, Transform, YAxis};
 use crate::core::triangles::Triangles;
@@ -632,12 +632,29 @@ pub struct RoiAppearance<'a> {
     pub fill: Option<bool>,
 }
 
-/// Draw each region of interest with default (axis-color, unnamed, unselected)
-/// appearance: a translucent fill, a border, and a small square handle at every
-/// draggable edge midpoint (`doc/design.md` §13 C3).
-pub fn draw_rois(painter: &Painter, t: &Transform, rois: &[Roi], style: &Style) {
-    for roi in rois {
-        draw_roi(painter, t, roi, &RoiAppearance::default(), style);
+/// Draw each region of interest honoring its per-ROI appearance: the resolved
+/// color (`managed.color` or `default_color`), a name label, a thicker outline
+/// when selected, and its line width / style / fill (silx
+/// `RegionOfInterest`). `default_color` is the manager's color (silx
+/// `RegionOfInterestManager.getColor`, default red) applied to ROIs without an
+/// explicit override (`doc/design.md` §13 C3).
+pub fn draw_rois(
+    painter: &Painter,
+    t: &Transform,
+    rois: &[ManagedRoi],
+    default_color: Color32,
+    style: &Style,
+) {
+    for r in rois {
+        let appearance = RoiAppearance {
+            color: Some(r.color.unwrap_or(default_color)),
+            name: (!r.name.is_empty()).then_some(r.name.as_str()),
+            selected: r.selected,
+            line_width: Some(r.line_width),
+            line_style: Some(r.line_style.to_line_style()),
+            fill: Some(r.fill),
+        };
+        draw_roi(painter, t, &r.roi, &appearance, style);
     }
 }
 

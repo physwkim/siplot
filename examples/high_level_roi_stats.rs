@@ -51,9 +51,9 @@ impl eframe::App for RoiStatsApp {
             .default_size(250.0)
             .show_inside(ui, |ui| {
                 ui.heading("ROI stats");
-                for (index, roi) in self.plot.rois().iter().enumerate() {
-                    ui.label(format!("ROI {index}: {roi:?}"));
-                    show_stats(ui, roi_stats(&self.image, roi.clone()));
+                for (index, managed) in self.plot.rois().iter().enumerate() {
+                    ui.label(format!("ROI {index}: {:?}", managed.roi));
+                    show_stats(ui, roi_stats(&self.image, managed.roi.clone()));
                     ui.separator();
                 }
             });

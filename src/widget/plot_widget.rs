@@ -16,6 +16,7 @@
 use egui::{PointerButton, Pos2, Rect, Sense, Stroke, Ui};
 
 use crate::core::plot::Plot;
+use crate::core::roi::ManagedRoi;
 use crate::core::transform::{Scale, Transform};
 use crate::widget::interaction::{RoiDrawKind, RoiGrab};
 
@@ -348,9 +349,10 @@ impl PlotView {
             );
         }
 
-        // Regions of interest (fill, border, edge handles) over the data layer.
+        // Regions of interest (per-ROI color/name/selection/width/style/fill,
+        // border, edge handles) over the data layer.
         if !plot.rois.is_empty() {
-            chrome::draw_rois(painter, &transform, &plot.rois, &style);
+            chrome::draw_rois(painter, &transform, &plot.rois, plot.roi_color, &style);
         }
 
         // Shapes (polygons / rectangles / polylines / lines) over the data layer
@@ -766,17 +768,19 @@ fn apply_interaction(
         } else {
             if response.dragged_by(PointerButton::Primary)
                 && let Some(cur) = response.interact_pointer_pos()
-                && let Some(roi) = plot.rois.get_mut(rd.roi)
+                && let Some(managed) = plot.rois.get_mut(rd.roi)
             {
                 let cur_data = view.pixel_to_data(cur);
                 match rd.grab {
                     // Edge resize: move the grabbed handle to the absolute cursor.
-                    RoiGrab::Edge(edge) => roi.move_edge(edge, cur_data),
+                    RoiGrab::Edge(edge) => managed.roi.move_edge(edge, cur_data),
                     // Whole-ROI translate: shift by this frame's delta, then
                     // advance the carried anchor so deltas accumulate (silx body
                     // drag).
                     RoiGrab::Translate => {
-                        roi.translate(cur_data.0 - rd.last_data.0, cur_data.1 - rd.last_data.1);
+                        managed
+                            .roi
+                            .translate(cur_data.0 - rd.last_data.0, cur_data.1 - rd.last_data.1);
                         rd.last_data = cur_data;
                         ui.data_mut(|d| d.insert_temp(roi_id, rd));
                     }
@@ -835,7 +839,7 @@ fn apply_interaction(
 
         if let Some(interaction::DrawEvent::Finished { params, .. }) = &event {
             if let Some(roi) = interaction::roi_from_draw(kind, params) {
-                plot.rois.push(roi);
+                plot.rois.push(ManagedRoi::new(roi));
                 roi_created = Some(plot.rois.len() - 1);
             }
             // Re-arm a fresh DrawState for the next shape (continuous creation).
@@ -893,7 +897,7 @@ fn apply_interaction(
             .rois
             .iter()
             .rev()
-            .find_map(|roi| roi.edge_at(view, p, ROI_GRAB_PX));
+            .find_map(|managed| managed.roi.edge_at(view, p, ROI_GRAB_PX));
         let shape = interaction::cursor_for_grab(grabbed);
         if shape != interaction::CursorShape::Default {
             ui.ctx().set_cursor_icon(shape.to_egui());
@@ -1571,7 +1575,10 @@ mod tests {
         // reported exactly once across the click's frames — this catches both a
         // missing report and a double-create (re-fire on both frames).
         assert_eq!(plot.rois.len(), 1);
-        assert!(matches!(plot.rois[0], crate::core::roi::Roi::Point { .. }));
+        assert!(matches!(
+            plot.rois[0].roi,
+            crate::core::roi::Roi::Point { .. }
+        ));
         let reported: Vec<usize> = [press_resp.roi_created, release_resp.roi_created]
             .into_iter()
             .flatten()
@@ -1602,7 +1609,10 @@ mod tests {
         let _ = run_mode_frame(&ctx, &mut plot, mode, move_to(screen, b));
         let (resp1, _) = run_mode_frame(&ctx, &mut plot, mode, release_at(screen, b));
         assert_eq!(plot.rois.len(), 1);
-        assert!(matches!(plot.rois[0], crate::core::roi::Roi::Line { .. }));
+        assert!(matches!(
+            plot.rois[0].roi,
+            crate::core::roi::Roi::Line { .. }
+        ));
         assert_eq!(resp1.roi_created, Some(0));
 
         // Second drag: the DrawState re-armed, so a fresh Line is appended.
@@ -1649,10 +1659,10 @@ mod tests {
         plot.limits = (0.0, 10.0, 0.0, 10.0);
         // A big rect (data x[1,9] y[1,9]) so the body interior is generous and
         // the cursor stays well clear of the corner handles throughout.
-        plot.rois.push(crate::core::roi::Roi::Rect {
+        plot.rois.push(ManagedRoi::new(crate::core::roi::Roi::Rect {
             x: (1.0, 9.0),
             y: (1.0, 9.0),
-        });
+        }));
         let mode = PlotInteractionMode::Select;
         let screen = egui::vec2(200.0, 200.0);
 
@@ -1668,7 +1678,7 @@ mod tests {
         let _ = run_mode_frame(&ctx, &mut plot, mode, move_to(screen, a_px));
         // Capture the rect with the grab established; the next move's data delta
         // is what the rect must shift by.
-        let before = match &plot.rois[0] {
+        let before = match &plot.rois[0].roi {
             crate::core::roi::Roi::Rect { x, y } => (*x, *y),
             other => panic!("{other:?}"),
         };
@@ -1678,7 +1688,7 @@ mod tests {
 
         let (resp, _) = run_mode_frame(&ctx, &mut plot, mode, move_to(screen, b_px));
         assert_eq!(resp.roi_changed, Some(0));
-        match &plot.rois[0] {
+        match &plot.rois[0].roi {
             crate::core::roi::Roi::Rect { x, y } => {
                 // The whole rect translated by exactly the cursor data delta; no
                 // edge moved independently (both bounds shift by the same amount).
@@ -1703,10 +1713,10 @@ mod tests {
         let ctx = egui::Context::default();
         let mut plot = Plot::new(0);
         plot.limits = (0.0, 10.0, 0.0, 10.0);
-        plot.rois.push(crate::core::roi::Roi::Rect {
+        plot.rois.push(ManagedRoi::new(crate::core::roi::Roi::Rect {
             x: (1.0, 9.0),
             y: (1.0, 9.0),
-        });
+        }));
         let screen = egui::vec2(200.0, 200.0);
 
         let (_r0, area) = run_mode_frame(
@@ -1733,7 +1743,7 @@ mod tests {
             PlotInteractionMode::Select,
             move_to(screen, a_px),
         );
-        let before = match &plot.rois[0] {
+        let before = match &plot.rois[0].roi {
             crate::core::roi::Roi::Rect { x, y } => (*x, *y),
             other => panic!("{other:?}"),
         };
@@ -1750,7 +1760,7 @@ mod tests {
             resp.roi_changed, None,
             "ROI must not edit in a mode that does not grab ROI edges"
         );
-        match &plot.rois[0] {
+        match &plot.rois[0].roi {
             crate::core::roi::Roi::Rect { x, y } => {
                 assert_eq!((*x, *y), before, "rect unchanged after the mode switch")
             }
@@ -1769,7 +1779,7 @@ mod tests {
             resp2.roi_changed, None,
             "cancelled drag must not resume when the mode switches back"
         );
-        match &plot.rois[0] {
+        match &plot.rois[0].roi {
             crate::core::roi::Roi::Rect { x, y } => {
                 assert_eq!(
                     (*x, *y),

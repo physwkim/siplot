@@ -117,13 +117,13 @@ impl eframe::App for RoiProfileApp {
 
         // Update profile based on active ROI
         if let Some(idx) = self.active_roi_index
-            && let Some(roi) = self.image_plot.rois().get(idx)
+            && let Some(managed) = self.image_plot.rois().get(idx)
         {
             // If the user modified the ROI, the plot updates automatically.
             // In a real app we'd check for `PlotEvent::RoiChanged { index: idx }`
             // but updating it every frame is fine for the example.
             self.profile_window
-                .update_profile(WIDTH, HEIGHT, &self.pixels, roi);
+                .update_profile(WIDTH, HEIGHT, &self.pixels, &managed.roi);
         }
     }
 }
