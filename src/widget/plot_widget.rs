@@ -645,12 +645,31 @@ fn apply_interaction(
     // drawing). It pre-empts pan/zoom/ROI so a draggable marker under the cursor
     // wins the gesture.
     let id = response.id;
+
+    // Anchor for every primary-drag *grab* hit-test (marker grab, ROI
+    // edge/body grab). egui only reports `drag_started` once the pointer has
+    // moved past `max_click_dist` (6px) from the press, so on that frame
+    // `interact_pointer_pos()` is already >6px from where the user clicked.
+    // Hit-testing a grab there misses any handle whose grab zone is a *point*
+    // of radius <= that drift: rect corners, circle/ellipse perimeter
+    // vertices, and small point markers all become un-grabbable and fall
+    // through to the body-translate (or no-op) — the user-reported "corner /
+    // diagonal doesn't resize, circle/ellipse only move". Line handles (rect
+    // sides) survived only because their grab zone is unbounded along the
+    // edge. The press origin is exactly where the user clicked (on the
+    // handle), so anchoring every grab decision there fixes the point handles
+    // without regressing the line handles or body translate. Falls back to the
+    // interaction position if the press origin is somehow absent.
+    let press_anchor = ui
+        .input(|i| i.pointer.press_origin())
+        .or_else(|| response.interact_pointer_pos());
+
     let marker_id = id.with("marker-drag");
     let mut marker_moved = None;
     // Grab on drag-start: hit-test the topmost draggable marker at the press.
     if mode_allows_marker_drag(mode)
         && response.drag_started_by(PointerButton::Primary)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = press_anchor
         && let Some(index) = interaction::marker_at(&plot.markers, view, p)
         && let Some(&handle) = plot.marker_handles.get(index)
     {
@@ -730,10 +749,13 @@ fn apply_interaction(
     if mode_grabs_roi_edge(mode)
         && !marker_dragging
         && response.drag_started_by(PointerButton::Primary)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = press_anchor
     {
         // Topmost ROI wins; within an ROI a handle wins over the body (the
-        // priority lives in `roi_grab_at`).
+        // priority lives in `roi_grab_at`). `p` is the press origin (see
+        // `press_anchor`), so a precise click on a point handle anchors the
+        // edge grab even though egui only recognizes the drag after the cursor
+        // has drifted off the handle.
         let grabbed =
             interaction::roi_grab_at(&plot.rois, view, p, ROI_GRAB_PX).map(|(roi, grab)| RoiDrag {
                 roi,
@@ -1786,6 +1808,160 @@ mod tests {
                     before,
                     "rect still unchanged after switching back"
                 )
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn circle_perimeter_drag_resizes_end_to_end_under_inverted_y() {
+        // End-to-end (apply_interaction) proof that the circle's perimeter handle
+        // is grabbable and resizes the radius — even on an inverted-Y image plot.
+        // This distinguishes the real edge-grab path from the body-translate
+        // fallback (the user reported circle/ellipse "only translate").
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        plot.y_inverted = true;
+        plot.rois
+            .push(ManagedRoi::new(crate::core::roi::Roi::Circle {
+                center: (5.0, 5.0),
+                radius: 3.0,
+            }));
+        let mode = PlotInteractionMode::Select;
+        let screen = egui::vec2(200.0, 200.0);
+
+        let (r0, _area) = run_mode_frame(&ctx, &mut plot, mode, screen_input(screen));
+        let t = r0.transform;
+        // Perimeter handle at data (center.x + r, center.y) = (8, 5).
+        let handle_px = t.data_to_pixel(8.0, 5.0);
+
+        // Press on the handle, anchor the grab with a small move that stays
+        // within the handle's grab radius, then drag out to data (9,5): the
+        // radius must grow from 3 to 4 (perimeter resize, not a translate).
+        let _ = run_mode_frame(&ctx, &mut plot, mode, press_at(screen, handle_px));
+        let _ = run_mode_frame(
+            &ctx,
+            &mut plot,
+            mode,
+            move_to(screen, handle_px + egui::vec2(2.0, 0.0)),
+        );
+        let target_px = t.data_to_pixel(9.0, 5.0);
+        let (resp, _) = run_mode_frame(&ctx, &mut plot, mode, move_to(screen, target_px));
+        assert_eq!(resp.roi_changed, Some(0), "perimeter grab edits the ROI");
+        match &plot.rois[0].roi {
+            crate::core::roi::Roi::Circle { center, radius } => {
+                assert!(
+                    (center.0 - 5.0).abs() < 1e-6 && (center.1 - 5.0).abs() < 1e-6,
+                    "center unchanged: {center:?}"
+                );
+                assert!(
+                    (*radius - 4.0).abs() < 1e-6,
+                    "radius grew to 4, got {radius}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn rect_corner_drag_resizes_diagonally_end_to_end_under_inverted_y() {
+        // End-to-end (apply_interaction) proof that a rect CORNER handle is
+        // grabbable and resizes diagonally. The user reported "직사각형 ...
+        // 상하/좌우로는 되는데 대각선은 안됨" — rect side (top/bottom/left/right)
+        // resize worked but the diagonal corner did not. A corner is a point
+        // handle, un-grabbable before the press-origin anchor (the cursor
+        // drifts off the 6px corner zone before egui recognizes the drag); the
+        // side handles always worked because their grab zone is a line.
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        plot.y_inverted = true;
+        plot.rois.push(ManagedRoi::new(crate::core::roi::Roi::Rect {
+            x: (2.0, 7.0),
+            y: (2.0, 7.0),
+        }));
+        let mode = PlotInteractionMode::Select;
+        let screen = egui::vec2(200.0, 200.0);
+
+        let (r0, _area) = run_mode_frame(&ctx, &mut plot, mode, screen_input(screen));
+        let t = r0.transform;
+        // Data corner (x.max, y.max) = (7, 7).
+        let corner_px = t.data_to_pixel(7.0, 7.0);
+
+        // Press on the corner, anchor with a small within-grab move, then drag
+        // the corner out to data (9, 9): the (x.max, y.max) corner follows while
+        // the opposite (x.min, y.min) corner stays fixed.
+        let _ = run_mode_frame(&ctx, &mut plot, mode, press_at(screen, corner_px));
+        let _ = run_mode_frame(
+            &ctx,
+            &mut plot,
+            mode,
+            move_to(screen, corner_px + egui::vec2(2.0, 2.0)),
+        );
+        let target_px = t.data_to_pixel(9.0, 9.0);
+        let (resp, _) = run_mode_frame(&ctx, &mut plot, mode, move_to(screen, target_px));
+        assert_eq!(resp.roi_changed, Some(0), "corner grab edits the ROI");
+        match &plot.rois[0].roi {
+            crate::core::roi::Roi::Rect { x, y } => {
+                assert!((x.0 - 2.0).abs() < 1e-6, "x.min fixed: {x:?}");
+                assert!((y.0 - 2.0).abs() < 1e-6, "y.min fixed: {y:?}");
+                assert!((x.1 - 9.0).abs() < 1e-6, "x.max followed cursor: {x:?}");
+                assert!((y.1 - 9.0).abs() < 1e-6, "y.max followed cursor: {y:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn ellipse_axis_handle_drag_resizes_end_to_end_under_inverted_y() {
+        // End-to-end (apply_interaction) proof that an ellipse axis handle is
+        // grabbable and resizes a semi-axis. The user reported "타원은 위치 이동만
+        // 가능하고 크기조절이 안됨" — ellipse only translated, no resize. The axis
+        // handle is a point handle, un-grabbable before the press-origin anchor.
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        plot.y_inverted = true;
+        plot.rois
+            .push(ManagedRoi::new(crate::core::roi::Roi::Ellipse {
+                center: (5.0, 5.0),
+                radii: (3.0, 2.0),
+            }));
+        let mode = PlotInteractionMode::Select;
+        let screen = egui::vec2(200.0, 200.0);
+
+        let (r0, _area) = run_mode_frame(&ctx, &mut plot, mode, screen_input(screen));
+        let t = r0.transform;
+        // x-axis handle at data (center.x + radii.0, center.y) = (8, 5).
+        let handle_px = t.data_to_pixel(8.0, 5.0);
+
+        let _ = run_mode_frame(&ctx, &mut plot, mode, press_at(screen, handle_px));
+        let _ = run_mode_frame(
+            &ctx,
+            &mut plot,
+            mode,
+            move_to(screen, handle_px + egui::vec2(2.0, 0.0)),
+        );
+        // Drag out to data (9, 5): the x semi-axis grows 3 -> 4, the y one and
+        // the center stay put.
+        let target_px = t.data_to_pixel(9.0, 5.0);
+        let (resp, _) = run_mode_frame(&ctx, &mut plot, mode, move_to(screen, target_px));
+        assert_eq!(resp.roi_changed, Some(0), "axis-handle grab edits the ROI");
+        match &plot.rois[0].roi {
+            crate::core::roi::Roi::Ellipse { center, radii } => {
+                assert!(
+                    (center.0 - 5.0).abs() < 1e-6 && (center.1 - 5.0).abs() < 1e-6,
+                    "center unchanged: {center:?}"
+                );
+                assert!(
+                    (radii.0 - 4.0).abs() < 1e-6,
+                    "x semi-axis grew to 4: {radii:?}"
+                );
+                assert!(
+                    (radii.1 - 2.0).abs() < 1e-6,
+                    "y semi-axis unchanged: {radii:?}"
+                );
             }
             other => panic!("{other:?}"),
         }
