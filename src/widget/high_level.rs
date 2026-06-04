@@ -30,7 +30,7 @@ use crate::render::backend_wgpu::WgpuBackend;
 use crate::render::gpu_curve::CurveData;
 use crate::render::gpu_image::{AggregationMode, ImageData, ImagePixels, InterpolationMode};
 use crate::render::save::{SaveError, SaveFormat};
-use crate::widget::interaction::RoiDrawKind;
+use crate::widget::interaction::{MouseButton, RoiDrawKind};
 use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
 
 /// Live profile extraction mode (silx profile toolbar).
@@ -315,6 +315,37 @@ pub enum PlotEvent {
     /// `markerMoved`). `handle` identifies the moved marker; read its new
     /// position with [`PlotWidget::marker_position`].
     MarkerMoved { handle: ItemHandle },
+    /// A curve was clicked (silx `curveClicked`). `handle` identifies the
+    /// curve; `index`/`x`/`y` locate the nearest picked vertex; `button` is the
+    /// mouse button used.
+    CurveClicked {
+        handle: ItemHandle,
+        index: usize,
+        x: f64,
+        y: f64,
+        button: MouseButton,
+    },
+    /// An image was clicked (silx `imageClicked`). `col`/`row` are the picked
+    /// pixel column and row.
+    ImageClicked {
+        handle: ItemHandle,
+        col: u32,
+        row: u32,
+        button: MouseButton,
+    },
+    /// A non-indexed overlay item (marker, scatter, or shape) was clicked (silx
+    /// `markerClicked` and the generic item-pick path). Identify its kind with
+    /// [`PlotWidget::item_kind`].
+    ItemClicked {
+        handle: ItemHandle,
+        button: MouseButton,
+    },
+    /// The cursor hovered over an item with no button held (silx hover signal).
+    /// `kind` is the hovered item's type.
+    ItemHovered {
+        handle: ItemHandle,
+        kind: PlotItemKind,
+    },
 }
 
 /// A legend right-click context-menu action (silx `LegendListContextMenu`).
@@ -2567,6 +2598,7 @@ impl PlotWidget {
         self.backend
             .set_plot_bounds_in_pixels(response.transform.area);
         self.select_item_from_plot_response(&response);
+        self.emit_item_pointer_events(&response);
         self.push_limits_changed_if(before);
         if let Some(index) = response.roi_changed {
             self.events.push(PlotEvent::RoiChanged { index });
@@ -2709,12 +2741,87 @@ impl PlotWidget {
         }
     }
 
-    fn pick_topmost_item(&self, pos: egui::Pos2) -> Option<ItemHandle> {
+    /// Pick the front-most item under `pos`, returning its handle and the
+    /// [`PickResult`] describing what was hit (silx picking). Single owner for
+    /// both legend/active-item selection and the item-click/hover signals:
+    /// walks `items_back_to_front` in reverse so the top-drawn item wins.
+    fn pick_topmost(&self, pos: egui::Pos2) -> Option<(ItemHandle, PickResult)> {
         self.backend
             .items_back_to_front()
             .into_iter()
             .rev()
-            .find(|&handle| self.backend.pick_item(pos, handle).is_some())
+            .find_map(|handle| {
+                self.backend
+                    .pick_item(pos, handle)
+                    .map(|pick| (handle, pick))
+            })
+    }
+
+    fn pick_topmost_item(&self, pos: egui::Pos2) -> Option<ItemHandle> {
+        self.pick_topmost(pos).map(|(handle, _)| handle)
+    }
+
+    /// Map a topmost [`PickResult`] to its item-click [`PlotEvent`] (silx
+    /// `curveClicked`/`imageClicked`/`markerClicked`). Pure — depends only on
+    /// its arguments — so it is unit-tested without a GPU backend, which is the
+    /// part of the click path that cannot be exercised headlessly.
+    fn click_event_for_pick(
+        handle: ItemHandle,
+        pick: &PickResult,
+        button: MouseButton,
+    ) -> PlotEvent {
+        match *pick {
+            PickResult::CurvePoint { index, x, y, .. } => PlotEvent::CurveClicked {
+                handle,
+                index,
+                x,
+                y,
+                button,
+            },
+            PickResult::ImagePixel { col, row } => PlotEvent::ImageClicked {
+                handle,
+                col,
+                row,
+                button,
+            },
+            PickResult::Item { .. } => PlotEvent::ItemClicked { handle, button },
+        }
+    }
+
+    /// Translate this frame's low-level [`PlotPointerEvent`] into item-identified
+    /// [`PlotEvent`]s (silx `curveClicked`/`imageClicked`/`markerClicked` and the
+    /// hover signal). A primary/secondary/middle click on an item queues the
+    /// matching click event; a bare hover (no button held) over an item queues
+    /// [`PlotEvent::ItemHovered`]. The pointer pixel is already gated to the data
+    /// area by `detect_pointer_event`, so the only filter here is whether the
+    /// pixel actually picks an item.
+    fn emit_item_pointer_events(&mut self, response: &PlotResponse) {
+        use crate::widget::interaction::PlotPointerEvent;
+        let Some(event) = response.pointer_event.as_ref() else {
+            return;
+        };
+        match *event {
+            PlotPointerEvent::Clicked { button, pixel, .. } => {
+                let pos = egui::pos2(pixel.0, pixel.1);
+                if let Some((handle, pick)) = self.pick_topmost(pos) {
+                    self.events
+                        .push(Self::click_event_for_pick(handle, &pick, button));
+                }
+            }
+            PlotPointerEvent::Moved {
+                button: None,
+                pixel,
+                ..
+            } => {
+                let pos = egui::pos2(pixel.0, pixel.1);
+                if let Some((handle, _)) = self.pick_topmost(pos)
+                    && let Some(kind) = self.item_kind(handle)
+                {
+                    self.events.push(PlotEvent::ItemHovered { handle, kind });
+                }
+            }
+            _ => {}
+        }
     }
 
     fn set_limits_internal(
@@ -8942,6 +9049,62 @@ mod tests {
         assert_eq!(
             profile_roi_from_drag(ProfileMode::None, (0.0, 0.0), (1.0, 1.0)),
             None
+        );
+    }
+
+    #[test]
+    fn click_event_for_pick_maps_each_pick_variant() {
+        // One case per PickResult variant — the pure seam of the click path that
+        // the GPU-bound pick_item cannot exercise headlessly.
+        let handle: ItemHandle = 7;
+
+        // CurvePoint carries the picked vertex; distance_px is dropped.
+        assert_eq!(
+            PlotWidget::click_event_for_pick(
+                handle,
+                &PickResult::CurvePoint {
+                    index: 4,
+                    x: 1.5,
+                    y: -2.0,
+                    distance_px: 3.0,
+                },
+                MouseButton::Left,
+            ),
+            PlotEvent::CurveClicked {
+                handle,
+                index: 4,
+                x: 1.5,
+                y: -2.0,
+                button: MouseButton::Left,
+            }
+        );
+
+        // ImagePixel carries the pixel (col, row).
+        assert_eq!(
+            PlotWidget::click_event_for_pick(
+                handle,
+                &PickResult::ImagePixel { col: 12, row: 9 },
+                MouseButton::Middle,
+            ),
+            PlotEvent::ImageClicked {
+                handle,
+                col: 12,
+                row: 9,
+                button: MouseButton::Middle,
+            }
+        );
+
+        // A non-indexed overlay item maps to ItemClicked, preserving the button.
+        assert_eq!(
+            PlotWidget::click_event_for_pick(
+                handle,
+                &PickResult::Item { handle: 99 },
+                MouseButton::Right,
+            ),
+            PlotEvent::ItemClicked {
+                handle,
+                button: MouseButton::Right,
+            }
         );
     }
 

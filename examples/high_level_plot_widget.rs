@@ -220,6 +220,21 @@ fn format_event(event: PlotEvent) -> String {
             format!("current roi {previous:?} -> {current:?}")
         }
         PlotEvent::MarkerMoved { handle } => format!("marker moved #{handle}"),
+        PlotEvent::CurveClicked {
+            handle,
+            index,
+            x,
+            y,
+            button,
+        } => format!("curve #{handle} clicked @ pt {index} ({x:.3},{y:.3}) [{button:?}]"),
+        PlotEvent::ImageClicked {
+            handle,
+            col,
+            row,
+            button,
+        } => format!("image #{handle} clicked @ ({col},{row}) [{button:?}]"),
+        PlotEvent::ItemClicked { handle, button } => format!("item #{handle} clicked [{button:?}]"),
+        PlotEvent::ItemHovered { handle, kind } => format!("hover {kind:?} #{handle}"),
     }
 }
 
