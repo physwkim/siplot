@@ -2248,12 +2248,8 @@ fn draw_legend_swatch(
     kind: PlotItemKind,
     visual: LegendVisual,
 ) {
-    painter.rect_stroke(
-        rect,
-        0.0,
-        egui::Stroke::new(1.0, Color32::from_gray(110)),
-        egui::StrokeKind::Inside,
-    );
+    // No bounding box around the icon (silx LegendIcon draws none): the line,
+    // marker, color, or fill alone identifies the item.
     match kind {
         PlotItemKind::Curve => {
             // silx `LegendIcon`: a full-width line in the curve's style, plus the
