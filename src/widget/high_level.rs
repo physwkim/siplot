@@ -30,6 +30,7 @@ use crate::render::backend_wgpu::WgpuBackend;
 use crate::render::gpu_curve::CurveData;
 use crate::render::gpu_image::{AggregationMode, ImageData, ImagePixels, InterpolationMode};
 use crate::render::save::{SaveError, SaveFormat};
+use crate::widget::interaction::RoiDrawKind;
 use crate::widget::plot_widget::{PlotInteractionMode, PlotResponse, PlotView};
 
 /// Live profile extraction mode (silx profile toolbar).
@@ -293,8 +294,12 @@ pub enum PlotEvent {
     },
     /// The display limits changed (pan, zoom, or programmatic update).
     LimitsChanged,
-    /// An ROI edge drag moved the ROI at `index`.
+    /// An ROI edge drag or whole-ROI body drag moved the ROI at `index`.
     RoiChanged { index: usize },
+    /// A new ROI was created at `index` by an on-plot draw in
+    /// [`PlotInteractionMode::RoiCreate`] (silx `RegionOfInterestManager`
+    /// shape-finished). Read it with `plot().rois[index]`.
+    RoiCreated { index: usize },
     /// All ROIs were cleared.
     RoisCleared,
     /// A draggable marker was moved, either by an on-screen drag or by
@@ -2389,6 +2394,9 @@ impl PlotWidget {
         if let Some(index) = response.roi_changed {
             self.events.push(PlotEvent::RoiChanged { index });
         }
+        if let Some(index) = response.roi_created {
+            self.events.push(PlotEvent::RoiCreated { index });
+        }
         // Persist an on-screen marker drag: apply_interaction live-mutated the
         // mirror `plot.markers` for this frame's render, but the mirror is
         // rebuilt from the backend items on every sync, so the moved data must
@@ -2447,6 +2455,17 @@ impl PlotWidget {
     /// Primary pointer interaction mode used by [`Self::show`].
     pub fn interaction_mode(&self) -> PlotInteractionMode {
         self.interaction_mode
+    }
+
+    /// Arm on-plot creation of a new ROI of `kind` (silx
+    /// `RegionOfInterestManager.start(roiClass)`). A convenience for
+    /// `set_interaction_mode(PlotInteractionMode::RoiCreate(kind))`: the next
+    /// primary drag (or click, for [`RoiDrawKind::Point`]/[`RoiDrawKind::Cross`])
+    /// draws the shape; finishing it appends the ROI to `plot().rois` and queues
+    /// a [`PlotEvent::RoiCreated`]. Creation re-arms continuously until the mode
+    /// is changed.
+    pub fn set_roi_create_mode(&mut self, kind: RoiDrawKind) {
+        self.set_interaction_mode(PlotInteractionMode::RoiCreate(kind));
     }
 
     /// Queued plot events since the last drain.

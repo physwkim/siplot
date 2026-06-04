@@ -214,6 +214,7 @@ fn format_event(event: PlotEvent) -> String {
         }
         PlotEvent::LimitsChanged => "limits changed".to_owned(),
         PlotEvent::RoiChanged { index } => format!("roi changed #{index}"),
+        PlotEvent::RoiCreated { index } => format!("roi created #{index}"),
         PlotEvent::RoisCleared => "rois cleared".to_owned(),
         PlotEvent::MarkerMoved { handle } => format!("marker moved #{handle}"),
     }
