@@ -34,6 +34,25 @@ pub fn format_reduced_chisq(reduced_chisq: Option<f64>) -> String {
     }
 }
 
+/// The finite x extent of `x_data` as a `(min, max)` fit window, or `(0.0, 1.0)`
+/// when there is no finite sample. Used to seed the FitWidget's xmin/xmax when
+/// the user first enables range limiting (silx defaults them to the curve's x
+/// range).
+fn default_fit_range_of(x_data: &[f64]) -> (f64, f64) {
+    let mut it = x_data.iter().copied().filter(|v| v.is_finite());
+    match it.next() {
+        Some(first) => {
+            let (mut lo, mut hi) = (first, first);
+            for v in it {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            (lo, hi)
+        }
+        None => (0.0, 1.0),
+    }
+}
+
 /// The selectable fit model in [`FitWidget`].
 ///
 /// The first two variants preserve the original analytical fits (Linear and
@@ -139,6 +158,13 @@ impl FitWidget {
             iterative_result: None,
             fit_range: None,
         }
+    }
+
+    /// The default fit window when the user first enables range limiting: the
+    /// data's finite x extent (silx initialises xmin/xmax from the active
+    /// curve's x range).
+    fn default_fit_range(&self) -> (f64, f64) {
+        default_fit_range_of(&self.x_data)
     }
 
     /// Set the fit range `[xmin, xmax]`; only points inside it are fitted
@@ -354,6 +380,28 @@ impl FitWidget {
                     }
                 });
 
+                // Fit-range selection (silx `FitWidget` xmin/xmax): the checkbox
+                // toggles whole-curve vs a restricted `[xmin, xmax]` window, and
+                // the two DragValues edit the bounds (consumed by
+                // `in_range_points` on the next fit). Enabling defaults the window
+                // to the data's x extent.
+                ui.horizontal(|ui| {
+                    let mut limited = self.fit_range.is_some();
+                    if ui
+                        .checkbox(&mut limited, "Fit range")
+                        .on_hover_text("Restrict the fit to an x window (silx xmin/xmax)")
+                        .changed()
+                    {
+                        self.fit_range = limited.then(|| self.default_fit_range());
+                    }
+                    if let Some((xmin, xmax)) = self.fit_range.as_mut() {
+                        ui.label("min");
+                        ui.add(egui::DragValue::new(xmin).speed(0.1));
+                        ui.label("max");
+                        ui.add(egui::DragValue::new(xmax).speed(0.1));
+                    }
+                });
+
                 ui.separator();
 
                 // Show fit parameters if available. Iterative fits add a per
@@ -433,6 +481,18 @@ mod tests {
         assert_eq!(format_reduced_chisq(Some(0.5)), "0.500000");
         assert_eq!(format_reduced_chisq(None), "N/A");
         assert_eq!(format_reduced_chisq(Some(f64::INFINITY)), "N/A");
+    }
+
+    #[test]
+    fn default_fit_range_uses_finite_x_extent() {
+        // The seed window is the finite min/max of the data, skipping NaN/inf.
+        assert_eq!(
+            default_fit_range_of(&[3.0, 1.0, f64::NAN, 5.0, f64::INFINITY]),
+            (1.0, 5.0)
+        );
+        // No finite sample -> the (0, 1) fallback.
+        assert_eq!(default_fit_range_of(&[]), (0.0, 1.0));
+        assert_eq!(default_fit_range_of(&[f64::NAN]), (0.0, 1.0));
     }
 
     #[test]
