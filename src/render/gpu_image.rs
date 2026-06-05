@@ -146,9 +146,32 @@ const IDENTITY: [[f32; 4]; 4] = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 
+/// Convert an sRGB-encoded `[u8; 4]` color (the colormap's `nan_color`) to
+/// linear-space `[f32; 4]`. The scalar-image LUT is an `Rgba8UnormSrgb` texture,
+/// so sampling it returns linear RGB; converting the nan_color the same way lets
+/// the shader composite it identically to the colormapped path. The RGB channels
+/// use the standard sRGB transfer function; alpha is linear (not gamma-encoded).
+fn srgb_u8_to_linear_rgba(c: [u8; 4]) -> [f32; 4] {
+    let to_linear = |b: u8| {
+        let s = b as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [
+        to_linear(c[0]),
+        to_linear(c[1]),
+        to_linear(c[2]),
+        c[3] as f32 / 255.0,
+    ]
+}
+
 /// Uniform block for the image shader. Field order keeps `repr(C)` offsets
 /// std140-aligned: mat4 @0, vec4 @64, vec2 @80, then scalars f32 @88/92/96/100,
-/// u32 @104/108; total 112. Matches `Params` in `image.wgsl`.
+/// u32 @104/108, then vec4 @112 (16-aligned); total 128. Matches `Params` in
+/// `image.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ImageParams {
@@ -167,6 +190,9 @@ struct ImageParams {
     norm: u32,
     /// Interpolation code; see [`InterpolationMode::code`]: nearest 0, linear 1.
     interp: u32,
+    /// Linear RGBA used for non-finite (NaN / +/-inf) samples (silx
+    /// `Colormap.nan_color`). vec4 at offset 112, 16-byte aligned.
+    nan_color: [f32; 4],
 }
 
 /// Uniform block for the RGBA (direct) image shader: just the transform, rect,
@@ -555,6 +581,9 @@ enum GpuImageKind {
         norm: u32,
         /// Interpolation code; see [`InterpolationMode::code`].
         interp: u32,
+        /// Linear RGBA for non-finite samples (silx `Colormap.nan_color`),
+        /// pre-converted from the colormap's sRGB bytes.
+        nan_color: [f32; 4],
     },
     Rgba,
 }
@@ -726,6 +755,7 @@ impl GpuImage {
                         gamma: colormap.gamma,
                         norm: colormap.normalization.code(),
                         interp: image.interpolation.code(),
+                        nan_color: srgb_u8_to_linear_rgba(colormap.nan_color),
                     },
                 )
             }
@@ -913,6 +943,7 @@ impl GpuImage {
                     gamma,
                     norm,
                     interp,
+                    nan_color,
                 } => {
                     let params = ImageParams {
                         ortho,
@@ -924,6 +955,7 @@ impl GpuImage {
                         gamma,
                         norm,
                         interp,
+                        nan_color,
                     };
                     queue.write_buffer(&tile.params, 0, bytemuck::bytes_of(&params));
                 }
@@ -962,6 +994,36 @@ mod tests {
     fn small_image_is_a_single_tile() {
         let tiles = tile_bounds(100, 60, 8192);
         assert_eq!(tiles, vec![(0, 0, 100, 60)]);
+    }
+
+    #[test]
+    fn image_params_is_std140_sized() {
+        // The std140 uniform layout (see the struct comment) must stay 128 bytes
+        // with the vec4 nan_color 16-byte aligned at offset 112; drift here means
+        // the Rust struct and the WGSL `Params` no longer agree.
+        assert_eq!(std::mem::size_of::<ImageParams>(), 128);
+        assert_eq!(std::mem::align_of::<ImageParams>(), 4);
+    }
+
+    #[test]
+    fn srgb_u8_to_linear_rgba_matches_transfer_function() {
+        // Endpoints are exact: 0 -> 0, 255 -> 1.0 in every RGB channel; alpha is
+        // a plain linear 0..1 (not gamma-encoded).
+        let black = srgb_u8_to_linear_rgba([0, 0, 0, 255]);
+        assert_eq!(black, [0.0, 0.0, 0.0, 1.0]);
+        let white = srgb_u8_to_linear_rgba([255, 255, 255, 255]);
+        for ch in white {
+            assert!((ch - 1.0).abs() < 1e-6, "white channel {ch} != 1.0");
+        }
+        // silx default nan_color (255, 255, 255, 0): white but fully transparent.
+        let nan = srgb_u8_to_linear_rgba([255, 255, 255, 0]);
+        assert_eq!(nan[3], 0.0, "default nan_color alpha must be transparent");
+        // A mid sRGB value sits below its naive (s) value after linearization
+        // (the curve is convex), and alpha tracks the byte linearly.
+        let mid = srgb_u8_to_linear_rgba([188, 188, 188, 128]);
+        let expected = ((188.0_f32 / 255.0 + 0.055) / 1.055).powf(2.4);
+        assert!((mid[0] - expected).abs() < 1e-6, "mid linearization");
+        assert!((mid[3] - 128.0 / 255.0).abs() < 1e-6, "alpha is linear");
     }
 
     #[test]

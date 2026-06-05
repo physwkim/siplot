@@ -18,6 +18,7 @@ struct Params {
     gamma: f32,                // exponent for norm == 3 (gamma)
     norm: u32,                 // normalization code: 0 linear, 1 log, 2 sqrt, 3 gamma, 4 arcsinh
     interp: u32,               // interpolation: 0 nearest, 1 linear (bilinear on data)
+    nan_color: vec4<f32>,      // linear RGBA for non-finite samples (silx nan_color)
 };
 
 // 1 / ln(10), to turn the natural log into log10.
@@ -141,6 +142,16 @@ fn sample_data(uv: vec2<f32>) -> f32 {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let v = sample_data(in.uv);
+    // Non-finite samples (NaN / +/-inf) get the colormap's nan_color instead of
+    // the low color, mirroring silx (default transparent white). NaN fails both
+    // ordered comparisons, so a value is finite iff it lies within [-MAX, MAX];
+    // +/-inf and NaN both fall outside. The nan_color is pre-converted to linear
+    // RGBA on the CPU so it composites identically to the sRGB LUT colors, and
+    // its alpha is scaled by the image's global alpha like the colormapped path.
+    let finite = (v >= -3.4028235e38) && (v <= 3.4028235e38);
+    if (!finite) {
+        return vec4<f32>(params.nan_color.rgb, params.nan_color.a * params.alpha);
+    }
     let value = normalize_value(v);
     let rgb = textureSample(lut_tex, lut_samp, vec2<f32>(value, 0.5)).rgb;
     return vec4<f32>(rgb, params.alpha);
