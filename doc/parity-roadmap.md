@@ -70,6 +70,13 @@ headlessly tested (per-perspective slicing, frame counts, display-axis mapping, 
 volume-load + perspective-switch GPU path stays unverified. Default dimension labels only — the `setLabels` API (row
 184) is the next commit.
 
+**StackView dimension labels (main, not pushed):** ≈222 Done · ~99 open — 1 M row closed (184; duplicate 1267).
+`StackView::set_dimension_labels([&str;3])`/`dimension_labels()` mirror silx `setLabels`/`getLabels`: each volume
+dimension gets a label (empty → default `"Dimension N"`, like silx's `label or default`), and `apply_axis_labels`
+chooses the X (width-axis) and Y (height-axis) label from these as the perspective rotates. `perspective_ui` names the
+browse-dimension combo entries from the same labels. The pure default-label → axis-label mapping is headlessly tested;
+the `set_dimension_labels` GPU label-application path stays unverified.
+
 Status legend: ✅ Done · ◐ Partial · ☐ Missing · ✅ N/A (resolved: parity achieved differently). Effort S/M/L. Priority H/M/L.
 
 > This file tracks the port. The per-area tables below are the **as-of-sweep
@@ -191,7 +198,7 @@ as-of-sweep reference.
 | ◐ Partial | M | S | ScatterView get/setSelectionMask API | ScatterView.py:412-418 | Mask widget exists but no public selection-mask accessors |
 | ✅ Done | M | M | StackView perspective selection | StackView.py:364-397 | `StackPerspective` {Axis0,Axis1,Axis2} + `set_perspective`/`perspective`/`perspective_ui` combo pick the browse dimension |
 | ✅ Done | M | M | StackView 3D transposition | StackView.py:409-441 | `set_volume([d0,d1,d2])` + `stack_frame` re-slice per perspective (silx transpose (1,0,2)/(2,0,1)); axis labels via `dimension_axis_labels` |
-| ☐ Missing | M | S | StackView dimension labels | StackView.py:799-827 | No per-dimension label API; frame counter uses generic "frame N" |
+| ✅ Done | M | S | StackView dimension labels | StackView.py:799-827 | `set_dimension_labels([&str;3])`/`dimension_labels()` (silx setLabels/getLabels); empty→default `"Dimension N"`; axis labels rotate with perspective |
 | ☐ Missing | M | M | CompareImages vline separator mode | CompareImages.py:124-133 | Modes OnlyA/OnlyB/HalfHalf/Subtract only; no draggable vertical-line separator mode |
 | ☐ Missing | M | M | ComplexImageView amplitude-range dialog | ComplexImageView.py:50-155 | No dialog to set displayed max amplitude + log10 delta at runtime |
 | ☐ Missing | L | L | StackView 3D-profile toolbar | StackView.py:948-951 | No `Profile3DToolBar`; profiles not extracted across the stack dimension |
@@ -1232,7 +1239,7 @@ egui-silx implements a core minimal toolbar with 11 built-in buttons (Reset Zoom
 | ◐ | L | S | XAxisOriginToolButton (menu: invert/non-invert X) | `PlotToolButtons.py:193-199` | silx provides menu-style button. egui-silx is a simple toggle. |
 | ☐ | L | S | ProfileOptionToolButton (sum/mean) | `PlotToolButtons.py:227-302` | silx provides menu button to switch profile aggregation (sum vs mean). egui-silx has no ProfileOptionToolButton in toolbar. |
 
-## Composite views (ImageView/ScatterView/StackView/CompareImages/ComplexImageView/ImageStack)  — 12✅ 0◐ 32☐
+## Composite views (ImageView/ScatterView/StackView/CompareImages/ComplexImageView/ImageStack)  — 13✅ 0◐ 31☐
 
 egui-silx implements ImageView, ScatterView, StackView, and CompareImages at a basic functional level with core visualization features. ImageView has side histograms and axis sync but lacks RadarView (position overview), profile toolbar integration, and histogram access API. ScatterView has value-coloured scatter but is missing mask tools, statistics, and position info panel. StackView supports frame browsing but lacks perspective/axis selection, 3D transposition, and frame labeling. CompareImages has 4 basic modes (A/B/split/subtract) but lacks vertical/horizontal line separators, SIFT keypoint alignment, composite RGB modes, alignment modes (origin/center/stretch), and the full visualization mode set. ComplexImageView and ImageStack are entirely absent. Overall, these are lightweight versions capturing the core interaction model but missing several advanced features, UX details, and specialized tooling from silx.
 
@@ -1264,7 +1271,7 @@ egui-silx implements ImageView, ScatterView, StackView, and CompareImages at a b
 | ☐ | L | M | ImageView: profile window behavior (popup/embedded) | `ImageView.py:392-401,656-690` | No ProfileWindowBehavior enum; silx allows embedded side profiles for h/v/cross or popup-only modes |
 | ☐ | L | M | ImageView: aggregation mode action (for multi-band images) | `ImageView.py:434-438,529-548` | No AggregationModeAction; silx supports mean/sum aggregation for multi-frame data |
 | ☐ | L | M | ScatterView: getSelectionMask() and setSelectionMask() | `ScatterView.py:412-418` | No mask get/set API; silx allows programmatic per-point selection |
-| ☐ | L | M | StackView: frame number / dimension labels | `StackView.py:799-827` | No setLabels()/getLabels() API; silx allows custom labels for 3D dimensions (e.g. 'Energy', 'Y', 'X') |
+| ✅ | L | M | StackView: frame number / dimension labels | `StackView.py:799-827` | `set_dimension_labels`/`dimension_labels` (silx setLabels/getLabels); custom labels for 3D dims rotate onto X/Y axes per perspective |
 | ☐ | L | M | StackView: aggregation mode for multi-band frames | `StackView.py:301-305` | No AggregationModeAction; silx supports mean/sum for multi-component image data |
 | ☐ | L | M | CompareImages: affine transformation tracking | `CompareImages.py:880-889` | No getTransformation() API; silx returns AffineTransformation (tx, ty, sx, sy, rot) from alignment |
 | ☐ | L | M | ComplexImageView: amplitude range dialog (max / delta in log10) | `ComplexImageView.py:50-155` | No _AmplitudeRangeDialog; silx allows interactive adjustment of complex magnitude display range (displayed_max, log10_delta) |

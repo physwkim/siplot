@@ -8768,6 +8768,12 @@ pub fn stack_frame(
     Some((width as u32, height as u32, pixels))
 }
 
+/// The default label for volume dimension `axis` — silx `"Dimension %d"`
+/// (with `_first_stack_dimension == 0`).
+pub fn default_dimension_label(axis: usize) -> String {
+    format!("Dimension {axis}")
+}
+
 /// Plot axis labels `(x_label, y_label)` for `perspective`, picked from the 3
 /// per-dimension `labels` — silx `__updatePlotLabels`: X uses the width axis's
 /// label, Y uses the height axis's label.
@@ -8808,6 +8814,9 @@ pub struct StackView {
     volume: Option<(Vec<f32>, [usize; 3])>,
     /// Which volume dimension the frame slider browses (silx perspective).
     perspective: StackPerspective,
+    /// Per-dimension labels (silx `setLabels`); the plot axis labels are chosen
+    /// from these as the perspective rotates. Defaults to `"Dimension 0/1/2"`.
+    dim_labels: [String; 3],
 }
 
 impl StackView {
@@ -8827,6 +8836,11 @@ impl StackView {
             dirty: false,
             volume: None,
             perspective: StackPerspective::default(),
+            dim_labels: [
+                default_dimension_label(0),
+                default_dimension_label(1),
+                default_dimension_label(2),
+            ],
         }
     }
 
@@ -8938,15 +8952,31 @@ impl StackView {
         self.apply_axis_labels();
     }
 
-    /// Set the plot axis labels for the current perspective, using the default
-    /// per-dimension labels (`"Dimension 0/1/2"`) — silx `__updatePlotLabels`.
+    /// The resolved per-dimension labels (silx `getLabels`).
+    pub fn dimension_labels(&self) -> &[String; 3] {
+        &self.dim_labels
+    }
+
+    /// Set the per-dimension labels used for the plot axes — silx
+    /// `StackView.setLabels`. Provide 3 labels for the 3 volume dimensions; an
+    /// empty label falls back to the default `"Dimension N"` for that dimension
+    /// (mirroring silx's `label or default`). The proper label is chosen for
+    /// each axis automatically as the perspective rotates.
+    pub fn set_dimension_labels(&mut self, labels: [&str; 3]) {
+        for (i, label) in labels.iter().enumerate() {
+            self.dim_labels[i] = if label.is_empty() {
+                default_dimension_label(i)
+            } else {
+                (*label).to_string()
+            };
+        }
+        self.apply_axis_labels();
+    }
+
+    /// Set the plot axis labels for the current perspective from the resolved
+    /// per-dimension labels — silx `__updatePlotLabels`.
     fn apply_axis_labels(&mut self) {
-        let labels = [
-            "Dimension 0".to_string(),
-            "Dimension 1".to_string(),
-            "Dimension 2".to_string(),
-        ];
-        let (x_label, y_label) = dimension_axis_labels(self.perspective, &labels);
+        let (x_label, y_label) = dimension_axis_labels(self.perspective, &self.dim_labels);
         self.inner.set_graph_x_label(x_label);
         self.inner.set_graph_y_label(y_label, YAxis::Left);
     }
@@ -8984,17 +9014,17 @@ impl StackView {
         if self.volume.is_none() {
             return;
         }
-        let label_for = |axis: usize| format!("Dimension {axis}");
+        let labels = self.dim_labels.clone();
         let mut selected = self.perspective;
         egui::ComboBox::from_label("Browse dimension")
-            .selected_text(label_for(selected.axis()))
+            .selected_text(labels[selected.axis()].clone())
             .show_ui(ui, |ui| {
                 for option in [
                     StackPerspective::Axis0,
                     StackPerspective::Axis1,
                     StackPerspective::Axis2,
                 ] {
-                    ui.selectable_value(&mut selected, option, label_for(option.axis()));
+                    ui.selectable_value(&mut selected, option, labels[option.axis()].clone());
                 }
             });
         self.set_perspective(selected);
@@ -9210,6 +9240,26 @@ mod tests {
         assert_eq!(
             dimension_axis_labels(StackPerspective::Axis2, &labels),
             ("y".to_string(), "z".to_string())
+        );
+    }
+
+    #[test]
+    fn default_dimension_labels_drive_axis_labels_per_perspective() {
+        let labels = [
+            default_dimension_label(0),
+            default_dimension_label(1),
+            default_dimension_label(2),
+        ];
+        assert_eq!(labels, ["Dimension 0", "Dimension 1", "Dimension 2"]);
+        // Axis0: X = width axis (dim2), Y = height axis (dim1).
+        assert_eq!(
+            dimension_axis_labels(StackPerspective::Axis0, &labels),
+            ("Dimension 2".to_string(), "Dimension 1".to_string())
+        );
+        // Axis2: X = width axis (dim1), Y = height axis (dim0).
+        assert_eq!(
+            dimension_axis_labels(StackPerspective::Axis2, &labels),
+            ("Dimension 1".to_string(), "Dimension 0".to_string())
         );
     }
 
