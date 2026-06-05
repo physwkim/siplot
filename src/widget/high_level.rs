@@ -7927,6 +7927,19 @@ impl ImageView {
                     self.mask.commit();
                     self.upload_image();
                 }
+                // Invert the current mask level (silx invert action,
+                // _BaseMaskToolsWidget.py:207-218 / BaseMask.invert): unmasked
+                // pixels become the current level and current-level pixels clear;
+                // other levels are untouched. Operates on the mask buffer only.
+                if ui
+                    .button("invert")
+                    .on_hover_text("Invert the current mask level")
+                    .clicked()
+                {
+                    self.mask.invert();
+                    self.mask.commit();
+                    self.upload_image();
+                }
                 // Mask non-finite pixels (silx "Mask not finite values" button,
                 // _BaseMaskToolsWidget.py:296-304). Only meaningful when the mask
                 // geometry matches the active image; the guard also keeps
