@@ -509,40 +509,48 @@ impl Roi {
     pub fn move_edge(&mut self, edge: RoiEdge, data: (f64, f64)) {
         let (dx, dy) = data;
         match self {
-            Roi::Rect { x, y } => match edge {
-                RoiEdge::Left => x.0 = dx.min(x.1),
-                RoiEdge::Right => x.1 = dx.max(x.0),
-                RoiEdge::Bottom => y.0 = dy.min(y.1),
-                RoiEdge::Top => y.1 = dy.max(y.0),
-                // Corner handles move both the x and y edge they own, giving
-                // diagonal resize. x and y are independent tuples, so the two
-                // assignments never interfere.
-                RoiEdge::BottomLeft => {
-                    x.0 = dx.min(x.1);
-                    y.0 = dy.min(y.1);
+            // silx `RectangleROI.handleDragUpdated`: each handle is paired with
+            // its *fixed opposite* corner/edge, and the bounds are rebuilt from
+            // the two via min/max (`_setBound`). A handle dragged past its
+            // opposite therefore flips (the rectangle stays non-degenerate and
+            // keeps following the cursor) instead of collapsing to zero size.
+            // The bound being moved keeps its old opposite as the anchor; one
+            // uniform rule for corners and siplot's extra side handles, so no
+            // boundary is special-cased.
+            Roi::Rect { x, y } => {
+                let (x0, x1, y0, y1) = (x.0, x.1, y.0, y.1);
+                match edge {
+                    RoiEdge::Left => *x = (dx.min(x1), dx.max(x1)),
+                    RoiEdge::Right => *x = (dx.min(x0), dx.max(x0)),
+                    RoiEdge::Bottom => *y = (dy.min(y1), dy.max(y1)),
+                    RoiEdge::Top => *y = (dy.min(y0), dy.max(y0)),
+                    RoiEdge::BottomLeft => {
+                        *x = (dx.min(x1), dx.max(x1));
+                        *y = (dy.min(y1), dy.max(y1));
+                    }
+                    RoiEdge::BottomRight => {
+                        *x = (dx.min(x0), dx.max(x0));
+                        *y = (dy.min(y1), dy.max(y1));
+                    }
+                    RoiEdge::TopLeft => {
+                        *x = (dx.min(x1), dx.max(x1));
+                        *y = (dy.min(y0), dy.max(y0));
+                    }
+                    RoiEdge::TopRight => {
+                        *x = (dx.min(x0), dx.max(x0));
+                        *y = (dy.min(y0), dy.max(y0));
+                    }
+                    RoiEdge::Vertex(_) => {}
                 }
-                RoiEdge::BottomRight => {
-                    x.1 = dx.max(x.0);
-                    y.0 = dy.min(y.1);
-                }
-                RoiEdge::TopLeft => {
-                    x.0 = dx.min(x.1);
-                    y.1 = dy.max(y.0);
-                }
-                RoiEdge::TopRight => {
-                    x.1 = dx.max(x.0);
-                    y.1 = dy.max(y.0);
-                }
-                RoiEdge::Vertex(_) => {}
-            },
+            }
             Roi::HRange { y } => match edge {
-                RoiEdge::Bottom => y.0 = dy.min(y.1),
-                RoiEdge::Top => y.1 = dy.max(y.0),
+                RoiEdge::Bottom => *y = (dy.min(y.1), dy.max(y.1)),
+                RoiEdge::Top => *y = (dy.min(y.0), dy.max(y.0)),
                 _ => {}
             },
             Roi::VRange { x } => match edge {
-                RoiEdge::Left => x.0 = dx.min(x.1),
-                RoiEdge::Right => x.1 = dx.max(x.0),
+                RoiEdge::Left => *x = (dx.min(x.1), dx.max(x.1)),
+                RoiEdge::Right => *x = (dx.min(x.0), dx.max(x.0)),
                 _ => {}
             },
             Roi::Point { x, y } => {
@@ -1408,15 +1416,44 @@ mod tests {
                 y: (1.0, 9.0)
             }
         );
-        // Dragging a corner past the opposite one clamps on both axes.
+        // Dragging a corner past its opposite flips the rectangle rather than
+        // collapsing it (silx `RectangleROI` rebuilds from the dragged corner
+        // and the fixed opposite (1, 1) via min/max). TopRight → (−5, −5) past
+        // the opposite BottomLeft (1, 1) yields the box spanning the two.
         roi.move_edge(RoiEdge::TopRight, (-5.0, -5.0));
         assert_eq!(
             roi,
             Roi::Rect {
-                x: (1.0, 1.0),
-                y: (1.0, 1.0)
+                x: (-5.0, 1.0),
+                y: (-5.0, 1.0)
             }
         );
+    }
+
+    #[test]
+    fn rect_side_edge_crosses_opposite_instead_of_collapsing() {
+        // Dragging the Left edge past the Right edge flips x rather than
+        // collapsing to zero width; y is untouched (silx min/max rebuild).
+        let mut roi = Roi::Rect {
+            x: (2.0, 8.0),
+            y: (3.0, 7.0),
+        };
+        roi.move_edge(RoiEdge::Left, (10.0, 0.0));
+        assert_eq!(
+            roi,
+            Roi::Rect {
+                x: (8.0, 10.0), // Left passed Right (8) → new span [8, 10]
+                y: (3.0, 7.0),  // y unchanged by an x-edge drag
+            }
+        );
+    }
+
+    #[test]
+    fn hrange_edge_crosses_opposite_instead_of_collapsing() {
+        // The HRange Bottom edge dragged above the Top edge flips the range.
+        let mut roi = Roi::HRange { y: (3.0, 7.0) };
+        roi.move_edge(RoiEdge::Bottom, (0.0, 9.0));
+        assert_eq!(roi, Roi::HRange { y: (7.0, 9.0) });
     }
 
     #[test]
@@ -1468,21 +1505,22 @@ mod tests {
     }
 
     #[test]
-    fn move_edge_clamps_to_stay_normalized() {
+    fn move_edge_flips_but_stays_normalized() {
         let mut roi = Roi::Rect {
             x: (2.0, 8.0),
             y: (3.0, 7.0),
         };
-        // Drag the left edge past the right edge: it clamps at the right.
+        // Drag the left edge past the right edge: it flips around the fixed
+        // right edge (8), staying normalized (x.0 <= x.1) — silx min/max rebuild.
         roi.move_edge(RoiEdge::Left, (12.0, 5.0));
         assert_eq!(
             roi,
             Roi::Rect {
-                x: (8.0, 8.0),
+                x: (8.0, 12.0),
                 y: (3.0, 7.0)
             }
         );
-        // Normal move.
+        // Normal move of the right edge back inside.
         roi.move_edge(RoiEdge::Right, (9.0, 5.0));
         assert_eq!(
             roi,
