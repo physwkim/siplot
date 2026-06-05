@@ -3244,6 +3244,17 @@ impl PlotWidget {
         self.set_interaction_mode(PlotInteractionMode::RoiCreate(kind));
     }
 
+    /// The ROI-creation status message for the current interaction mode and ROI
+    /// count, for display in a host status bar (silx
+    /// `InteractiveRegionOfInterestManager.getMessage`). `Some("Select {name}s
+    /// ({n} selected)")` while an on-plot ROI creation mode is armed (the kind
+    /// being drawn + the current ROI count), else `None`. Delegates to
+    /// [`PlotInteractionMode::roi_creation_message`].
+    pub fn roi_creation_message(&self) -> Option<String> {
+        self.interaction_mode
+            .roi_creation_message(self.backend.plot().rois.len())
+    }
+
     /// Queued plot events since the last drain.
     pub fn events(&self) -> &[PlotEvent] {
         &self.events

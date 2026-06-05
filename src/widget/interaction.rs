@@ -1105,6 +1105,29 @@ pub enum RoiDrawKind {
     Band,
 }
 
+impl RoiDrawKind {
+    /// The silx `RegionOfInterest.SHORT_NAME` for the ROI class this kind draws
+    /// (`items/roi.py`, `items/_arc_roi.py:250`, `items/_band_roi.py:166`), used
+    /// in the ROI-creation status message ([`crate::PlotInteractionMode::roi_creation_message`]).
+    /// Matches the per-`Roi` table in the manager list so a kind and the ROI it
+    /// builds report the same name.
+    pub fn short_name(self) -> &'static str {
+        match self {
+            RoiDrawKind::Rect => "rectangle",
+            RoiDrawKind::HRange => "hrange",
+            RoiDrawKind::VRange => "vrange",
+            RoiDrawKind::Point => "point",
+            RoiDrawKind::Line => "line",
+            RoiDrawKind::Polygon => "polygon",
+            RoiDrawKind::Cross => "cross",
+            RoiDrawKind::Circle => "circle",
+            RoiDrawKind::Ellipse => "ellipse",
+            RoiDrawKind::Arc => "arc",
+            RoiDrawKind::Band => "band",
+        }
+    }
+}
+
 /// The [`DrawMode`] silx arms for creating `kind`, matching each ROI class's
 /// `_plotShape` (`items/roi.py`, `items/_arc_roi.py:253`, `items/_band_roi.py:169`).
 ///
@@ -1555,6 +1578,23 @@ mod tests {
             && (a.1 - b.1).abs() <= t
             && (a.2 - b.2).abs() <= t
             && (a.3 - b.3).abs() <= t
+    }
+
+    #[test]
+    fn roi_draw_kind_short_name_matches_silx() {
+        // Each kind reports its silx `RegionOfInterest.SHORT_NAME`, identical to
+        // the per-`Roi` manager-list table so a kind and the ROI it builds agree.
+        assert_eq!(RoiDrawKind::Rect.short_name(), "rectangle");
+        assert_eq!(RoiDrawKind::HRange.short_name(), "hrange");
+        assert_eq!(RoiDrawKind::VRange.short_name(), "vrange");
+        assert_eq!(RoiDrawKind::Point.short_name(), "point");
+        assert_eq!(RoiDrawKind::Line.short_name(), "line");
+        assert_eq!(RoiDrawKind::Polygon.short_name(), "polygon");
+        assert_eq!(RoiDrawKind::Cross.short_name(), "cross");
+        assert_eq!(RoiDrawKind::Circle.short_name(), "circle");
+        assert_eq!(RoiDrawKind::Ellipse.short_name(), "ellipse");
+        assert_eq!(RoiDrawKind::Arc.short_name(), "arc");
+        assert_eq!(RoiDrawKind::Band.short_name(), "band");
     }
 
     #[test]

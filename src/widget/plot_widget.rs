@@ -136,6 +136,30 @@ pub enum PlotInteractionMode {
     RoiCreate(RoiDrawKind),
 }
 
+impl PlotInteractionMode {
+    /// The silx ROI-creation status message for this mode given the current ROI
+    /// count, for display in a host status bar (silx
+    /// `InteractiveRegionOfInterestManager.getMessage` / `__updateMessage`,
+    /// `tools/roi.py:1101-1175`). Returns `Some("Select {name}s ({n} selected)")`
+    /// while a [`RoiCreate`](Self::RoiCreate) kind is armed, else `None`.
+    ///
+    /// siplot models neither silx's exec/started lifecycle (creation re-arms
+    /// continuously while the mode is set, so there is no "Done"/"Use ... edition
+    /// mode" phase) nor a max-ROI limit or Enter-validation, so only silx's
+    /// unlimited branch (`max_ is None`) is produced; the other branches have no
+    /// siplot analogue and collapse to `None`/this single message.
+    pub fn roi_creation_message(self, roi_count: usize) -> Option<String> {
+        match self {
+            PlotInteractionMode::RoiCreate(kind) => Some(format!(
+                "Select {}s ({} selected)",
+                kind.short_name(),
+                roi_count
+            )),
+            _ => None,
+        }
+    }
+}
+
 /// What [`PlotView::show`] returns: the egui [`Response`](egui::Response) plus
 /// the display [`Transform`] used this frame. The transform lets callers map
 /// pointer pixels to data coordinates and run picking
@@ -1335,6 +1359,30 @@ mod tests {
             captured = Some((resp, area));
         });
         captured.expect("ui ran")
+    }
+
+    #[test]
+    fn roi_creation_message_only_while_creating() {
+        use interaction::RoiDrawKind;
+
+        // Armed creation: silx's unlimited "Select {name}s ({n} selected)".
+        assert_eq!(
+            PlotInteractionMode::RoiCreate(RoiDrawKind::Rect).roi_creation_message(0),
+            Some("Select rectangles (0 selected)".to_owned())
+        );
+        assert_eq!(
+            PlotInteractionMode::RoiCreate(RoiDrawKind::Polygon).roi_creation_message(3),
+            Some("Select polygons (3 selected)".to_owned())
+        );
+        // Non-creation modes have no silx exec phase: no message.
+        for mode in [
+            PlotInteractionMode::Zoom,
+            PlotInteractionMode::Pan,
+            PlotInteractionMode::Select,
+            PlotInteractionMode::MaskDraw,
+        ] {
+            assert_eq!(mode.roi_creation_message(2), None, "{mode:?}");
+        }
     }
 
     /// Run a headless frame with `show_with_draw`, returning the [`DrawResponse`]
