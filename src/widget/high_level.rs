@@ -3105,6 +3105,19 @@ impl PlotWidget {
             self.events.push(PlotEvent::RoiAdded { index });
             self.events.push(PlotEvent::RoiCreated { index });
         }
+        // ROI context-menu choices (silx `_createMenuForRoi`): the plot only
+        // signals intent; the mutation + event emission happens here through the
+        // owning APIs (`set_current_roi` → CurrentRoiChanged, `remove_roi` →
+        // RoisCleared) so the right-click path fires the same events as the
+        // manager. "Make current" before "Remove": they come from distinct menu
+        // clicks (never the same frame), and applying the highlight first keeps a
+        // remove-after-select interaction consistent.
+        if let Some(index) = response.roi_make_current {
+            self.set_current_roi(Some(index));
+        }
+        if let Some(index) = response.roi_removed {
+            self.remove_roi(index);
+        }
         // Draw-state events (silx drawingProgress / drawingFinished) from an
         // on-plot RoiCreate draw. DrawingFinished fires on the same frame as the
         // RoiCreated above (the ROI is built on top of the finished draw).

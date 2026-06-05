@@ -69,6 +69,15 @@ struct Interaction {
     /// Index in `plot.rois` of an ROI just created this frame by a finished
     /// on-plot draw (silx `RegionOfInterestManager` shape-finished), or `None`.
     roi_created: Option<usize>,
+    /// Index of the ROI a right-click context-menu "Remove" targeted this frame
+    /// (silx `_createMenuForRoi` remove action), or `None`. The caller
+    /// (`high_level.rs`) performs the removal through its owning API so the
+    /// `RoisCleared` event fires; the menu only signals intent.
+    roi_removed: Option<usize>,
+    /// Index of the ROI a right-click context-menu "Make current" targeted this
+    /// frame, or `None`. Applied by the caller via `set_current_roi` so the
+    /// `CurrentRoiChanged` event fires.
+    roi_make_current: Option<usize>,
     /// In-progress ROI-creation preview this frame: the draw mode plus the
     /// data-space preview vertices, painted by the caller via `draw_overlay`
     /// (the same overlay the box-zoom selection uses). `None` when no
@@ -144,6 +153,16 @@ pub struct PlotResponse {
     /// on-plot draw in [`PlotInteractionMode::RoiCreate`] (silx
     /// `RegionOfInterestManager` shape-finished), or `None`.
     pub roi_created: Option<usize>,
+    /// Index of the ROI a right-click context-menu "Remove" targeted this frame
+    /// (silx `_createMenuForRoi` remove action), or `None`. `PlotWidget::show`
+    /// performs the removal via [`PlotWidget::remove_roi`] (emitting
+    /// [`crate::PlotEvent::RoisCleared`]); the menu only signals intent.
+    pub roi_removed: Option<usize>,
+    /// Index of the ROI a right-click context-menu "Make current" targeted this
+    /// frame, or `None`. `PlotWidget::show` applies it via
+    /// [`PlotWidget::set_current_roi`] (emitting
+    /// [`crate::PlotEvent::CurrentRoiChanged`]).
+    pub roi_make_current: Option<usize>,
     /// Handle of the marker an on-screen drag moved this frame (silx
     /// `markerMoving`), or `None`. The mirror `Plot::markers` is already updated
     /// for this frame's render; `PlotWidget::show` persists the change back to
@@ -252,6 +271,8 @@ impl PlotView {
             selection,
             roi_changed,
             roi_created,
+            roi_removed,
+            roi_make_current,
             roi_preview,
             marker_moved,
             marker_drag_started,
@@ -453,6 +474,8 @@ impl PlotView {
             transform,
             roi_changed,
             roi_created,
+            roi_removed,
+            roi_make_current,
             marker_moved,
             marker_drag_started,
             marker_drag_finished,
@@ -1071,6 +1094,21 @@ fn apply_interaction(
         }
     }
 
+    // ROI under the right-click, captured when the menu opens and held for the
+    // menu's lifetime so a later move/redraw doesn't change the target (silx
+    // `_isMouseHoverRoi`: the ROI submenu is built for the hovered ROI). The
+    // menu only *signals* the choice; `high_level.rs` performs the mutation
+    // through its owning API so the ROI events fire.
+    let mut roi_removed = None;
+    let mut roi_make_current = None;
+    let roi_menu_id = response.id.with("roi_context_target");
+    if response.secondary_clicked()
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        let target = interaction::roi_grab_at(&plot.rois, view, p, ROI_GRAB_PX).map(|(i, _)| i);
+        ui.data_mut(|d| d.insert_temp(roi_menu_id, target));
+    }
+
     // Right-click context menu (silx `PlotWidget.contextMenuEvent`): a secondary
     // *click* opens a zoom menu. silx's default menu carries `Zoom Back`;
     // siplot adds `Reset Zoom` to absorb the view reset (silx binds reset to
@@ -1079,6 +1117,33 @@ fn apply_interaction(
     // click, not a drag — and the `mouseClicked "right"` event still fires
     // alongside, matching silx emitting the click signal while showing the menu.
     response.context_menu(|ui| {
+        // ROI submenu (silx `_createMenuForRoi`): when the right-click landed on a
+        // ROI, offer make-current + remove above the zoom items. silx also nests an
+        // interaction-mode submenu for `InteractionModeMixIn` ROIs (e.g. ArcROI),
+        // which siplot's ROIs do not expose (the Arc start-angle-vs-radius and Band
+        // rotation sub-modes are a deferred redesign), so only make-current/remove
+        // are shown.
+        let target: Option<usize> = ui.data(|d| d.get_temp(roi_menu_id)).flatten();
+        if let Some(index) = target
+            && index < plot.rois.len()
+        {
+            let name = &plot.rois[index].name;
+            let title = if name.is_empty() {
+                format!("ROI #{index}")
+            } else {
+                name.clone()
+            };
+            ui.label(title);
+            if ui.button("Make current").clicked() {
+                roi_make_current = Some(index);
+                ui.close();
+            }
+            if ui.button("Remove").clicked() {
+                roi_removed = Some(index);
+                ui.close();
+            }
+            ui.separator();
+        }
         // Zoom Back: pop the last pushed view, falling back to a reset-zoom on an
         // empty history (silx `ZoomBackAction` -> `LimitsHistory.pop`, which
         // `resetZoom`s when empty; mirrors `actions::control::zoom_back`).
@@ -1110,6 +1175,8 @@ fn apply_interaction(
         selection,
         roi_changed,
         roi_created,
+        roi_removed,
+        roi_make_current,
         roi_preview,
         marker_moved,
         marker_drag_started,
