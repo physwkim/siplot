@@ -8802,6 +8802,12 @@ pub struct StackView {
     image_handle: Option<ItemHandle>,
     current_frame: usize,
     dirty: bool,
+    /// The source 3D volume (`flat data`, `[d0, d1, d2]`) when loaded via
+    /// [`set_volume`](Self::set_volume); `None` in flat-frames mode
+    /// ([`set_stack`](Self::set_stack)). Re-sliced when the perspective changes.
+    volume: Option<(Vec<f32>, [usize; 3])>,
+    /// Which volume dimension the frame slider browses (silx perspective).
+    perspective: StackPerspective,
 }
 
 impl StackView {
@@ -8819,6 +8825,8 @@ impl StackView {
             image_handle: None,
             current_frame: 0,
             dirty: false,
+            volume: None,
+            perspective: StackPerspective::default(),
         }
     }
 
@@ -8845,7 +8853,102 @@ impl StackView {
         self.colormap = colormap;
         self.current_frame = 0;
         self.dirty = true;
+        // Pre-sliced frames are not volume-browsable; leave perspective mode.
+        self.volume = None;
         Ok(())
+    }
+
+    /// Load a 3D volume and browse it as a stack along the current
+    /// [`perspective`](Self::perspective) — silx `StackView.setStack`.
+    ///
+    /// `data` is the flat row-major volume of shape `shape` (`[d0, d1, d2]`),
+    /// element `(i, j, k)` at offset `(i * d1 + j) * d2 + k`. Unlike
+    /// [`set_stack`](Self::set_stack) (which takes already-sliced frames), this
+    /// keeps the volume so [`set_perspective`](Self::set_perspective) can
+    /// re-slice it along a different dimension. The axis labels are updated for
+    /// the current perspective.
+    pub fn set_volume(
+        &mut self,
+        data: Vec<f32>,
+        shape: [usize; 3],
+        colormap: Colormap,
+    ) -> Result<(), PlotDataError> {
+        let [d0, d1, d2] = shape;
+        let expected = d0.saturating_mul(d1).saturating_mul(d2);
+        if data.len() != expected {
+            return Err(PlotDataError::ImageDataLength {
+                expected,
+                actual: data.len(),
+            });
+        }
+        self.volume = Some((data, shape));
+        self.colormap = colormap;
+        self.rebuild_volume_frames();
+        Ok(())
+    }
+
+    /// The volume dimension currently browsed by the frame slider (silx
+    /// `getPerspective`). Always [`StackPerspective::Axis0`] in flat-frames mode.
+    pub fn perspective(&self) -> StackPerspective {
+        self.perspective
+    }
+
+    /// Browse the volume along a different dimension — silx
+    /// `StackView.setPerspective`. Re-slices the loaded volume, resets the frame
+    /// index to 0, re-fits the view, and updates the axis labels. No-op (the
+    /// perspective is still stored) when no volume is loaded.
+    pub fn set_perspective(&mut self, perspective: StackPerspective) {
+        if perspective == self.perspective {
+            return;
+        }
+        self.perspective = perspective;
+        if self.volume.is_some() {
+            self.rebuild_volume_frames();
+            self.inner.reset_zoom();
+        }
+    }
+
+    /// Re-slice every frame out of the loaded volume for the current
+    /// perspective, resetting dimensions, the frame index, and the GPU image.
+    fn rebuild_volume_frames(&mut self) {
+        let Some((data, shape)) = self.volume.as_ref() else {
+            return;
+        };
+        let (data, shape) = (data.clone(), *shape);
+        let n = stack_frame_count(shape, self.perspective);
+        let mut frames = Vec::with_capacity(n);
+        let (mut width, mut height) = (0u32, 0u32);
+        for index in 0..n {
+            if let Some((w, h, pixels)) = stack_frame(&data, shape, self.perspective, index) {
+                width = w;
+                height = h;
+                frames.push(pixels);
+            }
+        }
+        self.width = width;
+        self.height = height;
+        self.frames = frames;
+        self.current_frame = 0;
+        // Frame dimensions change with perspective, so drop the old image item
+        // and re-add it fresh on the next show().
+        if let Some(handle) = self.image_handle.take() {
+            self.inner.remove_image(handle);
+        }
+        self.dirty = true;
+        self.apply_axis_labels();
+    }
+
+    /// Set the plot axis labels for the current perspective, using the default
+    /// per-dimension labels (`"Dimension 0/1/2"`) — silx `__updatePlotLabels`.
+    fn apply_axis_labels(&mut self) {
+        let labels = [
+            "Dimension 0".to_string(),
+            "Dimension 1".to_string(),
+            "Dimension 2".to_string(),
+        ];
+        let (x_label, y_label) = dimension_axis_labels(self.perspective, &labels);
+        self.inner.set_graph_x_label(x_label);
+        self.inner.set_graph_y_label(y_label, YAxis::Left);
     }
 
     /// Number of frames in the stack.
@@ -8871,6 +8974,30 @@ impl StackView {
     pub fn set_colormap(&mut self, colormap: Colormap) {
         self.colormap = colormap;
         self.dirty = true;
+    }
+
+    /// Show a perspective selector — a combo box choosing which volume
+    /// dimension the frame slider browses (silx `PlaneSelectionWidget`). Only
+    /// meaningful after [`set_volume`](Self::set_volume); a no-op in flat-frames
+    /// mode. Typically called before [`Self::show_frame_controls`].
+    pub fn perspective_ui(&mut self, ui: &mut egui::Ui) {
+        if self.volume.is_none() {
+            return;
+        }
+        let label_for = |axis: usize| format!("Dimension {axis}");
+        let mut selected = self.perspective;
+        egui::ComboBox::from_label("Browse dimension")
+            .selected_text(label_for(selected.axis()))
+            .show_ui(ui, |ui| {
+                for option in [
+                    StackPerspective::Axis0,
+                    StackPerspective::Axis1,
+                    StackPerspective::Axis2,
+                ] {
+                    ui.selectable_value(&mut selected, option, label_for(option.axis()));
+                }
+            });
+        self.set_perspective(selected);
     }
 
     /// Show a compact frame-navigation row: ← slider → with frame counter.
