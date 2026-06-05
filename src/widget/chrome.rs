@@ -1304,6 +1304,27 @@ pub fn draw_crosshair(painter: &Painter, t: &Transform, pos: Pos2, style: &Style
     painter.galley(min + pad, galley, style.text);
 }
 
+/// Clamp a colorbar label's center coordinate along the bar's long axis so the
+/// full glyph extent (`half` = half the laid-out label size on that axis) stays
+/// within the bar span `[lo_edge, hi_edge]`. The tick *mark* still sits at the
+/// true value position; only the text is nudged inward at the extremes — a value
+/// landing on a bar edge would otherwise center its label on the edge and
+/// overhang into a gutter that may itself be clipped (e.g. ScatterView's
+/// colorbar reaching the content edge, or `draw_colorbar`'s bar bottom with no
+/// x-axis label below it). A no-op for interior ticks; falls back to the bar
+/// center when the bar is shorter than the label (`lo > hi`, which would make
+/// `clamp` panic). Shared by both colorbar renderers (`draw_colorbar` here and
+/// [`crate::widget::colorbar::ColorBarWidget`]).
+pub(crate) fn clamp_label_center(center: f32, lo_edge: f32, hi_edge: f32, half: f32) -> f32 {
+    let lo = lo_edge + half;
+    let hi = hi_edge - half;
+    if lo <= hi {
+        center.clamp(lo, hi)
+    } else {
+        0.5 * (lo_edge + hi_edge)
+    }
+}
+
 /// Draw a vertical colorbar matching `cmap` (top = vmax, bottom = vmin), with a
 /// border and value labels on its right edge.
 pub fn draw_colorbar(painter: &Painter, rect: Rect, cmap: &Colormap, style: &Style) {
@@ -1359,13 +1380,13 @@ pub fn draw_colorbar(painter: &Painter, rect: Rect, cmap: &Colormap, style: &Sty
         let frac = cmap.normalize(v); // 0 at vmin, 1 at vmax, under the normalization
         let py = rect.bottom() - frac * rect.height(); // vmin at bottom
         painter.line_segment([pos2(rect.right(), py), pos2(rect.right() + 3.0, py)], axis);
-        painter.text(
-            pos2(rect.right() + 5.0, py),
-            Align2::LEFT_CENTER,
-            label,
-            font.clone(),
-            style.text,
-        );
+        // Keep the whole label within the bar's vertical span: the extreme
+        // labels are centered on the bar edges and would otherwise overhang into
+        // a gutter that may be clipped (see `clamp_label_center`).
+        let galley = painter.layout_no_wrap(label, font.clone(), style.text);
+        let half_h = galley.size().y * 0.5;
+        let cy = clamp_label_center(py, rect.top(), rect.bottom(), half_h);
+        painter.galley(pos2(rect.right() + 5.0, cy - half_h), galley, style.text);
     }
 }
 
@@ -1403,6 +1424,20 @@ mod tests {
         assert_eq!(b.line_width, Some(3.5));
         assert_eq!(b.line_style, Some(LineStyle::Dashed));
         assert_eq!(b.fill, Some(true));
+    }
+
+    #[test]
+    fn colorbar_label_center_stays_within_bar() {
+        // Interior tick: unchanged (the clamp is a no-op).
+        assert_eq!(clamp_label_center(50.0, 0.0, 100.0, 7.0), 50.0);
+        // vmin at the bottom edge: nudged up by half the label height so the
+        // full glyph fits above the bar bottom instead of overhanging.
+        assert_eq!(clamp_label_center(100.0, 0.0, 100.0, 7.0), 93.0);
+        // vmax at the top edge: nudged down by half the label height.
+        assert_eq!(clamp_label_center(0.0, 0.0, 100.0, 7.0), 7.0);
+        // Degenerate bar shorter than the label: falls back to the bar center
+        // (a raw clamp would panic on lo > hi).
+        assert_eq!(clamp_label_center(0.0, 40.0, 50.0, 7.0), 45.0);
     }
 
     #[test]

@@ -274,11 +274,20 @@ impl ColorBarWidget {
                     stroke,
                 );
                 if let Some(label) = label {
-                    painter.text(
-                        pos2(bar_rect.right() + TICK_LABEL_GAP, y),
-                        Align2::LEFT_CENTER,
-                        label,
-                        font.clone(),
+                    // A tick landing at the bar edge (frac 0/1) would center its
+                    // label on the clip boundary and lose half the glyph; clamp
+                    // the text center into the bar span (chrome::clamp_label_center).
+                    let galley = painter.layout_no_wrap(label, font.clone(), fg);
+                    let half_h = galley.size().y * 0.5;
+                    let cy = crate::widget::chrome::clamp_label_center(
+                        y,
+                        bar_rect.top(),
+                        bar_rect.bottom(),
+                        half_h,
+                    );
+                    painter.galley(
+                        pos2(bar_rect.right() + TICK_LABEL_GAP, cy - half_h),
+                        galley,
                         fg,
                     );
                 }
@@ -293,11 +302,18 @@ impl ColorBarWidget {
                     stroke,
                 );
                 if let Some(label) = label {
-                    painter.text(
-                        pos2(x, bar_rect.bottom() + TICK_LABEL_GAP),
-                        Align2::CENTER_TOP,
-                        label,
-                        font.clone(),
+                    // Same edge-overhang guard on the horizontal (x) axis.
+                    let galley = painter.layout_no_wrap(label, font.clone(), fg);
+                    let half_w = galley.size().x * 0.5;
+                    let cx = crate::widget::chrome::clamp_label_center(
+                        x,
+                        bar_rect.left(),
+                        bar_rect.right(),
+                        half_w,
+                    );
+                    painter.galley(
+                        pos2(cx - half_w, bar_rect.bottom() + TICK_LABEL_GAP),
+                        galley,
                         fg,
                     );
                 }
