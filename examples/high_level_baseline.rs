@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example high_level_baseline`
 
 use eframe::egui;
-use egui_silx::{Baseline, CurveData, Plot1D};
+use siplot::{Baseline, CurveData, Plot1D};
 use std::f64::consts::PI;
 
 const N: usize = 200;
@@ -132,7 +132,7 @@ fn histogram_step_xy(edges: &[f64], counts: &[f64]) -> (Vec<f64>, Vec<f64>) {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: baseline curves and stacked histograms",
+        "siplot: baseline curves and stacked histograms",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

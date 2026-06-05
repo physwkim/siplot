@@ -560,7 +560,7 @@ fn render_plot_rgba(
     let res: &WgpuResources = renderer
         .callback_resources
         .get()
-        .expect("WgpuResources not installed — call egui_silx::install() first");
+        .expect("WgpuResources not installed — call siplot::install() first");
     res.render_to_rgba(
         &render_state.device,
         &render_state.queue,

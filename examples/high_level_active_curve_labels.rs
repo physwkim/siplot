@@ -21,7 +21,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use egui_silx::{CurveSpec, GraphGrid, ItemHandle, PlotInteractionMode, PlotWidget, YAxis};
+use siplot::{CurveSpec, GraphGrid, ItemHandle, PlotInteractionMode, PlotWidget, YAxis};
 
 const N: usize = 400;
 const T_MAX: f64 = 10.0;
@@ -220,7 +220,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - active-curve axis labels",
+        "siplot - active-curve axis labels",
         options,
         Box::new(|cc| Ok(Box::new(ActiveLabelApp::new(cc)) as Box<dyn eframe::App>)),
     )

@@ -208,7 +208,7 @@ impl Roi {
             // Four mid-edge handles (one axis each) plus four corner handles
             // (both axes) so the rectangle resizes left/right, up/down, and
             // diagonally. silx `RectangleROI` exposes the corners; the mid-edge
-            // handles are an egui-silx addition that preserves single-axis
+            // handles are an siplot addition that preserves single-axis
             // resize alongside the diagonal corners.
             Roi::Rect { .. } => vec![
                 RoiEdge::Left,

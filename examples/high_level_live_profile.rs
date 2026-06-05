@@ -8,7 +8,7 @@
 //! Run with: `cargo run --example high_level_live_profile`
 
 use eframe::egui;
-use egui_silx::{Colormap, CurveData, ItemHandle, Plot1D, Plot2D, ProfileMode};
+use siplot::{Colormap, CurveData, ItemHandle, Plot1D, Plot2D, ProfileMode};
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 96;
@@ -111,7 +111,7 @@ fn build_image() -> Vec<f32> {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: live profile toolbar",
+        "siplot: live profile toolbar",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

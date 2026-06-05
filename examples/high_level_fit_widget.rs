@@ -5,7 +5,7 @@
 //! Run with: `cargo run --example high_level_fit_widget`
 
 use eframe::egui;
-use egui_silx::FitWidget;
+use siplot::FitWidget;
 
 struct FitApp {
     fit_widget: FitWidget,
@@ -62,7 +62,7 @@ impl eframe::App for FitApp {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: Fit Widget",
+        "siplot: Fit Widget",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

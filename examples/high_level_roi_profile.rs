@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example high_level_roi_profile`
 
 use eframe::egui;
-use egui_silx::{Colormap, Plot2D, ProfileMode, ProfileWindow, Roi};
+use siplot::{Colormap, Plot2D, ProfileMode, ProfileWindow, Roi};
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 96;
@@ -142,7 +142,7 @@ fn build_image() -> Vec<f32> {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: ROI Profile Window",
+        "siplot: ROI Profile Window",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

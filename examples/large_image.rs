@@ -11,7 +11,7 @@
 //! Run with: `cargo run --release --example large_image`
 
 use eframe::egui;
-use egui_silx::{Colormap, ImageData, Plot, PlotView, install, set_image};
+use siplot::{Colormap, ImageData, Plot, PlotView, install, set_image};
 
 const HEIGHT: u32 = 256;
 
@@ -83,7 +83,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx · large_image",
+        "siplot · large_image",
         options,
         Box::new(|cc| Ok(Box::new(LargeImageApp::new(cc)) as Box<dyn eframe::App>)),
     )

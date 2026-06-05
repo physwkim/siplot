@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example high_level_plot_limits`
 
 use eframe::egui;
-use egui_silx::Plot1D;
+use siplot::Plot1D;
 
 struct PlotLimitsApp {
     plot: Plot1D,
@@ -145,7 +145,7 @@ impl eframe::App for PlotLimitsApp {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: plot limits",
+        "siplot: plot limits",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

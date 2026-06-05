@@ -331,25 +331,25 @@ pub struct CurvePipeline {
 impl CurvePipeline {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("egui-silx curve"),
+            label: Some("siplot curve"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/curve.wgsl").into()),
         });
         let marker_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("egui-silx markers"),
+            label: Some("siplot markers"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/markers.wgsl").into()),
         });
         let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("egui-silx fill"),
+            label: Some("siplot fill"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/fill.wgsl").into()),
         });
         let errorbar_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("egui-silx errorbars"),
+            label: Some("siplot errorbars"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/errorbars.wgsl").into()),
         });
 
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui-silx curve bgl"),
+                label: Some("siplot curve bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -406,7 +406,7 @@ impl CurvePipeline {
             });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("egui-silx curve layout"),
+            label: Some("siplot curve layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
@@ -417,7 +417,7 @@ impl CurvePipeline {
         // size or carry dead curve-only bindings.
         let marker_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui-silx marker bgl"),
+                label: Some("siplot marker bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -461,13 +461,13 @@ impl CurvePipeline {
             });
         let marker_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("egui-silx marker layout"),
+                label: Some("siplot marker layout"),
                 bind_group_layouts: &[Some(&marker_bind_group_layout)],
                 immediate_size: 0,
             });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui-silx curve pipeline"),
+            label: Some("siplot curve pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -497,7 +497,7 @@ impl CurvePipeline {
 
         // Marker pipeline: its own minimal layout, one quad (6 vertices) per point.
         let marker_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui-silx marker pipeline"),
+            label: Some("siplot marker pipeline"),
             layout: Some(&marker_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &marker_shader,
@@ -526,7 +526,7 @@ impl CurvePipeline {
         // 1, the baseline at 2). Two data-space triangles per segment.
         let fill_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui-silx fill bgl"),
+                label: Some("siplot fill bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -566,12 +566,12 @@ impl CurvePipeline {
                 ],
             });
         let fill_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("egui-silx fill layout"),
+            label: Some("siplot fill layout"),
             bind_group_layouts: &[Some(&fill_bind_group_layout)],
             immediate_size: 0,
         });
         let fill_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui-silx fill pipeline"),
+            label: Some("siplot fill pipeline"),
             layout: Some(&fill_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &fill_shader,
@@ -600,7 +600,7 @@ impl CurvePipeline {
         // endpoints at 1). Two triangles (6 vertices) per segment, like the line.
         let errorbar_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui-silx errorbar bgl"),
+                label: Some("siplot errorbar bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -633,12 +633,12 @@ impl CurvePipeline {
             });
         let errorbar_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("egui-silx errorbar layout"),
+                label: Some("siplot errorbar layout"),
                 bind_group_layouts: &[Some(&errorbar_bind_group_layout)],
                 immediate_size: 0,
             });
         let errorbar_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui-silx errorbar pipeline"),
+            label: Some("siplot errorbar pipeline"),
             layout: Some(&errorbar_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &errorbar_shader,
@@ -909,7 +909,7 @@ impl GpuCurve {
         // skipped (count < 2) so nothing is rendered.
         let capacity = positions.len().max(1) as u32;
         let points = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx curve points"),
+            label: Some("siplot curve points"),
             size: (capacity as usize * std::mem::size_of::<[f32; 2]>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -924,7 +924,7 @@ impl GpuCurve {
         let vertex_color = curve.colors.is_some();
         let colors_capacity = if vertex_color { capacity } else { 0 };
         let vcolors = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx curve colors"),
+            label: Some("siplot curve colors"),
             size: (colors_capacity.max(1) as usize * std::mem::size_of::<[f32; 4]>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -943,21 +943,21 @@ impl GpuCurve {
         let dashed = curve.line_style.dash_spec(curve.width).is_some();
         let arclen_capacity = if dashed { capacity } else { 0 };
         let arclen = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx curve arclen"),
+            label: Some("siplot curve arclen"),
             size: (arclen_capacity.max(1) as usize * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx curve params"),
+            label: Some("siplot curve params"),
             size: std::mem::size_of::<CurveParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("egui-silx curve bg"),
+            label: Some("siplot curve bg"),
             layout: &pipeline.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -981,13 +981,13 @@ impl GpuCurve {
 
         // Marker uniform + bind group: same layout, sharing the points buffer.
         let marker_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx marker params"),
+            label: Some("siplot marker params"),
             size: std::mem::size_of::<MarkerParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let marker_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("egui-silx marker bg"),
+            label: Some("siplot marker bg"),
             layout: &pipeline.marker_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1013,7 +1013,7 @@ impl GpuCurve {
         // creation, else a 1-element placeholder.
         let baseline_capacity = if curve.fill { capacity } else { 0 };
         let baseline_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx curve baseline"),
+            label: Some("siplot curve baseline"),
             size: (baseline_capacity.max(1) as usize * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1025,13 +1025,13 @@ impl GpuCurve {
             }
         }
         let fill_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx fill params"),
+            label: Some("siplot fill params"),
             size: std::mem::size_of::<FillParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let fill_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("egui-silx fill bg"),
+            label: Some("siplot fill bg"),
             layout: &pipeline.fill_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1061,7 +1061,7 @@ impl GpuCurve {
         let errorbar_capacity = segs.len() as u32;
         let errorbar_count = (segs.len() / 2) as u32;
         let errorbar_segs = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx curve errorbar segs"),
+            label: Some("siplot curve errorbar segs"),
             size: (errorbar_capacity.max(1) as usize * std::mem::size_of::<[f32; 4]>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1070,13 +1070,13 @@ impl GpuCurve {
             queue.write_buffer(&errorbar_segs, 0, bytemuck::cast_slice(&segs));
         }
         let errorbar_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui-silx errorbar params"),
+            label: Some("siplot errorbar params"),
             size: std::mem::size_of::<ErrorBarParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let errorbar_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("egui-silx errorbar bg"),
+            label: Some("siplot errorbar bg"),
             layout: &pipeline.errorbar_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {

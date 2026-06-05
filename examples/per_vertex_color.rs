@@ -9,7 +9,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use egui_silx::{CurveData, Plot, PlotView, install, set_curve};
+use siplot::{CurveData, Plot, PlotView, install, set_curve};
 
 const T_MAX: f64 = std::f64::consts::TAU;
 
@@ -69,7 +69,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx · per_vertex_color",
+        "siplot · per_vertex_color",
         options,
         Box::new(|cc| Ok(Box::new(PerVertexColorApp::new(cc)) as Box<dyn eframe::App>)),
     )

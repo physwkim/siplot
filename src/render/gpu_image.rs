@@ -293,17 +293,17 @@ pub struct ImagePipeline {
 impl ImagePipeline {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("egui-silx image"),
+            label: Some("siplot image"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/image.wgsl").into()),
         });
         let rgba_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("egui-silx image rgba"),
+            label: Some("siplot image rgba"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/image_rgba.wgsl").into()),
         });
 
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui-silx image bgl"),
+                label: Some("siplot image bgl"),
                 entries: &[
                     // 0: params uniform (used by both stages)
                     wgpu::BindGroupLayoutEntry {
@@ -358,13 +358,13 @@ impl ImagePipeline {
             });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("egui-silx image layout"),
+            label: Some("siplot image layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui-silx image pipeline"),
+            label: Some("siplot image pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -396,7 +396,7 @@ impl ImagePipeline {
         // filterable format, so this needs no extra wgpu feature.
         let rgba_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("egui-silx image rgba bgl"),
+                label: Some("siplot image rgba bgl"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -432,12 +432,12 @@ impl ImagePipeline {
                 ],
             });
         let rgba_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("egui-silx image rgba layout"),
+            label: Some("siplot image rgba layout"),
             bind_group_layouts: &[Some(&rgba_bind_group_layout)],
             immediate_size: 0,
         });
         let rgba_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("egui-silx image rgba pipeline"),
+            label: Some("siplot image rgba pipeline"),
             layout: Some(&rgba_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &rgba_shader,
@@ -463,13 +463,13 @@ impl ImagePipeline {
         });
 
         let data_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("egui-silx image data sampler"),
+            label: Some("siplot image data sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         let lut_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("egui-silx image lut sampler"),
+            label: Some("siplot image lut sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -606,7 +606,7 @@ impl GpuImage {
                     depth_or_array_layers: 1,
                 };
                 let lut_texture = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("egui-silx image lut"),
+                    label: Some("siplot image lut"),
                     size: lut_size,
                     mip_level_count: 1,
                     sample_count: 1,
@@ -641,7 +641,7 @@ impl GpuImage {
                             depth_or_array_layers: 1,
                         };
                         let data_texture = device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("egui-silx image tile"),
+                            label: Some("siplot image tile"),
                             size: tile_size,
                             mip_level_count: 1,
                             sample_count: 1,
@@ -671,13 +671,13 @@ impl GpuImage {
                             data_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
                         let params = device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("egui-silx image tile params"),
+                            label: Some("siplot image tile params"),
                             size: std::mem::size_of::<ImageParams>() as u64,
                             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                             mapped_at_creation: false,
                         });
                         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("egui-silx image tile bg"),
+                            label: Some("siplot image tile bg"),
                             layout: &pipeline.bind_group_layout,
                             entries: &[
                                 wgpu::BindGroupEntry {
@@ -746,7 +746,7 @@ impl GpuImage {
                             depth_or_array_layers: 1,
                         };
                         let data_texture = device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("egui-silx image rgba tile"),
+                            label: Some("siplot image rgba tile"),
                             size: tile_size,
                             mip_level_count: 1,
                             sample_count: 1,
@@ -776,13 +776,13 @@ impl GpuImage {
                             data_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
                         let params = device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("egui-silx image rgba tile params"),
+                            label: Some("siplot image rgba tile params"),
                             size: std::mem::size_of::<ImageRgbaParams>() as u64,
                             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                             mapped_at_creation: false,
                         });
                         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("egui-silx image rgba tile bg"),
+                            label: Some("siplot image rgba tile bg"),
                             layout: &pipeline.rgba_bind_group_layout,
                             entries: &[
                                 wgpu::BindGroupEntry {

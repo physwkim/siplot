@@ -6,7 +6,7 @@
 //! Run with: `cargo run --example high_level_shift_action`
 
 use eframe::egui;
-use egui_silx::{CurveSpec, GraphGrid, ItemHandle, Plot1D};
+use siplot::{CurveSpec, GraphGrid, ItemHandle, Plot1D};
 
 struct CurveEntry {
     handle: ItemHandle,
@@ -120,7 +120,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - high-level shift action",
+        "siplot - high-level shift action",
         options,
         Box::new(|cc| Ok(Box::new(ShiftActionApp::new(cc)) as Box<dyn eframe::App>)),
     )

@@ -10,7 +10,7 @@
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Stroke, vec2};
-use egui_silx::{CurveData, Plot, PlotView, Symbol, install, nearest_point, set_curve};
+use siplot::{CurveData, Plot, PlotView, Symbol, install, nearest_point, set_curve};
 
 const N: usize = 24;
 
@@ -81,7 +81,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx · picking",
+        "siplot · picking",
         options,
         Box::new(|cc| Ok(Box::new(PickingApp::new(cc)) as Box<dyn eframe::App>)),
     )

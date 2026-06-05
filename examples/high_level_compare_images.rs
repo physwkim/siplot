@@ -6,7 +6,7 @@
 //! Run with: `cargo run --example high_level_compare_images`
 
 use eframe::egui;
-use egui_silx::{Colormap, CompareImages};
+use siplot::{Colormap, CompareImages};
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 128;
@@ -60,7 +60,7 @@ fn build_images() -> (Vec<f32>, Vec<f32>) {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: compare images",
+        "siplot: compare images",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

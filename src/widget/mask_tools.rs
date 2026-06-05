@@ -48,7 +48,7 @@ pub(crate) const PENCIL_PREVIEW_SEGMENTS: usize = 13;
 /// `DrawFreeHand`'s `_circle` (`PlotInteraction.py:996-998`): 13 points on a
 /// circle of radius `pencil width * 0.5`, painted unfilled at the cursor. The
 /// mask brush paints a disk of `brush_size / 2` cells, so a `radius` of
-/// `brush_size / 2` (egui-silx masks in data==cell space) matches the
+/// `brush_size / 2` (siplot masks in data==cell space) matches the
 /// footprint.
 pub(crate) fn pencil_preview_circle(
     center: (f64, f64),
@@ -1975,10 +1975,7 @@ mod tests {
         src.mask = vec![0, 1, 2, 200, 254, 255];
 
         let mut path = std::env::temp_dir();
-        path.push(format!(
-            "egui_silx_mask_roundtrip_{}.npy",
-            std::process::id()
-        ));
+        path.push(format!("siplot_mask_roundtrip_{}.npy", std::process::id()));
         let path_str = path.to_str().expect("utf-8 temp path").to_string();
 
         src.save_mask_npy(&path_str).expect("save");

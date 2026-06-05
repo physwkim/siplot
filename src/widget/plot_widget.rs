@@ -1072,7 +1072,7 @@ fn apply_interaction(
 
     // Right-click context menu (silx `PlotWidget.contextMenuEvent`): a secondary
     // *click* opens a zoom menu. silx's default menu carries `Zoom Back`;
-    // egui-silx adds `Reset Zoom` to absorb the view reset (silx binds reset to
+    // siplot adds `Reset Zoom` to absorb the view reset (silx binds reset to
     // the toolbar/home, never to a double-click, so the former double-click reset
     // is relocated here). A secondary *drag* still pans — egui opens the menu on a
     // click, not a drag — and the `mouseClicked "right"` event still fires

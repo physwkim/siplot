@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example high_level_scatter_view`
 
 use eframe::egui;
-use egui_silx::{Colormap, ScatterView};
+use siplot::{Colormap, ScatterView};
 
 struct ScatterViewApp {
     sv: ScatterView,
@@ -76,7 +76,7 @@ fn halton(mut index: usize, base: usize) -> f64 {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: scatter view",
+        "siplot: scatter view",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

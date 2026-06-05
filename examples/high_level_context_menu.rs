@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use eframe::egui;
-use egui_silx::{GraphGrid, PlotWidget};
+use siplot::{GraphGrid, PlotWidget};
 
 struct ContextMenuApp {
     plot: PlotWidget,
@@ -36,7 +36,7 @@ impl ContextMenuApp {
 
         Self {
             plot,
-            save_path: PathBuf::from("egui-silx-context-menu.png"),
+            save_path: PathBuf::from("siplot-context-menu.png"),
             status: "right-click the plot".to_owned(),
         }
     }
@@ -92,7 +92,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - high-level context menu",
+        "siplot - high-level context menu",
         options,
         Box::new(|cc| Ok(Box::new(ContextMenuApp::new(cc)) as Box<dyn eframe::App>)),
     )

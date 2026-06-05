@@ -6,13 +6,13 @@
 //! Run with: `cargo run --example high_level_live_update`
 
 use eframe::egui;
-use egui_silx::{CurveSpec, GraphGrid, Plot1D};
+use siplot::{CurveSpec, GraphGrid, Plot1D};
 
 const N: usize = 1_000;
 
 struct LiveUpdateApp {
     plot: Plot1D,
-    curve: egui_silx::ItemHandle,
+    curve: siplot::ItemHandle,
     x: Vec<f64>,
     paused: bool,
     amplitude: f64,
@@ -103,7 +103,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - high-level live update",
+        "siplot - high-level live update",
         options,
         Box::new(|cc| Ok(Box::new(LiveUpdateApp::new(cc)) as Box<dyn eframe::App>)),
     )

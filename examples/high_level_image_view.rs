@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example high_level_image_view`
 
 use eframe::egui;
-use egui_silx::{Colormap, ImageView};
+use siplot::{Colormap, ImageView};
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 96;
@@ -53,7 +53,7 @@ fn build_image() -> Vec<f32> {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: image view",
+        "siplot: image view",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

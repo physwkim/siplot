@@ -39,7 +39,7 @@ impl AxisConstraints {
     /// position window is clamped.
     ///
     /// Mirrors silx `ViewConstraints` (`_utils/panzoom.py`) with
-    /// `allow_scaling=True` — the only mode egui-silx uses, since [`apply`]
+    /// `allow_scaling=True` — the only mode siplot uses, since [`apply`]
     /// runs after every pan/zoom. Two silx mechanisms are reproduced:
     ///
     /// - The `update` sanity check (panzoom.py:297-305): when `max_range`,

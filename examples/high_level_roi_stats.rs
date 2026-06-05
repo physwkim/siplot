@@ -6,7 +6,7 @@
 //! Run with: `cargo run --example high_level_roi_stats`
 
 use eframe::egui;
-use egui_silx::{Colormap, Plot2D, PlotWidget, Roi, RoiStatsWidget};
+use siplot::{Colormap, Plot2D, PlotWidget, Roi, RoiStatsWidget};
 
 const WIDTH: u32 = 180;
 const HEIGHT: u32 = 140;
@@ -101,7 +101,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - high-level ROI stats",
+        "siplot - high-level ROI stats",
         options,
         Box::new(|cc| Ok(Box::new(RoiStatsApp::new(cc)) as Box<dyn eframe::App>)),
     )

@@ -7,7 +7,7 @@
 //! Run with: `cargo run --example high_level_plot_widget`
 
 use eframe::egui;
-use egui_silx::{Colormap, GraphGrid, PlotEvent, PlotWidget};
+use siplot::{Colormap, GraphGrid, PlotEvent, PlotWidget};
 
 const WIDTH: u32 = 180;
 const HEIGHT: u32 = 140;
@@ -58,7 +58,7 @@ impl HighLevelWidgetApp {
         self.plot.clear();
         self.plot.set_graph_title("Image with curve overlay");
         self.plot.set_graph_x_label("Columns");
-        self.plot.set_graph_y_label("Rows", egui_silx::YAxis::Left);
+        self.plot.set_graph_y_label("Rows", siplot::YAxis::Left);
         self.plot.set_keep_data_aspect_ratio(true);
         self.plot.set_graph_grid_mode(GraphGrid::None);
         self.plot
@@ -90,7 +90,7 @@ impl HighLevelWidgetApp {
         self.plot.clear();
         self.plot.set_graph_title("Scatter");
         self.plot.set_graph_x_label("X");
-        self.plot.set_graph_y_label("Y", egui_silx::YAxis::Left);
+        self.plot.set_graph_y_label("Y", siplot::YAxis::Left);
         self.plot.set_keep_data_aspect_ratio(false);
         self.plot.set_graph_grid_mode(GraphGrid::MajorAndMinor);
 
@@ -106,7 +106,7 @@ impl HighLevelWidgetApp {
         self.plot.clear();
         self.plot.set_graph_title("Histogram");
         self.plot.set_graph_x_label("Bin");
-        self.plot.set_graph_y_label("Count", egui_silx::YAxis::Left);
+        self.plot.set_graph_y_label("Count", siplot::YAxis::Left);
         self.plot.set_keep_data_aspect_ratio(false);
         self.plot.set_graph_grid_mode(GraphGrid::MajorAndMinor);
 
@@ -260,7 +260,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - high-level PlotWidget",
+        "siplot - high-level PlotWidget",
         options,
         Box::new(|cc| Ok(Box::new(HighLevelWidgetApp::new(cc)) as Box<dyn eframe::App>)),
     )

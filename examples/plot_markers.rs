@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example plot_markers`
 
 use eframe::egui;
-use egui_silx::{LineStyle, Marker, MarkerSymbol, Plot, PlotView, install};
+use siplot::{LineStyle, Marker, MarkerSymbol, Plot, PlotView, install};
 
 struct MarkerApp {
     plot: Plot,
@@ -110,7 +110,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx · plot_markers",
+        "siplot · plot_markers",
         options,
         Box::new(|cc| Ok(Box::new(MarkerApp::new(cc)) as Box<dyn eframe::App>)),
     )

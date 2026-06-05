@@ -948,11 +948,11 @@ pub enum CursorShape {
     SizeVer,
     /// Diagonal resize along the ↘↖ axis: top-left ↔ bottom-right corner (Qt
     /// `SizeFDiagCursor`). silx maps all corner handles to `CURSOR_SIZE_ALL`;
-    /// egui-silx uses egui's native diagonal cursor for Rect corners, matching
+    /// siplot uses egui's native diagonal cursor for Rect corners, matching
     /// egui's own window-corner resize affordance.
     SizeNwse,
     /// Diagonal resize along the ↗↙ axis: top-right ↔ bottom-left corner (Qt
-    /// `SizeBDiagCursor`); the egui-silx Rect-corner counterpart of `SizeNwse`.
+    /// `SizeBDiagCursor`); the siplot Rect-corner counterpart of `SizeNwse`.
     SizeNesw,
     /// Move in both axes (silx `CURSOR_SIZE_ALL`, Qt `SizeAllCursor`).
     SizeAll,

@@ -7,13 +7,13 @@
 //! Run with: `cargo run --example high_level_plot1d`
 
 use eframe::egui;
-use egui_silx::{CurveSpec, GraphGrid, Plot1D, PlotEvent};
+use siplot::{CurveSpec, GraphGrid, Plot1D, PlotEvent};
 
 const N: usize = 360;
 
 struct Plot1dApp {
     plot: Plot1D,
-    curve: egui_silx::ItemHandle,
+    curve: siplot::ItemHandle,
     phase: f64,
     events: Vec<String>,
 }
@@ -229,7 +229,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx - high-level Plot1D",
+        "siplot - high-level Plot1D",
         options,
         Box::new(|cc| Ok(Box::new(Plot1dApp::new(cc)) as Box<dyn eframe::App>)),
     )

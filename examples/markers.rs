@@ -9,7 +9,7 @@
 //! Run with: `cargo run --example markers`
 
 use eframe::egui;
-use egui_silx::{CurveData, Plot, PlotView, Symbol, install, set_curves};
+use siplot::{CurveData, Plot, PlotView, Symbol, install, set_curves};
 
 const N: usize = 12;
 
@@ -73,7 +73,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx · markers",
+        "siplot · markers",
         options,
         Box::new(|cc| Ok(Box::new(MarkersApp::new(cc)) as Box<dyn eframe::App>)),
     )

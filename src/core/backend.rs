@@ -190,7 +190,7 @@ pub struct ShapeSpec<'a> {
     pub kind: ShapeKind,
     pub color: Color32,
     pub fill: bool,
-    /// Preserved from silx. egui-silx currently draws shapes in one overlay pass.
+    /// Preserved from silx. siplot currently draws shapes in one overlay pass.
     pub overlay: bool,
     pub line_style: LineStyle,
     pub line_width: f32,

@@ -373,7 +373,7 @@ pub enum PlotEvent {
     /// `label` its name, `x`/`y` the data-space cursor position, `xpixel`/`ypixel`
     /// the pixel cursor position, and `draggable` whether the item can be dragged
     /// (true only for a draggable marker). silx's `selectable` flag is omitted: in
-    /// egui-silx every pickable item is set active on click, so the flag would be
+    /// siplot every pickable item is set active on click, so the flag would be
     /// a constant `true` carrying no information.
     ItemHovered {
         handle: ItemHandle,
@@ -553,7 +553,7 @@ fn force_odd(n: usize) -> usize {
 /// (or a copy in flight) do not collide. Pure (no filesystem touch), so the
 /// naming is unit-testable; the actual write + printer submit are the shims.
 fn print_temp_png_path(dir: &Path, pid: u32) -> PathBuf {
-    dir.join(format!("egui-silx-print-{pid}.png"))
+    dir.join(format!("siplot-print-{pid}.png"))
 }
 
 fn validate_image_len(width: u32, height: u32, actual: usize) -> Result<usize, PlotDataError> {
@@ -6038,7 +6038,7 @@ impl PlotWidget {
         // Render the figure to a temp PNG, then read it back. save_graph is the
         // only public figure-encoding entry point (it writes a PNG file).
         let mut path = std::env::temp_dir();
-        path.push(format!("egui-silx-copy-{}.png", std::process::id()));
+        path.push(format!("siplot-copy-{}.png", std::process::id()));
         self.save_graph(&path, size)?;
         let png = std::fs::read(&path)?;
         let _ = std::fs::remove_file(&path);
@@ -7716,7 +7716,7 @@ impl ImageView {
     /// `DrawFreeHand.updatePencilShape` (`PlotInteraction.py:1011-1017`,
     /// `fill="none"`), shown both while hovering and while painting (silx draws
     /// it from `Idle.onMove` and `Select.onMove`). The mask brush paints a disk
-    /// of `brush_size / 2` cells (egui-silx masks in data==cell space), so the
+    /// of `brush_size / 2` cells (siplot masks in data==cell space), so the
     /// circle marks the exact footprint. Painted on a foreground layer clipped
     /// to the image area.
     fn draw_brush_preview(&self, ui: &egui::Ui, plot_response: &PlotResponse) {
@@ -9865,9 +9865,9 @@ mod tests {
     fn print_temp_png_path_is_process_unique_under_dir() {
         // The print shim rasterizes into this temp path before submitting to the
         // printer; the GPU readback + submit are shims, but the naming is pure.
-        let dir = Path::new("/tmp/egui-silx-test");
+        let dir = Path::new("/tmp/siplot-test");
         let p = print_temp_png_path(dir, 4242);
-        assert_eq!(p, Path::new("/tmp/egui-silx-test/egui-silx-print-4242.png"));
+        assert_eq!(p, Path::new("/tmp/siplot-test/siplot-print-4242.png"));
         // Always under the requested dir, always a .png, with the pid embedded so
         // concurrent plots / a copy in flight do not collide.
         assert!(p.starts_with(dir));

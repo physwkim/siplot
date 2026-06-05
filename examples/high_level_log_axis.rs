@@ -10,7 +10,7 @@
 //! Run with: `cargo run --example high_level_log_axis`
 
 use eframe::egui;
-use egui_silx::{Plot1D, YAxis};
+use siplot::{Plot1D, YAxis};
 
 const N: usize = 200;
 
@@ -86,7 +86,7 @@ impl eframe::App for LogAxisApp {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: log axes",
+        "siplot: log axes",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

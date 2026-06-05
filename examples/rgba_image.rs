@@ -9,7 +9,7 @@
 //! Run with: `cargo run --example rgba_image`
 
 use eframe::egui;
-use egui_silx::{ImageData, Plot, PlotView, install, set_image};
+use siplot::{ImageData, Plot, PlotView, install, set_image};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
@@ -73,7 +73,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "egui-silx · rgba_image",
+        "siplot · rgba_image",
         options,
         Box::new(|cc| Ok(Box::new(RgbaApp::new(cc)) as Box<dyn eframe::App>)),
     )

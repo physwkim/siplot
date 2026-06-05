@@ -13,7 +13,7 @@
 //! Run with: `cargo run --example high_level_scatter_mask`
 
 use eframe::egui;
-use egui_silx::{Colormap, CurveColor, CurveSpec, ItemHandle, LineStyle, PlotWidget, Symbol};
+use siplot::{Colormap, CurveColor, CurveSpec, ItemHandle, LineStyle, PlotWidget, Symbol};
 
 const N: usize = 500;
 const MASKED_ALPHA: u8 = 30;
@@ -190,7 +190,7 @@ impl eframe::App for ScatterMaskApp {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: scatter mask",
+        "siplot: scatter mask",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

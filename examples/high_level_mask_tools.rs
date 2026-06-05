@@ -5,7 +5,7 @@
 //! Run with: `cargo run --example high_level_mask_tools`
 
 use eframe::egui;
-use egui_silx::{Colormap, MaskTool, MaskToolsWidget, Plot2D, PlotInteractionMode};
+use siplot::{Colormap, MaskTool, MaskToolsWidget, Plot2D, PlotInteractionMode};
 
 const WIDTH: u32 = 128;
 const HEIGHT: u32 = 96;
@@ -83,7 +83,7 @@ fn build_image() -> Vec<f32> {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "egui-silx: Mask Tools",
+        "siplot: Mask Tools",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()
