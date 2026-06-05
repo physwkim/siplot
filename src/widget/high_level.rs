@@ -1296,6 +1296,83 @@ pub fn vertical_profile_values(
         .collect())
 }
 
+/// How a profile reduces the pixels across its integration band, mirroring the
+/// silx profile `method` parameter (`tools/profile/core.py`, values `"mean"` /
+/// `"sum"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProfileMethod {
+    /// Average the band pixels (silx `numpy.mean`), the silx default.
+    #[default]
+    Mean,
+    /// Sum the band pixels (silx `numpy.sum`).
+    Sum,
+}
+
+/// Extract an axis-aligned profile that integrates a band of `roi_width` pixels
+/// centered on `position`, reducing each profile sample with `method`, faithful
+/// to silx `_alignedFullProfile` (`tools/profile/core.py:204-270`).
+///
+/// With `horizontal == true` the profile runs along X (one sample per column) and
+/// `position` is the Y (row) of the line; the band spans `roi_width` rows. With
+/// `horizontal == false` the profile runs along Y (one sample per row) and
+/// `position` is the X (column); the band spans `roi_width` columns. siplot's
+/// ImageView uses identity geometry (origin `(0, 0)`, scale `(1, 1)`), so
+/// `position` is already in image pixels.
+///
+/// The band is placed exactly as silx does: clip `roi_width` to the image,
+/// `start = ⌊⌊position⌋ + 0.5 − roi_width/2⌋` clamped to `[0, dim − roi_width]`,
+/// `end = start + roi_width`. `roi_width` is treated as at least 1.
+/// [`ProfileMethod::Mean`] divides each sample by the band size;
+/// [`ProfileMethod::Sum`] does not. This generalizes
+/// [`horizontal_profile_values`] / [`vertical_profile_values`] (the
+/// `roi_width == 1`, [`ProfileMethod::Mean`] case).
+pub fn aligned_profile_values(
+    width: u32,
+    height: u32,
+    data: &[f32],
+    position: f64,
+    roi_width: u32,
+    horizontal: bool,
+    method: ProfileMethod,
+) -> Result<Vec<f64>, PlotDataError> {
+    validate_image_len(width, height, data.len())?;
+    let w = width as usize;
+    let h = height as usize;
+    if w == 0 || h == 0 {
+        return Ok(Vec::new());
+    }
+
+    // The dimension the band integrates over, and the profile's own length.
+    let (band_dim, profile_len) = if horizontal { (h, w) } else { (w, h) };
+
+    // silx `roiWidth = min(dim, roiWidth)`, treated as at least one pixel.
+    let band = (roi_width.max(1) as usize).min(band_dim);
+
+    // silx `start = int(int(position) + 0.5 - roiWidth/2.0)`, then clamp to
+    // `[0, dim - roiWidth]`. Both `int()`s truncate toward zero.
+    let start_f = position.trunc() + 0.5 - band as f64 / 2.0;
+    let start = (start_f.trunc() as i64).clamp(0, (band_dim - band) as i64) as usize;
+    let end = start + band;
+    let denom = band as f64;
+
+    let profile = (0..profile_len)
+        .map(|p| {
+            let acc: f64 = (start..end)
+                .map(|b| {
+                    // Horizontal: p = column, b = row; Vertical: p = row, b = column.
+                    let idx = if horizontal { b * w + p } else { p * w + b };
+                    data[idx] as f64
+                })
+                .sum();
+            match method {
+                ProfileMethod::Mean => acc / denom,
+                ProfileMethod::Sum => acc,
+            }
+        })
+        .collect();
+    Ok(profile)
+}
+
 /// Extract a 1D profile along a line segment using nearest neighbor sampling.
 /// `start` and `end` are in (column, row) coordinates.
 pub fn line_profile_values(
@@ -10524,6 +10601,76 @@ mod tests {
         assert_eq!(
             vertical_profile_values(3, 2, &data, 2).unwrap(),
             vec![3.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn aligned_profile_width_one_mean_matches_single_line() {
+        // 3x2: row0 [1,2,3], row1 [4,5,6].
+        let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Horizontal, row 0, width 1, mean == horizontal_profile_values(row 0).
+        assert_eq!(
+            aligned_profile_values(3, 2, &data, 0.0, 1, true, ProfileMethod::Mean).unwrap(),
+            vec![1.0, 2.0, 3.0]
+        );
+        // Vertical, column 1, width 1, mean == vertical_profile_values(col 1).
+        assert_eq!(
+            aligned_profile_values(3, 2, &data, 1.0, 1, false, ProfileMethod::Mean).unwrap(),
+            vec![2.0, 5.0]
+        );
+    }
+
+    #[test]
+    fn aligned_profile_full_band_mean_and_sum() {
+        // 3x2 image; a full-height band reduces every row per column.
+        let data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Horizontal, centered, width 2 (whole height): mean = column means.
+        assert_eq!(
+            aligned_profile_values(3, 2, &data, 0.5, 2, true, ProfileMethod::Mean).unwrap(),
+            vec![2.5, 3.5, 4.5]
+        );
+        // Sum over the whole height equals the per-column sums.
+        assert_eq!(
+            aligned_profile_values(3, 2, &data, 0.5, 2, true, ProfileMethod::Sum).unwrap(),
+            vec![5.0, 7.0, 9.0]
+        );
+        // Vertical, full-width sum equals per-row sums.
+        assert_eq!(
+            aligned_profile_values(3, 2, &data, 1.0, 3, false, ProfileMethod::Sum).unwrap(),
+            vec![6.0, 15.0]
+        );
+    }
+
+    #[test]
+    fn aligned_profile_band_clamps_to_image_edges() {
+        // 2x4 image, rows: [10,11],[12,13],[14,15],[16,17].
+        let data = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0];
+        // Bottom edge, width 2: band clamps to the last two rows (2,3).
+        assert_eq!(
+            aligned_profile_values(2, 4, &data, 3.0, 2, true, ProfileMethod::Mean).unwrap(),
+            vec![15.0, 16.0]
+        );
+        // Top edge, width 2: band clamps to rows 0,1.
+        assert_eq!(
+            aligned_profile_values(2, 4, &data, 0.0, 2, true, ProfileMethod::Mean).unwrap(),
+            vec![11.0, 12.0]
+        );
+        // roi_width larger than the image: clipped to the whole height.
+        assert_eq!(
+            aligned_profile_values(2, 4, &data, 1.0, 10, true, ProfileMethod::Mean).unwrap(),
+            vec![13.0, 14.0]
+        );
+    }
+
+    #[test]
+    fn aligned_profile_validates_length() {
+        assert_eq!(
+            aligned_profile_values(2, 2, &[1.0, 2.0, 3.0], 0.0, 1, true, ProfileMethod::Mean)
+                .unwrap_err(),
+            PlotDataError::ImageDataLength {
+                expected: 4,
+                actual: 3,
+            }
         );
     }
 
