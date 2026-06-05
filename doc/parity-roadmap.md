@@ -152,7 +152,7 @@ as-of-sweep reference.
 | ◐ Partial | M | L | Scatter mode-specific picking | scatter.py:804-860 | Points-mode picking works; Solid/RegularGrid/IrregularGrid/BinnedStatistic render but have no mode-specific picking |
 | ◐ Partial | M | M | Image per-pixel validity mask before upload | items/image.py:209-251 | `ScalarMask` + Plot2D wiring (`8ef46c2`) exist; pre-upload mask application in the GPU render path still pending |
 | ◐ Partial | M | L | Marker custom-callback constraint | items/marker.py:208-235 | H/V presets wired (Wave 11); arbitrary `setConstraint(fn)` callback form unsupported |
-| ☐ Missing | M | M | Histogram filled-region picking | histogram.py:244-290 (`__pickFilledHistogram`) | No histogram-specific picking (data-space bounds, searchsorted bin index, y-range check) |
+| ✅ Done | M | M | Histogram filled-region picking | histogram.py:244-290 (`__pickFilledHistogram`) | Wave 7: pure `pick_histogram(edges, values, baseline, x, y) -> Option<usize>` — strict bbox gate (x over edge span, y over `[min(0,vmin), max(0,vmax)]`), `searchsorted(edges, x, side="left")-1` (clamped) bin index via `partition_point`, inclusive y test against the bar `[baseline, value]`/`[value, baseline]`. None on malformed/all-NaN/out-of-box/no-hit |
 | ☐ Missing | M | L | Image per-pixel alpha map | items/image.py:462-500 (get/setAlphaData) | `ImageData` has only global `alpha:f32`; no per-pixel alpha array (needs shader) |
 | ◐ Partial | L | L | Marker text anchor/alignment | items/marker.py | `TextAnchor` enum defined but egui text drawn at a fixed offset; anchor not wired to render |
 | ☐ Missing | L | M | Shape overlay-flag separate data layer | items/shape.py:54-73 (`isOverlay`) | `shape.is_overlay` ignored; all shapes draw in one overlay pass |
