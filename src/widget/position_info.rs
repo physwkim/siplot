@@ -14,9 +14,14 @@
 //! - Numeric converter results are formatted with `%.7g` (silx
 //!   `valueToString`, PositionInfo.py:315) via [`format_value`].
 //!
-//! Snapping (PositionInfo.py:179-292) and the live `PlotWidget` event wiring
-//! (`sigPlotSignal`) are out of scope here: this widget is fed a cursor
-//! position by the caller and is independent of any GPU/plot state.
+//! The pure snapping kernel (PositionInfo.py:236-292) is provided by
+//! [`snap_to_nearest`] / [`SNAP_THRESHOLD_DIST`]: given the cursor and
+//! candidate data points already projected to pixel space, it returns the
+//! nearest point within the snap radius. Selecting *which* items become
+//! candidates (silx `SNAPPING_CURVE`/`SNAPPING_SCATTER`/`SNAPPING_ACTIVE_ONLY`
+//! and the data→pixel projection) needs live plot/GPU state and stays the
+//! caller's responsibility; the live `PlotWidget` event wiring
+//! (`sigPlotSignal`) is likewise out of scope.
 
 /// A converter mapping cursor data coordinates `(x, y)` to a display string.
 ///
@@ -158,6 +163,67 @@ pub fn format_value(value: f64) -> String {
     crate::widget::stats_widget::format_significant(value, 7)
 }
 
+/// Snap radius in logical pixels (silx `PositionInfo.SNAP_THRESHOLD_DIST`,
+/// PositionInfo.py:107).
+///
+/// silx scales this by the device-pixel ratio before squaring
+/// (PositionInfo.py:237); a caller working in physical pixels should pass
+/// `SNAP_THRESHOLD_DIST * device_pixel_ratio` as the threshold to
+/// [`snap_to_nearest`].
+pub const SNAP_THRESHOLD_DIST: f64 = 5.0;
+
+/// A successful snap: the nearest candidate within the snap radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Snap {
+    /// Index of the snapped point in the candidate slice passed to
+    /// [`snap_to_nearest`].
+    pub index: usize,
+    /// The snapped data coordinate (the candidate's data position), to feed to
+    /// [`PositionInfo::values`] in place of the raw cursor.
+    pub data: [f64; 2],
+}
+
+/// Snap a cursor to the nearest candidate point, porting the inner loop of
+/// silx `PositionInfo._updateStatusBar` (PositionInfo.py:236-292).
+///
+/// `cursor_px` and every `candidates[i].0` are positions in the same pixel
+/// space; `candidates[i].1` is that point's data coordinate. Returns the
+/// candidate with the smallest squared pixel distance to the cursor, provided
+/// that distance is `<= threshold_px²` (silx `closestSqDistInPixels <=
+/// sqDistInPixels`, :286). Candidates whose squared distance is not finite are
+/// skipped (silx `numpy.isfinite` guard, :281).
+///
+/// silx walks items one at a time, shrinking the live threshold to the best
+/// distance found so far (:292); a single pass that keeps the global nearest
+/// within the original threshold is equivalent, since a point only wins when it
+/// is both within `threshold_px²` and no farther than the current best. Ties
+/// resolve to the later candidate, matching silx's `<=` update order.
+///
+/// Returns `None` when nothing is within the radius — silx then leaves the
+/// readout at the raw cursor and styles the labels red (:200); a `Some` result
+/// is the "snapped" state that clears the style (:288).
+pub fn snap_to_nearest(
+    cursor_px: [f64; 2],
+    candidates: &[([f64; 2], [f64; 2])],
+    threshold_px: f64,
+) -> Option<Snap> {
+    let mut best: Option<Snap> = None;
+    let mut best_sq = threshold_px * threshold_px;
+    for (index, &(px, data)) in candidates.iter().enumerate() {
+        let dx = px[0] - cursor_px[0];
+        let dy = px[1] - cursor_px[1];
+        let sq = dx * dx + dy * dy;
+        if !sq.is_finite() {
+            continue;
+        }
+        if sq <= best_sq {
+            best = Some(Snap { index, data });
+            best_sq = sq;
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +304,65 @@ mod tests {
         assert_eq!(format_value(f64::NAN), "nan");
         assert_eq!(format_value(f64::INFINITY), "inf");
         assert_eq!(format_value(f64::NEG_INFINITY), "-inf");
+    }
+
+    #[test]
+    fn snap_picks_nearest_within_radius() {
+        // Two candidates; cursor closest to the second. Both within 5px.
+        let cursor = [10.0, 10.0];
+        let candidates = [
+            ([13.0, 10.0], [1.0, 2.0]), // 3px away
+            ([10.0, 12.0], [3.0, 4.0]), // 2px away (closest)
+        ];
+        let snap = snap_to_nearest(cursor, &candidates, SNAP_THRESHOLD_DIST).unwrap();
+        assert_eq!(snap.index, 1);
+        assert_eq!(snap.data, [3.0, 4.0]);
+    }
+
+    #[test]
+    fn snap_returns_none_when_all_outside_radius() {
+        // Nearest is 6px away, threshold 5px -> no snap (silx red label state).
+        let cursor = [0.0, 0.0];
+        let candidates = [([6.0, 0.0], [1.0, 1.0])];
+        assert_eq!(
+            snap_to_nearest(cursor, &candidates, SNAP_THRESHOLD_DIST),
+            None
+        );
+    }
+
+    #[test]
+    fn snap_includes_point_exactly_on_radius() {
+        // silx uses `<=` (closestSqDistInPixels <= sqDistInPixels): a point at
+        // exactly the threshold distance snaps.
+        let cursor = [0.0, 0.0];
+        let candidates = [([5.0, 0.0], [7.0, 8.0])];
+        let snap = snap_to_nearest(cursor, &candidates, SNAP_THRESHOLD_DIST).unwrap();
+        assert_eq!(snap.data, [7.0, 8.0]);
+    }
+
+    #[test]
+    fn snap_skips_non_finite_candidates() {
+        // A NaN pixel position is skipped (silx isfinite guard); the finite
+        // in-range point still wins.
+        let cursor = [0.0, 0.0];
+        let candidates = [([f64::NAN, 0.0], [9.0, 9.0]), ([2.0, 0.0], [1.0, 1.0])];
+        let snap = snap_to_nearest(cursor, &candidates, SNAP_THRESHOLD_DIST).unwrap();
+        assert_eq!(snap.index, 1);
+        assert_eq!(snap.data, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn snap_empty_candidates_is_none() {
+        assert_eq!(snap_to_nearest([0.0, 0.0], &[], SNAP_THRESHOLD_DIST), None);
+    }
+
+    #[test]
+    fn snap_tie_resolves_to_later_candidate() {
+        // Equal distances: silx's `<=` update keeps the later item's point.
+        let cursor = [0.0, 0.0];
+        let candidates = [([3.0, 0.0], [1.0, 1.0]), ([0.0, 3.0], [2.0, 2.0])];
+        let snap = snap_to_nearest(cursor, &candidates, SNAP_THRESHOLD_DIST).unwrap();
+        assert_eq!(snap.index, 1);
+        assert_eq!(snap.data, [2.0, 2.0]);
     }
 }

@@ -97,7 +97,9 @@ pub use crate::widget::items_selection_dialog::{ItemsSelectionDialog, Selectable
 pub use crate::widget::limits_widget::LimitsWidget;
 pub use crate::widget::mask_tools::{MaskTool, MaskToolsWidget, ThresholdMode};
 pub use crate::widget::plot_widget::{DrawResponse, PlotInteractionMode, PlotResponse, PlotView};
-pub use crate::widget::position_info::{PositionInfo, format_value};
+pub use crate::widget::position_info::{
+    PositionInfo, SNAP_THRESHOLD_DIST, Snap, format_value, snap_to_nearest,
+};
 pub use crate::widget::profile_window::ProfileWindow;
 pub use crate::widget::radar_view::{
     DataRect, RadarMapping, RadarResponse, RadarView, clamp_viewport, point_in_rect,
