@@ -145,7 +145,7 @@ around a bare `Plot` model.
 
 ## Examples
 
-The repository ships 41 runnable examples. Run any of them with:
+The repository ships 59 runnable examples. Run any of them with:
 
 ```sh
 cargo run --example <name>
