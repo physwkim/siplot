@@ -1,6 +1,9 @@
 /target
 Cargo.lock
 
+# macOS Finder metadata.
+.DS_Store
+
 # Output of the save_graph example.
 /egui-silx-graph.png
 
