@@ -8675,6 +8675,110 @@ impl DerefMut for ScatterView {
 
 // ─── StackView ────────────────────────────────────────────────────────────────
 
+/// Which volume dimension a [`StackView`] browses through — silx `StackView`
+/// "perspective": the orthogonal axis whose index selects the displayed frame.
+///
+/// For a row-major volume of shape `[d0, d1, d2]` (element `(i, j, k)` at flat
+/// offset `(i * d1 + j) * d2 + k`):
+///
+/// - [`Axis0`](Self::Axis0): browse dimension 0 (`d0` frames); each frame is
+///   `(d1, d2)` = (height, width). silx perspective 0, no transpose.
+/// - [`Axis1`](Self::Axis1): browse dimension 1 (`d1` frames); each frame is
+///   `(d0, d2)`. silx perspective 1, transpose `(1, 0, 2)`.
+/// - [`Axis2`](Self::Axis2): browse dimension 2 (`d2` frames); each frame is
+///   `(d0, d1)`. silx perspective 2, transpose `(2, 0, 1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StackPerspective {
+    /// Browse dimension 0; frames are `(d1, d2)`.
+    #[default]
+    Axis0,
+    /// Browse dimension 1; frames are `(d0, d2)`.
+    Axis1,
+    /// Browse dimension 2; frames are `(d0, d1)`.
+    Axis2,
+}
+
+impl StackPerspective {
+    /// The volume dimension index browsed by this perspective (0, 1, or 2).
+    pub fn axis(self) -> usize {
+        match self {
+            StackPerspective::Axis0 => 0,
+            StackPerspective::Axis1 => 1,
+            StackPerspective::Axis2 => 2,
+        }
+    }
+
+    /// The two non-browsed dimensions as `(height_axis, width_axis)`, ascending
+    /// — matching silx `__updatePlotLabels` `(y, x)`: `Axis0`→`(1, 2)`,
+    /// `Axis1`→`(0, 2)`, `Axis2`→`(0, 1)`.
+    pub fn display_axes(self) -> (usize, usize) {
+        match self {
+            StackPerspective::Axis0 => (1, 2),
+            StackPerspective::Axis1 => (0, 2),
+            StackPerspective::Axis2 => (0, 1),
+        }
+    }
+}
+
+/// Number of frames when browsing a volume of `shape` (`[d0, d1, d2]`) along
+/// `perspective` — silx `__transposed_view.shape[0]`.
+pub fn stack_frame_count(shape: [usize; 3], perspective: StackPerspective) -> usize {
+    shape[perspective.axis()]
+}
+
+/// Slice one 2D frame out of a row-major 3D volume for the given perspective —
+/// the pure core of silx `StackView.__createTransposedView` +
+/// `setStackPosition`.
+///
+/// `data` is the flat volume of shape `shape` (`[d0, d1, d2]`), element
+/// `(i, j, k)` at offset `(i * d1 + j) * d2 + k`. `index` selects the frame
+/// along the browsed dimension. Returns `(width, height, pixels)` with `pixels`
+/// in row-major (height, width) order, or `None` if `data.len() != d0*d1*d2` or
+/// `index` is out of range for the browsed dimension.
+pub fn stack_frame(
+    data: &[f32],
+    shape: [usize; 3],
+    perspective: StackPerspective,
+    index: usize,
+) -> Option<(u32, u32, Vec<f32>)> {
+    let [d0, d1, d2] = shape;
+    if data.len() != d0.checked_mul(d1)?.checked_mul(d2)? {
+        return None;
+    }
+    if index >= shape[perspective.axis()] {
+        return None;
+    }
+    let (height_axis, width_axis) = perspective.display_axes();
+    let height = shape[height_axis];
+    let width = shape[width_axis];
+    let at = |i: usize, j: usize, k: usize| data[(i * d1 + j) * d2 + k];
+    let mut pixels = Vec::with_capacity(width.saturating_mul(height));
+    for row in 0..height {
+        for col in 0..width {
+            // (i, j, k) places `index` on the browsed axis and (row, col) on
+            // the two display axes, matching each perspective's transpose.
+            let value = match perspective {
+                StackPerspective::Axis0 => at(index, row, col),
+                StackPerspective::Axis1 => at(row, index, col),
+                StackPerspective::Axis2 => at(row, col, index),
+            };
+            pixels.push(value);
+        }
+    }
+    Some((width as u32, height as u32, pixels))
+}
+
+/// Plot axis labels `(x_label, y_label)` for `perspective`, picked from the 3
+/// per-dimension `labels` — silx `__updatePlotLabels`: X uses the width axis's
+/// label, Y uses the height axis's label.
+pub fn dimension_axis_labels(
+    perspective: StackPerspective,
+    labels: &[String; 3],
+) -> (String, String) {
+    let (height_axis, width_axis) = perspective.display_axes();
+    (labels[width_axis].clone(), labels[height_axis].clone())
+}
+
 /// A 3D image stack viewer with a frame-selection slider, mirroring silx
 /// `StackView`.
 ///
@@ -8888,6 +8992,99 @@ fn roi_description(roi: &Roi) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row-major `[2, 3, 4]` volume whose element `(i, j, k)` encodes its own
+    /// indices as `100*i + 10*j + k`, so a sliced frame is easy to verify.
+    fn sample_volume() -> (Vec<f32>, [usize; 3]) {
+        let shape = [2usize, 3, 4];
+        let [d0, d1, d2] = shape;
+        let mut data = vec![0.0f32; d0 * d1 * d2];
+        for i in 0..d0 {
+            for j in 0..d1 {
+                for k in 0..d2 {
+                    data[(i * d1 + j) * d2 + k] = (100 * i + 10 * j + k) as f32;
+                }
+            }
+        }
+        (data, shape)
+    }
+
+    #[test]
+    fn stack_frame_count_is_the_browsed_dimension() {
+        let shape = [2usize, 3, 4];
+        assert_eq!(stack_frame_count(shape, StackPerspective::Axis0), 2);
+        assert_eq!(stack_frame_count(shape, StackPerspective::Axis1), 3);
+        assert_eq!(stack_frame_count(shape, StackPerspective::Axis2), 4);
+    }
+
+    #[test]
+    fn stack_perspective_display_axes_are_non_browsed_ascending() {
+        assert_eq!(StackPerspective::Axis0.display_axes(), (1, 2));
+        assert_eq!(StackPerspective::Axis1.display_axes(), (0, 2));
+        assert_eq!(StackPerspective::Axis2.display_axes(), (0, 1));
+    }
+
+    #[test]
+    fn stack_frame_axis0_browses_dim0_without_transpose() {
+        let (data, shape) = sample_volume();
+        // Browse d0 at index 1: frame is (d1=3, d2=4) = (height, width).
+        let (w, h, pixels) = stack_frame(&data, shape, StackPerspective::Axis0, 1).unwrap();
+        assert_eq!((w, h), (4, 3));
+        assert_eq!(
+            pixels,
+            vec![
+                100.0, 101.0, 102.0, 103.0, 110.0, 111.0, 112.0, 113.0, 120.0, 121.0, 122.0, 123.0
+            ]
+        );
+    }
+
+    #[test]
+    fn stack_frame_axis1_transposes_1_0_2() {
+        let (data, shape) = sample_volume();
+        // Browse d1 at index 2: frame is (d0=2, d2=4) = (height, width).
+        let (w, h, pixels) = stack_frame(&data, shape, StackPerspective::Axis1, 2).unwrap();
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(
+            pixels,
+            vec![20.0, 21.0, 22.0, 23.0, 120.0, 121.0, 122.0, 123.0]
+        );
+    }
+
+    #[test]
+    fn stack_frame_axis2_transposes_2_0_1() {
+        let (data, shape) = sample_volume();
+        // Browse d2 at index 3: frame is (d0=2, d1=3) = (height, width).
+        let (w, h, pixels) = stack_frame(&data, shape, StackPerspective::Axis2, 3).unwrap();
+        assert_eq!((w, h), (3, 2));
+        assert_eq!(pixels, vec![3.0, 13.0, 23.0, 103.0, 113.0, 123.0]);
+    }
+
+    #[test]
+    fn stack_frame_rejects_length_mismatch_and_out_of_range() {
+        let (data, shape) = sample_volume();
+        // Wrong flat length for the declared shape.
+        assert!(stack_frame(&data[..23], shape, StackPerspective::Axis0, 0).is_none());
+        // Index past the browsed dimension (d0 == 2, so index 2 is out of range).
+        assert!(stack_frame(&data, shape, StackPerspective::Axis0, 2).is_none());
+    }
+
+    #[test]
+    fn dimension_axis_labels_use_width_for_x_and_height_for_y() {
+        let labels = ["z".to_string(), "y".to_string(), "x".to_string()];
+        // X uses the width axis's label, Y the height axis's label.
+        assert_eq!(
+            dimension_axis_labels(StackPerspective::Axis0, &labels),
+            ("x".to_string(), "y".to_string())
+        );
+        assert_eq!(
+            dimension_axis_labels(StackPerspective::Axis1, &labels),
+            ("x".to_string(), "z".to_string())
+        );
+        assert_eq!(
+            dimension_axis_labels(StackPerspective::Axis2, &labels),
+            ("y".to_string(), "z".to_string())
+        );
+    }
 
     #[test]
     fn active_axis_label_overrides_routes_y_by_axis() {
