@@ -7770,10 +7770,10 @@ impl ImageView {
         // mask tool to Pencil so the primary drag paints; exiting restores Zoom
         // and disables the tool. While active, a brush-size slider and the
         // pencil/eraser/clear controls are exposed.
+        let in_mask_draw = self.image_plot.interaction_mode() == PlotInteractionMode::MaskDraw;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.label("mask:");
-            let in_mask_draw = self.image_plot.interaction_mode() == PlotInteractionMode::MaskDraw;
             if ui
                 .selectable_label(in_mask_draw, "✏")
                 .on_hover_text("Draw mask (pencil): primary drag paints the mask")
@@ -7818,6 +7818,71 @@ impl ImageView {
                 }
             }
         });
+        // Threshold-masking row (silx threshold group box,
+        // `_BaseMaskToolsWidget._initThresholdGroupBox` / `_maskBtnClicked`):
+        // pick below/between/above, enter the bound(s), and Apply masks the
+        // matching pixels at the current level then commits. Per silx, the min
+        // edit shows for below/between and the max edit for between/above. Only
+        // meaningful when the mask geometry matches the active image.
+        if in_mask_draw {
+            use crate::widget::mask_tools::ThresholdMode;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.label("threshold:");
+                egui::ComboBox::from_id_salt("mask_threshold_mode")
+                    .selected_text(match self.mask.threshold_mode {
+                        ThresholdMode::Below => "below",
+                        ThresholdMode::Between => "between",
+                        ThresholdMode::Above => "above",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.mask.threshold_mode,
+                            ThresholdMode::Below,
+                            "below",
+                        );
+                        ui.selectable_value(
+                            &mut self.mask.threshold_mode,
+                            ThresholdMode::Between,
+                            "between",
+                        );
+                        ui.selectable_value(
+                            &mut self.mask.threshold_mode,
+                            ThresholdMode::Above,
+                            "above",
+                        );
+                    });
+                let mode = self.mask.threshold_mode;
+                let show_min = matches!(mode, ThresholdMode::Below | ThresholdMode::Between);
+                let show_max = matches!(mode, ThresholdMode::Between | ThresholdMode::Above);
+                if show_min {
+                    ui.label("min");
+                    ui.add(egui::DragValue::new(&mut self.mask.threshold_min).speed(0.1));
+                }
+                if show_max {
+                    ui.label("max");
+                    ui.add(egui::DragValue::new(&mut self.mask.threshold_max).speed(0.1));
+                }
+                let apply_label = match mode {
+                    ThresholdMode::Below => "Mask below",
+                    ThresholdMode::Between => "Mask between",
+                    ThresholdMode::Above => "Mask above",
+                };
+                let mask_matches_image = self.mask.width == self.width
+                    && self.mask.height == self.height
+                    && !self.pixels.is_empty();
+                let (min, max) = (self.mask.threshold_min, self.mask.threshold_max);
+                if ui
+                    .add_enabled(mask_matches_image, egui::Button::new(apply_label))
+                    .on_hover_text("Mask pixels matching the threshold at the current level")
+                    .clicked()
+                {
+                    self.mask.update_threshold(&self.pixels, mode, min, max);
+                    self.mask.commit();
+                    self.upload_image();
+                }
+            });
+        }
     }
 
     /// Enter or leave pencil / mask-draw mode (silx `MaskToolsWidget` activating

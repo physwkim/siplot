@@ -217,6 +217,16 @@ pub struct MaskToolsWidget {
     pub active_tool: MaskTool,
     pub brush_size: u32,
 
+    /// Selected threshold-masking mode for the threshold group box (silx
+    /// `thresholdActionGroup`, `belowThresholdAction` checked by default).
+    pub threshold_mode: ThresholdMode,
+    /// Lower bound for the `Below` / `Between` threshold modes (silx
+    /// `minLineEdit`, default `0`).
+    pub threshold_min: f32,
+    /// Upper bound for the `Between` / `Above` threshold modes (silx
+    /// `maxLineEdit`, default `0`).
+    pub threshold_max: f32,
+
     history: MaskHistory,
     mask_handle: Option<ItemHandle>,
     is_dirty: bool,
@@ -255,6 +265,11 @@ impl MaskToolsWidget {
             overrides: vec![None; 256],
             active_tool: MaskTool::None,
             brush_size: 1,
+            // silx threshold group defaults: below-threshold action checked,
+            // min/max line edits initialised to 0.
+            threshold_mode: ThresholdMode::Below,
+            threshold_min: 0.0,
+            threshold_max: 0.0,
             history,
             mask_handle: None,
             is_dirty: true, // Force initial upload
@@ -1726,6 +1741,16 @@ mod tests {
         let mut between = MaskToolsWidget::new(4, 1);
         between.update_threshold(&data, ThresholdMode::Between, 1.0, 2.0);
         assert_eq!(between.mask, vec![0, 1, 1, 0]);
+    }
+
+    #[test]
+    fn threshold_state_defaults_match_silx_group_box() {
+        // silx _initThresholdGroupBox: belowThresholdAction is checked by
+        // default and both line edits start at 0.
+        let w = MaskToolsWidget::new(4, 1);
+        assert_eq!(w.threshold_mode, ThresholdMode::Below);
+        assert_eq!(w.threshold_min, 0.0);
+        assert_eq!(w.threshold_max, 0.0);
     }
 
     #[test]
