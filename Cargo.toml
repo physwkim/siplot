@@ -34,6 +34,15 @@ printers = "2.3.0"
 # NaN-reduced "highest-of-two-central" case is handled in analysis.rs to stay
 # byte-faithful to the silx C++ median<T>().
 medians = "3.0.12"
+# IANA tz database for DST-aware named-zone offsets on date-time axes (silx
+# Axis.setTimeZone with a dateutil.tz zone / tz=None local time). `tzdb` bundles
+# the compiled database (deterministic, no system tzdb dependency) and resolves
+# names + the local zone; `tz-rs` provides `TimeZoneRef`/`find_local_time_type`
+# whose `ut_offset` gives the instant-dependent offset behind
+# `TimeZone::offset_at`. The constant-offset zones (Utc/FixedOffset) need
+# neither crate.
+tz-rs = "0.7.3"
+tzdb = "0.7.3"
 
 # Only the example (an eframe app) needs a window + RenderState.
 [dev-dependencies]

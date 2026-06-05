@@ -6,19 +6,19 @@
 //! the data values are `f64` POSIX timestamps (seconds since 1970-01-01
 //! 00:00:00 UTC) and the civil-date arithmetic is implemented directly via the
 //! standard "days from civil" algorithm (Howard Hinnant,
-//! <http://howardhinnant.github.io/date_algorithms.html>), so there is no
-//! `chrono`/timezone dependency.
+//! <http://howardhinnant.github.io/date_algorithms.html>), so the civil
+//! arithmetic itself carries no `chrono` dependency.
 //!
 //! Per-axis time zone: every entry point has a `_tz` variant taking a
 //! [`TimeZone`], mirroring silx `Axis.setTimeZone`. The legacy non-`_tz`
 //! functions are [`TimeZone::Utc`] wrappers, so existing UTC callers are
-//! unchanged. A [`TimeZone`] supplies a constant UTC offset, so the supported
-//! zones are [`TimeZone::Utc`] and [`TimeZone::FixedOffset`] (the silx
-//! `datetime.timezone(timedelta(...))` and `"UTC"` cases). DST-aware *named*
-//! zones (silx accepting an arbitrary `dateutil.tz` tzinfo, or `None` for local
-//! time) need the IANA tz database for an instant-dependent offset and are not
-//! yet implemented — that extension fills the offset lookup behind
-//! [`TimeZone`] without changing this layout code.
+//! unchanged. [`TimeZone`] covers the full silx surface: [`TimeZone::Utc`]
+//! (`"UTC"`) and [`TimeZone::FixedOffset`] (`datetime.timezone(timedelta(...))`)
+//! need no tz database, while [`TimeZone::Named`] (an arbitrary `dateutil.tz`
+//! zone) and [`TimeZone::local`] (`None`/local time) use the bundled IANA tz
+//! database (`tzdb`/`tz-rs`) for an instant-dependent, DST-aware offset. The
+//! layout code is identical across zones — only the single offset lookup
+//! [`TimeZone::offset_at`] varies.
 //!
 //! The two entry points mirror the Python module:
 //!
@@ -79,12 +79,18 @@ impl DtUnit {
 /// The time zone a date-time axis is laid out in (silx `Axis.setTimeZone`).
 ///
 /// silx accepts any `datetime.tzinfo`, the string `"UTC"`, or `None` (local
-/// time). The faithful subset that needs no IANA tz database is a *constant*
-/// UTC offset: [`TimeZone::Utc`] (silx `"UTC"`) and [`TimeZone::FixedOffset`]
-/// (silx `datetime.timezone(timedelta(seconds=...))`). DST-aware named zones
-/// and `None`/local would need an instant-dependent offset; they are deferred
-/// and would slot in as further variants whose [`TimeZone::offset_seconds`]
-/// becomes instant-dependent.
+/// time). The variants cover that surface:
+///
+/// - [`TimeZone::Utc`] — silx `"UTC"`; zero offset, no tz database needed.
+/// - [`TimeZone::FixedOffset`] — silx `datetime.timezone(timedelta(...))`; a
+///   constant offset, no tz database needed.
+/// - [`TimeZone::Named`] — a DST-aware IANA zone (e.g. `America/New_York`)
+///   resolved from the bundled tz database; the offset is instant-dependent.
+///   Build with [`TimeZone::named`]; silx `None`/local time is
+///   [`TimeZone::local`].
+///
+/// The single offset lookup is [`TimeZone::offset_at`]; decompose, recompose,
+/// and tick layout are all expressed in terms of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeZone {
     /// Coordinated Universal Time — zero offset (silx `setTimeZone("UTC")`).
@@ -96,15 +102,42 @@ pub enum TimeZone {
         /// Seconds east of UTC. The wall-clock time equals UTC plus this.
         seconds_east: i32,
     },
+    /// A DST-aware named IANA zone from the bundled tz database (silx accepting
+    /// an arbitrary `dateutil.tz` zone). The borrowed [`tz::TimeZoneRef`] points
+    /// into the statically-compiled database, so it stays `Copy`. Construct via
+    /// [`TimeZone::named`] / [`TimeZone::local`].
+    Named(tz::TimeZoneRef<'static>),
 }
 
 impl TimeZone {
-    /// The UTC offset in seconds (east positive). Constant for every current
-    /// variant; a future DST-aware variant would make this instant-dependent.
-    pub fn offset_seconds(self) -> i32 {
+    /// Resolve an IANA zone name (e.g. `"America/New_York"`, `"Europe/Paris"`)
+    /// from the bundled tz database into a [`TimeZone::Named`]. Returns `None`
+    /// for an unknown name (silx would raise on an invalid tzinfo).
+    pub fn named(name: &str) -> Option<TimeZone> {
+        tzdb::tz_by_name(name).map(TimeZone::Named)
+    }
+
+    /// The system's local time zone as a [`TimeZone::Named`] (silx
+    /// `setTimeZone(None)`, "interpret as local time"). Returns `None` if the
+    /// local zone cannot be determined.
+    pub fn local() -> Option<TimeZone> {
+        tzdb::local_tz().map(TimeZone::Named)
+    }
+
+    /// The UTC offset in seconds (east positive) that applies at the given UTC
+    /// instant `epoch_utc` (POSIX seconds). For [`TimeZone::Utc`] and
+    /// [`TimeZone::FixedOffset`] the offset is constant and the argument is
+    /// ignored; for [`TimeZone::Named`] it is looked up in the tz database
+    /// (`find_local_time_type`), falling back to `0` only if the instant is
+    /// outside the database's representable range.
+    pub fn offset_at(self, epoch_utc: f64) -> i32 {
         match self {
             TimeZone::Utc => 0,
             TimeZone::FixedOffset { seconds_east } => seconds_east,
+            TimeZone::Named(tz) => tz
+                .find_local_time_type(epoch_utc.floor() as i64)
+                .map(|lt| lt.ut_offset())
+                .unwrap_or(0),
         }
     }
 }
@@ -251,18 +284,28 @@ impl DateTime {
     /// Decompose an epoch-seconds timestamp into the wall-clock civil
     /// components of `tz` — silx `datetime.fromtimestamp(epoch, tz=...)`.
     ///
-    /// The epoch is shifted east by the zone offset and then decomposed as a
-    /// UTC civil date-time, so the resulting fields read as the local wall
-    /// clock. [`TimeZone::Utc`] reduces to [`DateTime::from_epoch_seconds`].
+    /// The epoch is shifted east by the zone offset at that instant and then
+    /// decomposed as a UTC civil date-time, so the resulting fields read as the
+    /// local wall clock. [`TimeZone::Utc`] reduces to
+    /// [`DateTime::from_epoch_seconds`].
     pub fn from_epoch_seconds_tz(epoch: f64, tz: TimeZone) -> Self {
-        DateTime::from_epoch_seconds(epoch + tz.offset_seconds() as f64)
+        DateTime::from_epoch_seconds(epoch + tz.offset_at(epoch) as f64)
     }
 
     /// Convert a wall-clock civil date-time in `tz` back to epoch seconds —
     /// silx `datetime.timestamp()` on a tz-aware datetime. Inverse of
-    /// [`DateTime::from_epoch_seconds_tz`] for a constant-offset zone.
+    /// [`DateTime::from_epoch_seconds_tz`].
+    ///
+    /// For a DST-aware zone the offset depends on the local wall time, which is
+    /// what we hold (not the UTC instant). We treat the wall clock as if it were
+    /// UTC to get a first offset estimate, then refine once at the corrected
+    /// instant — the standard two-step local→UTC inversion. For a constant
+    /// zone both steps return the same offset, so this is exact.
     pub fn to_epoch_seconds_tz(self, tz: TimeZone) -> f64 {
-        self.to_epoch_seconds() - tz.offset_seconds() as f64
+        let wall = self.to_epoch_seconds();
+        let off1 = tz.offset_at(wall);
+        let off2 = tz.offset_at(wall - off1 as f64);
+        wall - off2 as f64
     }
 
     /// The integer value of the date element for `unit` (silx
@@ -921,21 +964,83 @@ mod tests {
     }
 
     #[test]
-    fn time_zone_offset_seconds() {
-        assert_eq!(TimeZone::Utc.offset_seconds(), 0);
+    fn time_zone_offset_at_constant_zones_ignore_instant() {
+        // The constant zones return the same offset regardless of the instant.
+        assert_eq!(TimeZone::Utc.offset_at(0.0), 0);
+        assert_eq!(TimeZone::Utc.offset_at(1_700_000_000.0), 0);
+        let jst = TimeZone::FixedOffset {
+            seconds_east: 32400,
+        };
+        assert_eq!(jst.offset_at(0.0), 32400);
+        assert_eq!(jst.offset_at(1_700_000_000.0), 32400);
+        let est = TimeZone::FixedOffset {
+            seconds_east: -18000,
+        };
+        assert_eq!(est.offset_at(0.0), -18000);
+    }
+
+    #[test]
+    fn named_zone_offset_is_dst_aware() {
+        let ny = TimeZone::named("America/New_York").expect("America/New_York in bundled tz db");
+        // Winter -> EST (UTC-05:00); summer -> EDT (UTC-04:00).
+        let winter = DateTime::from_civil(2021, 1, 15, 12, 0, 0, 0).to_epoch_seconds();
+        let summer = DateTime::from_civil(2021, 7, 15, 12, 0, 0, 0).to_epoch_seconds();
+        assert_eq!(ny.offset_at(winter), -18000, "EST should be UTC-5");
+        assert_eq!(ny.offset_at(summer), -14400, "EDT should be UTC-4");
+        // An unknown zone name resolves to None (silx would raise).
+        assert!(TimeZone::named("Not/AZone").is_none());
+    }
+
+    #[test]
+    fn named_zone_decompose_and_round_trips_both_seasons() {
+        let ny = TimeZone::named("America/New_York").unwrap();
+        // 2021-01-15 12:00 UTC == 2021-01-15 07:00 EST.
+        let winter_utc = DateTime::from_civil(2021, 1, 15, 12, 0, 0, 0).to_epoch_seconds();
+        let d = DateTime::from_epoch_seconds_tz(winter_utc, ny);
         assert_eq!(
-            TimeZone::FixedOffset {
-                seconds_east: 32400
-            }
-            .offset_seconds(),
-            32400
+            (d.year, d.month, d.day, d.hour, d.minute, d.second),
+            (2021, 1, 15, 7, 0, 0)
         );
+        assert!(close(d.to_epoch_seconds_tz(ny), winter_utc, 1e-6));
+        // 2021-07-15 12:00 UTC == 2021-07-15 08:00 EDT.
+        let summer_utc = DateTime::from_civil(2021, 7, 15, 12, 0, 0, 0).to_epoch_seconds();
+        let d = DateTime::from_epoch_seconds_tz(summer_utc, ny);
         assert_eq!(
-            TimeZone::FixedOffset {
-                seconds_east: -18000
-            }
-            .offset_seconds(),
-            -18000
+            (d.year, d.month, d.day, d.hour, d.minute, d.second),
+            (2021, 7, 15, 8, 0, 0)
+        );
+        assert!(close(d.to_epoch_seconds_tz(ny), summer_utc, 1e-6));
+    }
+
+    #[test]
+    fn calc_ticks_tz_named_zone_handles_dst_transition() {
+        // A six-day window spanning US spring-forward (2021-03-14 02:00 EST ->
+        // 03:00 EDT). For n=5 ticks this picks Days unit with a 1-day spacing.
+        let ny = TimeZone::named("America/New_York").unwrap();
+        let min = DateTime::from_civil(2021, 3, 11, 0, 0, 0, 0).to_epoch_seconds_tz(ny);
+        let max = DateTime::from_civil(2021, 3, 17, 0, 0, 0, 0).to_epoch_seconds_tz(ny);
+        let (ticks, spacing, unit) = calc_ticks_tz(min, max, 5, ny);
+        assert_eq!(unit, DtUnit::Days);
+        assert_eq!(spacing, 1.0, "expected a 1-day spacing for this window");
+        // Every daily tick is local New York midnight, even across the change.
+        for &t in &ticks {
+            let d = DateTime::from_epoch_seconds_tz(t, ny);
+            assert_eq!(
+                (d.hour, d.minute, d.second),
+                (0, 0, 0),
+                "tick {t} not NY midnight: {d:?}"
+            );
+        }
+        // The spring-forward civil day is only 23 hours of real time: the gap
+        // between consecutive local midnights straddling the change is 23h,
+        // which exercises the DST-aware local->UTC inversion on each side
+        // (03-14 midnight is EST -5, 03-15 midnight is EDT -4).
+        let mar14 = DateTime::from_civil(2021, 3, 14, 0, 0, 0, 0).to_epoch_seconds_tz(ny);
+        let mar15 = DateTime::from_civil(2021, 3, 15, 0, 0, 0, 0).to_epoch_seconds_tz(ny);
+        assert!(
+            close(mar15 - mar14, 23.0 * 3600.0, 1e-6),
+            "spring-forward day should be 23h, got {}s",
+            mar15 - mar14
         );
     }
 
