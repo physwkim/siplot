@@ -97,12 +97,50 @@ pub enum ColormapName {
     Jet,
     /// Full-saturation hue wheel (matplotlib's hsv).
     Hsv,
+
+    // Additional `colorous` gradients (the d3-scale-chromatic / ColorBrewer set
+    // that overlaps matplotlib's catalog). silx exposes all matplotlib maps
+    // dynamically; siplot cannot load matplotlib at runtime, so it ships the
+    // colorous equivalents statically. Sequential single-hue:
+    Blues,
+    Greens,
+    Oranges,
+    Purples,
+    Reds,
+    // Sequential multi-hue:
+    Warm,
+    Cool,
+    Cubehelix,
+    BlueGreen,
+    BluePurple,
+    GreenBlue,
+    OrangeRed,
+    PurpleBlueGreen,
+    PurpleBlue,
+    PurpleRed,
+    RedPurple,
+    YellowGreenBlue,
+    YellowGreen,
+    YellowOrangeBrown,
+    YellowOrangeRed,
+    // Diverging:
+    BrownGreen,
+    PurpleGreen,
+    PinkGreen,
+    PurpleOrange,
+    RedBlue,
+    RedGrey,
+    RedYellowBlue,
+    RedYellowGreen,
+    // Cyclical:
+    Rainbow,
+    Sinebow,
 }
 
 impl ColormapName {
     /// All catalog entries, for building a picker. Ordered to match silx's
     /// preferred-colormap list (`colors.py:1086`) where the entries overlap.
-    pub const ALL: [ColormapName; 15] = [
+    pub const ALL: [ColormapName; 45] = [
         ColormapName::Gray,
         ColormapName::Red,
         ColormapName::Green,
@@ -118,6 +156,36 @@ impl ColormapName {
         ColormapName::Turbo,
         ColormapName::Greys,
         ColormapName::Spectral,
+        ColormapName::Blues,
+        ColormapName::Greens,
+        ColormapName::Oranges,
+        ColormapName::Purples,
+        ColormapName::Reds,
+        ColormapName::Warm,
+        ColormapName::Cool,
+        ColormapName::Cubehelix,
+        ColormapName::BlueGreen,
+        ColormapName::BluePurple,
+        ColormapName::GreenBlue,
+        ColormapName::OrangeRed,
+        ColormapName::PurpleBlueGreen,
+        ColormapName::PurpleBlue,
+        ColormapName::PurpleRed,
+        ColormapName::RedPurple,
+        ColormapName::YellowGreenBlue,
+        ColormapName::YellowGreen,
+        ColormapName::YellowOrangeBrown,
+        ColormapName::YellowOrangeRed,
+        ColormapName::BrownGreen,
+        ColormapName::PurpleGreen,
+        ColormapName::PinkGreen,
+        ColormapName::PurpleOrange,
+        ColormapName::RedBlue,
+        ColormapName::RedGrey,
+        ColormapName::RedYellowBlue,
+        ColormapName::RedYellowGreen,
+        ColormapName::Rainbow,
+        ColormapName::Sinebow,
     ];
 
     /// The `colorous` gradient backing a perceptual name, or `None` for the
@@ -132,6 +200,36 @@ impl ColormapName {
             ColormapName::Turbo => Some(colorous::TURBO),
             ColormapName::Greys => Some(colorous::GREYS),
             ColormapName::Spectral => Some(colorous::SPECTRAL),
+            ColormapName::Blues => Some(colorous::BLUES),
+            ColormapName::Greens => Some(colorous::GREENS),
+            ColormapName::Oranges => Some(colorous::ORANGES),
+            ColormapName::Purples => Some(colorous::PURPLES),
+            ColormapName::Reds => Some(colorous::REDS),
+            ColormapName::Warm => Some(colorous::WARM),
+            ColormapName::Cool => Some(colorous::COOL),
+            ColormapName::Cubehelix => Some(colorous::CUBEHELIX),
+            ColormapName::BlueGreen => Some(colorous::BLUE_GREEN),
+            ColormapName::BluePurple => Some(colorous::BLUE_PURPLE),
+            ColormapName::GreenBlue => Some(colorous::GREEN_BLUE),
+            ColormapName::OrangeRed => Some(colorous::ORANGE_RED),
+            ColormapName::PurpleBlueGreen => Some(colorous::PURPLE_BLUE_GREEN),
+            ColormapName::PurpleBlue => Some(colorous::PURPLE_BLUE),
+            ColormapName::PurpleRed => Some(colorous::PURPLE_RED),
+            ColormapName::RedPurple => Some(colorous::RED_PURPLE),
+            ColormapName::YellowGreenBlue => Some(colorous::YELLOW_GREEN_BLUE),
+            ColormapName::YellowGreen => Some(colorous::YELLOW_GREEN),
+            ColormapName::YellowOrangeBrown => Some(colorous::YELLOW_ORANGE_BROWN),
+            ColormapName::YellowOrangeRed => Some(colorous::YELLOW_ORANGE_RED),
+            ColormapName::BrownGreen => Some(colorous::BROWN_GREEN),
+            ColormapName::PurpleGreen => Some(colorous::PURPLE_GREEN),
+            ColormapName::PinkGreen => Some(colorous::PINK_GREEN),
+            ColormapName::PurpleOrange => Some(colorous::PURPLE_ORANGE),
+            ColormapName::RedBlue => Some(colorous::RED_BLUE),
+            ColormapName::RedGrey => Some(colorous::RED_GREY),
+            ColormapName::RedYellowBlue => Some(colorous::RED_YELLOW_BLUE),
+            ColormapName::RedYellowGreen => Some(colorous::RED_YELLOW_GREEN),
+            ColormapName::Rainbow => Some(colorous::RAINBOW),
+            ColormapName::Sinebow => Some(colorous::SINEBOW),
             ColormapName::Gray
             | ColormapName::Red
             | ColormapName::Green
@@ -186,6 +284,36 @@ impl ColormapName {
             ColormapName::Temperature => "Temperature",
             ColormapName::Jet => "Jet",
             ColormapName::Hsv => "HSV",
+            ColormapName::Blues => "Blues",
+            ColormapName::Greens => "Greens",
+            ColormapName::Oranges => "Oranges",
+            ColormapName::Purples => "Purples",
+            ColormapName::Reds => "Reds",
+            ColormapName::Warm => "Warm",
+            ColormapName::Cool => "Cool",
+            ColormapName::Cubehelix => "Cubehelix",
+            ColormapName::BlueGreen => "Blue-Green",
+            ColormapName::BluePurple => "Blue-Purple",
+            ColormapName::GreenBlue => "Green-Blue",
+            ColormapName::OrangeRed => "Orange-Red",
+            ColormapName::PurpleBlueGreen => "Purple-Blue-Green",
+            ColormapName::PurpleBlue => "Purple-Blue",
+            ColormapName::PurpleRed => "Purple-Red",
+            ColormapName::RedPurple => "Red-Purple",
+            ColormapName::YellowGreenBlue => "Yellow-Green-Blue",
+            ColormapName::YellowGreen => "Yellow-Green",
+            ColormapName::YellowOrangeBrown => "Yellow-Orange-Brown",
+            ColormapName::YellowOrangeRed => "Yellow-Orange-Red",
+            ColormapName::BrownGreen => "Brown-Green",
+            ColormapName::PurpleGreen => "Purple-Green",
+            ColormapName::PinkGreen => "Pink-Green",
+            ColormapName::PurpleOrange => "Purple-Orange",
+            ColormapName::RedBlue => "Red-Blue",
+            ColormapName::RedGrey => "Red-Grey",
+            ColormapName::RedYellowBlue => "Red-Yellow-Blue",
+            ColormapName::RedYellowGreen => "Red-Yellow-Green",
+            ColormapName::Rainbow => "Rainbow",
+            ColormapName::Sinebow => "Sinebow",
         }
     }
 }
@@ -890,12 +1018,17 @@ mod tests {
     fn catalog_entries_build_with_distinct_endpoints() {
         for name in ColormapName::ALL {
             let cm = Colormap::new(name, 0.0, 1.0);
-            assert_ne!(
-                cm.lut[0],
-                cm.lut[255],
-                "{} has equal endpoints",
-                name.label()
-            );
+            // Cyclic maps wrap, so their endpoints coincide by design; assert
+            // distinct endpoints only for the non-cyclic maps.
+            let cyclic = matches!(name, ColormapName::Rainbow | ColormapName::Sinebow);
+            if !cyclic {
+                assert_ne!(
+                    cm.lut[0],
+                    cm.lut[255],
+                    "{} has equal endpoints",
+                    name.label()
+                );
+            }
             assert_eq!(cm.lut[0][3], 255, "{} alpha", name.label());
         }
     }
@@ -1115,6 +1248,41 @@ mod tests {
             for i in 0..256 {
                 assert_eq!(rev.lut[i], base.lut[255 - i], "{} entry {i}", name.label());
             }
+        }
+    }
+
+    #[test]
+    fn catalog_has_45_entries_with_unique_labels_and_usable_luts() {
+        // The catalog ships silx's analytic maps (7) plus the matplotlib-
+        // overlapping colorous gradients (38) = 45. Every entry must build a
+        // usable, opaque, non-degenerate LUT, and labels must be unique so the
+        // picker has no collisions.
+        assert_eq!(ColormapName::ALL.len(), 45);
+        let mut labels = std::collections::HashSet::new();
+        for name in ColormapName::ALL {
+            assert!(
+                labels.insert(name.label()),
+                "duplicate label {}",
+                name.label()
+            );
+            let cm = Colormap::new(name, 0.0, 1.0);
+            assert!(
+                cm.lut.iter().all(|c| c[3] == 255),
+                "{} not opaque",
+                name.label()
+            );
+            // Cyclic maps (Rainbow/Sinebow) can share endpoints, so assert a
+            // rich palette rather than distinct endpoints.
+            let distinct = cm
+                .lut
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            assert!(
+                distinct > 8,
+                "{} has too few colors ({distinct})",
+                name.label()
+            );
         }
     }
 
