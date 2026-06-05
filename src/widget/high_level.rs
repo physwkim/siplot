@@ -8023,7 +8023,16 @@ impl ImageView {
                     "eraser",
                 )
                 .on_hover_text("Erase mask");
+                // silx pencil width: 1-50 slider + 1-1024 spin box, kept in sync
+                // (_BaseMaskToolsWidget.py:822-846 / _pencilWidthChanged). Both
+                // bind the same `brush_size`.
                 ui.add(egui::Slider::new(&mut self.mask.brush_size, 1..=50).text("brush"));
+                ui.add(
+                    egui::DragValue::new(&mut self.mask.brush_size)
+                        .range(1..=1024)
+                        .speed(1.0),
+                )
+                .on_hover_text("Brush width in pixels (1-1024)");
                 if ui.button("clear mask").clicked() {
                     self.mask.clear_all();
                     self.mask.commit();

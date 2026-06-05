@@ -569,7 +569,17 @@ impl MaskToolsWidget {
             }
 
             if self.active_tool != MaskTool::None {
+                // silx pencil width: a 1-50 slider for quick adjust plus a 1-1024
+                // spin box for precise/large widths (_BaseMaskToolsWidget.py
+                // :822-846, synced via _pencilWidthChanged). Both edit the same
+                // `brush_size`, so egui keeps them in lockstep.
                 ui.add(egui::Slider::new(&mut self.brush_size, 1..=50).text("Brush size"));
+                ui.add(
+                    egui::DragValue::new(&mut self.brush_size)
+                        .range(1..=1024)
+                        .speed(1.0),
+                )
+                .on_hover_text("Brush width in pixels (1-1024)");
             }
 
             if ui
