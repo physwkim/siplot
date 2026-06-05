@@ -217,6 +217,15 @@ pub struct MaskToolsWidget {
     pub active_tool: MaskTool,
     pub brush_size: u32,
 
+    /// Mask vs. unmask direction for the shape draws (rectangle / ellipse /
+    /// polygon), mirroring silx `maskStateGroup` (`_BaseMaskToolsWidget.py:802`):
+    /// `true` masks the current level, `false` unmasks it. Holding **Ctrl**
+    /// during a draw inverts it, matching silx `_isMasking()`
+    /// (`_BaseMaskToolsWidget.py:1175-1177`). The pencil / eraser brush tools
+    /// carry their own direction (pencil masks, eraser unmasks); Ctrl inverts
+    /// them too.
+    pub mask_state: bool,
+
     /// Selected threshold-masking mode for the threshold group box (silx
     /// `thresholdActionGroup`, `belowThresholdAction` checked by default).
     pub threshold_mode: ThresholdMode,
@@ -235,6 +244,14 @@ pub struct MaskToolsWidget {
     /// anchors the interpolating line so a fast drag leaves no gap, and is
     /// cleared when the stroke finishes or the image geometry changes.
     last_pencil_pos: Option<(i64, i64)>,
+
+    /// Mask vs. unmask direction captured at the start of the current
+    /// pencil/eraser stroke, or `None` between strokes. silx captures the Ctrl
+    /// modifier on the first draw event and holds it for the whole sequence
+    /// ("First draw event, use current modifiers for all draw sequence",
+    /// `_BaseMaskToolsWidget.py:1174`), so mid-stroke Ctrl toggling does not
+    /// flip the direction. Reset alongside [`last_pencil_pos`] at stroke end.
+    stroke_do_mask: Option<bool>,
 
     /// In-progress on-plot shape draw (rectangle / ellipse / polygon), or `None`
     /// when no shape tool is mid-draw. Mirrors the draw state silx keeps while a
@@ -265,6 +282,8 @@ impl MaskToolsWidget {
             overrides: vec![None; 256],
             active_tool: MaskTool::None,
             brush_size: 1,
+            // silx `maskStateGroup` defaults to the "Mask" radio (checkedId 1).
+            mask_state: true,
             // silx threshold group defaults: below-threshold action checked,
             // min/max line edits initialised to 0.
             threshold_mode: ThresholdMode::Below,
@@ -274,6 +293,7 @@ impl MaskToolsWidget {
             mask_handle: None,
             is_dirty: true, // Force initial upload
             last_pencil_pos: None,
+            stroke_do_mask: None,
             shape_draw: None,
         }
     }
@@ -288,8 +308,10 @@ impl MaskToolsWidget {
         self.history.reset(&self.mask);
         self.is_dirty = true;
         // The previous stroke anchor refers to the old geometry; drop it so the
-        // next stroke does not interpolate from a stale cell.
+        // next stroke does not interpolate from a stale cell, and release the
+        // stroke's captured mask/unmask direction.
         self.last_pencil_pos = None;
+        self.stroke_do_mask = None;
         // An in-progress shape draw refers to the old geometry too; drop it.
         self.shape_draw = None;
     }
@@ -513,15 +535,24 @@ impl MaskToolsWidget {
             ui.selectable_value(&mut self.active_tool, MaskTool::None, "○")
                 .on_hover_text("Disable masking");
             ui.selectable_value(&mut self.active_tool, MaskTool::Pencil, "Pencil")
-                .on_hover_text("Draw mask");
+                .on_hover_text("Draw mask (hold Ctrl to erase)");
             ui.selectable_value(&mut self.active_tool, MaskTool::Eraser, "Eraser")
-                .on_hover_text("Erase mask");
+                .on_hover_text("Erase mask (hold Ctrl to draw)");
             ui.selectable_value(&mut self.active_tool, MaskTool::Rectangle, "Rectangle")
-                .on_hover_text("Mask a rectangular region");
+                .on_hover_text("Draw a rectangular region with the Mask/Unmask state");
             ui.selectable_value(&mut self.active_tool, MaskTool::Polygon, "Polygon")
-                .on_hover_text("Mask a polygonal region");
+                .on_hover_text("Draw a polygonal region with the Mask/Unmask state");
             ui.selectable_value(&mut self.active_tool, MaskTool::Ellipse, "Ellipse")
-                .on_hover_text("Mask an elliptical region");
+                .on_hover_text("Draw an elliptical region with the Mask/Unmask state");
+
+            // Mask vs. unmask direction for the shape draws (silx
+            // `maskStateGroup`); Ctrl inverts it during a draw (silx
+            // `_isMasking()`). The hover texts mirror silx's radio tooltips.
+            ui.separator();
+            ui.selectable_value(&mut self.mask_state, true, "Mask")
+                .on_hover_text("Drawing masks with current level. Press Ctrl to unmask");
+            ui.selectable_value(&mut self.mask_state, false, "Unmask")
+                .on_hover_text("Drawing unmasks with current level. Press Ctrl to mask");
 
             ui.add(egui::Slider::new(&mut self.level, 1..=255).text("Mask level"));
 
@@ -553,7 +584,17 @@ impl MaskToolsWidget {
             {
                 self.redo();
             }
-            if ui.button("Invert").clicked() {
+            // Invert the current level, either by button or the silx Ctrl+I
+            // shortcut (`invertAction`, `_BaseMaskToolsWidget.py:649`). `COMMAND`
+            // is Ctrl on Windows/Linux and Cmd on macOS, matching Qt's `Qt.CTRL`.
+            let invert_shortcut =
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::I));
+            if ui
+                .button("Invert")
+                .on_hover_text("Invert current mask (Ctrl+I)")
+                .clicked()
+                || invert_shortcut
+            {
                 self.invert();
                 self.commit();
             }
@@ -566,6 +607,14 @@ impl MaskToolsWidget {
                 self.commit();
             }
         });
+    }
+
+    /// The effective mask/unmask direction for a draw, given the draw's base
+    /// direction and whether Ctrl is held. Mirrors silx `_isMasking()`
+    /// (`_BaseMaskToolsWidget.py:1175-1177`): `doMask = base`, inverted while the
+    /// Control modifier is down.
+    fn effective_do_mask(base: bool, ctrl: bool) -> bool {
+        base ^ ctrl
     }
 
     /// Handle pointer interaction from the plot response to paint/erase the
@@ -597,9 +646,17 @@ impl MaskToolsWidget {
             && let Some(pointer_pos) = response.interact_pointer_pos()
         {
             let (data_x, data_y) = plot_response.transform.pixel_to_data(pointer_pos);
-            // Pencil masks the current level; eraser unmasks it (silx
-            // `_isMasking()`), both routed through the shared mask primitives.
-            let do_mask = self.active_tool == MaskTool::Pencil;
+            // Pencil masks the current level; eraser unmasks it; holding Ctrl
+            // inverts the direction (silx `_isMasking()`). The modifier is
+            // captured once at the start of the stroke and held for its whole
+            // duration (silx "use current modifiers for all draw sequence"), so
+            // a mid-stroke Ctrl toggle does not flip direction.
+            let do_mask = *self.stroke_do_mask.get_or_insert_with(|| {
+                // `command` is Ctrl on Windows/Linux and Cmd on macOS, matching
+                // Qt's platform remap of `Qt.ControlModifier`.
+                let ctrl = plot_response.response.ctx.input(|i| i.modifiers.command);
+                Self::effective_do_mask(self.active_tool == MaskTool::Pencil, ctrl)
+            });
             self.paint_pencil_point(data_y.floor() as i64, data_x.floor() as i64, do_mask);
         }
 
@@ -643,6 +700,7 @@ impl MaskToolsWidget {
     /// `drawingFinished`.
     fn end_pencil_stroke(&mut self) {
         self.last_pencil_pos = None;
+        self.stroke_do_mask = None;
     }
 
     /// Drop any in-progress on-plot shape draw, so re-entering a shape tool
@@ -680,7 +738,12 @@ impl MaskToolsWidget {
         let draw = self.shape_draw.as_mut().expect("armed above");
         let event = feed_draw_state(draw, &plot_response.response, &plot_response.transform);
         if let Some(DrawEvent::Finished { params, .. }) = &event {
-            self.fill_from_draw(params);
+            // Shape draws follow the Mask/Unmask state, inverted while Ctrl is
+            // held at the finish (silx `_isMasking()`). `command` is Ctrl on
+            // Windows/Linux and Cmd on macOS, matching Qt's `Qt.ControlModifier`.
+            let ctrl = plot_response.response.ctx.input(|i| i.modifiers.command);
+            let do_mask = Self::effective_do_mask(self.mask_state, ctrl);
+            self.fill_from_draw(params, do_mask);
             // Re-arm for the next shape (silx draws continuously until the mode
             // is left).
             self.shape_draw = Some(DrawState::new(mode));
@@ -688,14 +751,14 @@ impl MaskToolsWidget {
         event
     }
 
-    /// Mask the current level over a finished draw shape, converting its
+    /// Apply a finished draw shape to the current level, converting its
     /// data-space parameters to array cells exactly as silx
     /// `MaskToolsWidget._plotDrawEvent` does with origin 0 / scale 1 (data ==
     /// cell; silx `int()` / `astype(int64)` truncate toward zero), then commit
-    /// the result to the undo history. Shape tools always mask the current
-    /// level (silx's mask/unmask toggle is the separate pencil/eraser choice in
-    /// this port).
-    fn fill_from_draw(&mut self, params: &DrawParams) {
+    /// the result to the undo history. `do_mask` masks the current level when
+    /// `true` and unmasks it when `false`, mirroring silx `_isMasking()` (the
+    /// Mask/Unmask state inverted by Ctrl), resolved by the caller.
+    fn fill_from_draw(&mut self, params: &DrawParams, do_mask: bool) {
         let level = self.level;
         match params {
             DrawParams::Rectangle {
@@ -705,15 +768,15 @@ impl MaskToolsWidget {
                 height,
             } => {
                 let (row, col, h, w) = rect_params_to_cells(*x, *y, *width, *height);
-                self.update_rectangle(level, row, col, h, w, true);
+                self.update_rectangle(level, row, col, h, w, do_mask);
             }
             DrawParams::Ellipse { center, semi_axes } => {
                 let (crow, ccol, radius_r, radius_c) = ellipse_params_to_cells(*center, *semi_axes);
-                self.update_ellipse(level, crow, ccol, radius_r, radius_c, true);
+                self.update_ellipse(level, crow, ccol, radius_r, radius_c, do_mask);
             }
             DrawParams::Polygon { vertices } => {
                 let cells = polygon_vertices_to_cells(vertices);
-                self.update_polygon(level, &cells, true);
+                self.update_polygon(level, &cells, do_mask);
             }
             // Other shapes (line / h-line / v-line / freehand / point) are not
             // mask draw modes (gated by `MaskTool::draw_mode`, so only the wired
@@ -1519,12 +1582,15 @@ mod tests {
         // height 1 -> rows 3..=4, cols 2..=6.
         let mut w = MaskToolsWidget::new(10, 10);
         w.level = 1;
-        w.fill_from_draw(&DrawParams::Rectangle {
-            x: 2.0,
-            y: 3.0,
-            width: 4.0,
-            height: 1.0,
-        });
+        w.fill_from_draw(
+            &DrawParams::Rectangle {
+                x: 2.0,
+                y: 3.0,
+                width: 4.0,
+                height: 1.0,
+            },
+            true,
+        );
         for r in 3..=4 {
             for c in 2..=6 {
                 assert_eq!(
@@ -1543,11 +1609,67 @@ mod tests {
     }
 
     #[test]
+    fn effective_do_mask_xors_base_with_ctrl() {
+        // silx `_isMasking()`: doMask = base, inverted while Ctrl is held.
+        assert!(
+            MaskToolsWidget::effective_do_mask(true, false),
+            "mask, no ctrl"
+        );
+        assert!(
+            !MaskToolsWidget::effective_do_mask(true, true),
+            "mask + ctrl -> unmask"
+        );
+        assert!(
+            !MaskToolsWidget::effective_do_mask(false, false),
+            "unmask, no ctrl"
+        );
+        assert!(
+            MaskToolsWidget::effective_do_mask(false, true),
+            "unmask + ctrl -> mask"
+        );
+    }
+
+    #[test]
+    fn fill_from_draw_unmasks_when_do_mask_false() {
+        // A shape draw with do_mask=false clears the current level over its
+        // cells (silx Unmask state / Ctrl-inverted Mask state). Mask a
+        // rectangle first, then unmask a sub-rectangle and confirm the overlap
+        // is cleared while the rest stays masked.
+        let mut w = MaskToolsWidget::new(10, 10);
+        w.level = 1;
+        w.fill_from_draw(
+            &DrawParams::Rectangle {
+                x: 2.0,
+                y: 3.0,
+                width: 4.0,
+                height: 1.0,
+            },
+            true,
+        );
+        // Unmask a 1x1 cell inside the masked band (col 4, row 3).
+        w.fill_from_draw(
+            &DrawParams::Rectangle {
+                x: 4.0,
+                y: 3.0,
+                width: 0.0,
+                height: 0.0,
+            },
+            false,
+        );
+        assert_eq!(w.mask[(3 * 10 + 4) as usize], 0, "unmasked cell is cleared");
+        assert_eq!(
+            w.mask[(3 * 10 + 2) as usize],
+            1,
+            "neighbouring masked cell is untouched"
+        );
+    }
+
+    #[test]
     fn fill_from_draw_ignores_unwired_shapes() {
         // Only wired shapes (gated by MaskTool::draw_mode) reach fill_from_draw;
         // an unwired param kind is a no-op and does not commit.
         let mut w = MaskToolsWidget::new(4, 4);
-        w.fill_from_draw(&DrawParams::Point { x: 1.0, y: 1.0 });
+        w.fill_from_draw(&DrawParams::Point { x: 1.0, y: 1.0 }, true);
         assert!(w.mask.iter().all(|&v| v == 0));
         assert!(!w.can_undo(), "a no-op fill must not commit");
     }
@@ -1570,10 +1692,13 @@ mod tests {
         // (semi_axes x=3 > y=2) and commits to the undo history.
         let mut w = MaskToolsWidget::new(12, 12);
         w.level = 1;
-        w.fill_from_draw(&DrawParams::Ellipse {
-            center: (5.0, 5.0),
-            semi_axes: (3.0, 2.0),
-        });
+        w.fill_from_draw(
+            &DrawParams::Ellipse {
+                center: (5.0, 5.0),
+                semi_axes: (3.0, 2.0),
+            },
+            true,
+        );
         let at = |r: i64, c: i64| w.mask[(r * 12 + c) as usize];
         assert_eq!(at(5, 5), 1, "center is masked");
         // radius_c = 3 (col) > radius_r = 2 (row): a col offset of 2 is inside,
@@ -1603,9 +1728,12 @@ mod tests {
         // the x/y -> row/col swap (a wrong swap would shift the square).
         let mut w = MaskToolsWidget::new(6, 6);
         w.level = 1;
-        w.fill_from_draw(&DrawParams::Polygon {
-            vertices: vec![(1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0)],
-        });
+        w.fill_from_draw(
+            &DrawParams::Polygon {
+                vertices: vec![(1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0)],
+            },
+            true,
+        );
         let at = |r: i64, c: i64| w.mask[(r * 6 + c) as usize];
         assert_eq!(at(2, 2), 1, "interior cell is masked");
         assert_eq!(at(0, 0), 0, "exterior corner stays unmasked");
