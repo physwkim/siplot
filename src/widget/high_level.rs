@@ -7800,6 +7800,22 @@ impl ImageView {
                     self.mask.commit();
                     self.upload_image();
                 }
+                // Mask non-finite pixels (silx "Mask not finite values" button,
+                // _BaseMaskToolsWidget.py:296-304). Only meaningful when the mask
+                // geometry matches the active image; the guard also keeps
+                // `mask_not_finite` from indexing past the mask buffer.
+                let mask_matches_image = self.mask.width == self.width
+                    && self.mask.height == self.height
+                    && !self.pixels.is_empty();
+                if ui
+                    .add_enabled(mask_matches_image, egui::Button::new("mask non-finite"))
+                    .on_hover_text("Mask all NaN / infinite pixels at the current level")
+                    .clicked()
+                {
+                    self.mask.mask_not_finite(&self.pixels);
+                    self.mask.commit();
+                    self.upload_image();
+                }
             }
         });
     }
