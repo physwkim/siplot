@@ -9,8 +9,8 @@ polyline curves, scatter clouds, triangle meshes) with egui-drawn chrome
 (frame, grid, ticks, labels, colorbar, legend) under one shared coordinate
 transform.
 
-> **Status:** work in progress (`0.0.0`, `publish = false`). The API still
-> moves between releases. Parity with `silx.gui.plot` is tracked in
+> **Status:** early release (`0.1.0`). The API still moves between releases.
+> Parity with `silx.gui.plot` is tracked in
 > [`doc/parity-roadmap.md`](doc/parity-roadmap.md).
 
 License: MIT OR Apache-2.0.
