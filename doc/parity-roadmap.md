@@ -245,7 +245,7 @@ as-of-sweep reference.
 |---|---|---|---|---|---|
 | ◐ Partial | M | M | Stats context (viewport/ROI masking, live binding) | stats/stats.py:143-600 | Pure engine; no live plot-state binding, item-change signals, or auto-recompute on viewport change |
 | ◐ Partial | M | M | StatsWidget live item binding | StatsWidget.py:200-700 | Table UI present but not docked to a plot; no live binding to active curve/image |
-| ☐ Missing | M | M | Profile line width / method (mean vs sum) | tools/profile/rois.py:220-260 | `line_profile`/`rect_profile` have no width/method params; always mean |
+| ◐ Partial | M | M | Profile line width / method (mean vs sum) | tools/profile/rois.py:220-260, core.py:204-270 | Wave 7: `ProfileMethod{Mean,Sum}` + `aligned_profile_values(.., position, roi_width, horizontal, method)` ports silx `_alignedFullProfile` (band of `roi_width` pixels, silx start/end placement, mean÷band or sum) for H/V line profiles. Remaining: free-line `line_profile` perpendicular band width, `rect_profile` sum method, and UI selectors wired to the extractor (row 232) |
 | ◐ Partial | M | M | Fit range-selection UI (xmin/xmax) | FitWidget.py:336-361 | `fit_range` model works; no UI input fields or interactive on-plot range selection |
 | ☐ Missing | M | M | PositionInfo snapping to nearest item | tools/PositionInfo.py:179-292 | Caller-fed cursor; no SNAPPING_CURVE/SCATTER logic or `SNAP_THRESHOLD_DIST` picking |
 | ◐ Partial | M | M | FitWidget UI extras (editable params/constraints/peak-search/bg) | silx.gui.fit.FitWidget | Results table renders; missing editable param input, constraints UI, multi-peak UI, background-model selector |
