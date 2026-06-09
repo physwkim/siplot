@@ -840,6 +840,33 @@ pub fn draw_roi(
             draw_styled_line(painter, vec![a, b], color, width, &line_style, gap_color);
             Some(a)
         }
+        // Single full-span horizontal/vertical line (silx Horizontal/VerticalLineROI).
+        Roi::HLine { y } => {
+            let area = t.area;
+            let py = t.data_to_pixel(t.x.min, *y).y;
+            draw_styled_line(
+                painter,
+                vec![pos2(area.left(), py), pos2(area.right(), py)],
+                color,
+                width,
+                &line_style,
+                gap_color,
+            );
+            Some(pos2(area.center().x, py))
+        }
+        Roi::VLine { x } => {
+            let area = t.area;
+            let px = t.data_to_pixel(*x, t.y.min).x;
+            draw_styled_line(
+                painter,
+                vec![pos2(px, area.top()), pos2(px, area.bottom())],
+                color,
+                width,
+                &line_style,
+                gap_color,
+            );
+            Some(pos2(px, area.top()))
+        }
         Roi::Polygon { vertices } if !vertices.is_empty() => {
             let pts: Vec<Pos2> = vertices
                 .iter()

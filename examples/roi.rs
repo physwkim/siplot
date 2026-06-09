@@ -69,6 +69,8 @@ impl eframe::App for RoiApp {
                     }
                     Roi::HRange { y } => format!("hrange #{i}  y=[{:.2}, {:.2}]", y.0, y.1),
                     Roi::VRange { x } => format!("vrange #{i}  x=[{:.2}, {:.2}]", x.0, x.1),
+                    Roi::HLine { y } => format!("hline #{i}  y={y:.2}"),
+                    Roi::VLine { x } => format!("vline #{i}  x={x:.2}"),
                     Roi::Point { x, y } => format!("point #{i}  ({x:.2}, {y:.2})"),
                     Roi::Line { start, end } => format!(
                         "line #{i}  ({:.2}, {:.2}) → ({:.2}, {:.2})",

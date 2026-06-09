@@ -10297,6 +10297,8 @@ fn roi_description(roi: &Roi) -> String {
         ),
         Roi::HRange { y } => format!("HRange  y=[{:.3}, {:.3}]", y.0, y.1),
         Roi::VRange { x } => format!("VRange  x=[{:.3}, {:.3}]", x.0, x.1),
+        Roi::HLine { y } => format!("HLine  y={y:.3}"),
+        Roi::VLine { x } => format!("VLine  x={x:.3}"),
         Roi::Point { x, y } => format!("Point  ({x:.3}, {y:.3})"),
         Roi::Line { start, end } => format!(
             "Line  ({:.3},{:.3}) → ({:.3},{:.3})",

@@ -51,6 +51,16 @@ pub enum Roi {
     HRange { y: (f64, f64) },
     /// Vertical band `x = (x_min, x_max)` spanning the full Y extent.
     VRange { x: (f64, f64) },
+    /// A single horizontal line at data `y`, spanning the full X extent (silx
+    /// `HorizontalLineROI`). Distinct from [`Roi::HRange`]: one position, one
+    /// handle (silx's single `YMarker`), not a two-edge band. Its sole draggable
+    /// edge is named [`RoiEdge::Bottom`] (the line's `y`).
+    HLine { y: f64 },
+    /// A single vertical line at data `x`, spanning the full Y extent (silx
+    /// `VerticalLineROI`). Distinct from [`Roi::VRange`]: one position, one
+    /// handle (silx's single `XMarker`). Its sole draggable edge is named
+    /// [`RoiEdge::Left`] (the line's `x`).
+    VLine { x: f64 },
     /// Single movable point.
     Point { x: f64, y: f64 },
     /// Line segment between two movable endpoints.
@@ -146,6 +156,15 @@ impl Roi {
                 let px1 = t.data_to_pixel(x.1, t.y.min).x;
                 Rect::from_x_y_ranges(px0.min(px1)..=px0.max(px1), area.top()..=area.bottom())
             }
+            // Single full-span line: a zero-thickness strip at the line's pixel.
+            Roi::HLine { y } => {
+                let py = t.data_to_pixel(t.x.min, *y).y;
+                Rect::from_x_y_ranges(area.left()..=area.right(), py..=py)
+            }
+            Roi::VLine { x } => {
+                let px = t.data_to_pixel(*x, t.y.min).x;
+                Rect::from_x_y_ranges(px..=px, area.top()..=area.bottom())
+            }
             Roi::Point { x, y } => {
                 let p = t.data_to_pixel(*x, *y);
                 Rect::from_center_size(p, egui::vec2(1.0, 1.0))
@@ -232,6 +251,9 @@ impl Roi {
             ],
             Roi::HRange { .. } => vec![RoiEdge::Bottom, RoiEdge::Top],
             Roi::VRange { .. } => vec![RoiEdge::Left, RoiEdge::Right],
+            // Single line: one full-span edge (the line's position axis).
+            Roi::HLine { .. } => vec![RoiEdge::Bottom],
+            Roi::VLine { .. } => vec![RoiEdge::Left],
             Roi::Point { .. } => vec![RoiEdge::Vertex(0)],
             Roi::Line { .. } => vec![RoiEdge::Vertex(0), RoiEdge::Vertex(1)],
             Roi::Polygon { vertices } => (0..vertices.len()).map(RoiEdge::Vertex).collect(),
@@ -345,6 +367,16 @@ impl Roi {
                     };
                     egui::pos2(t.data_to_pixel(dx, t.y.min).x, cy)
                 }
+                // Single full-span line: one handle at the area's centre on the
+                // free axis, at the line's data position.
+                Roi::HLine { y } => {
+                    let cx = (t.area.left() + t.area.right()) * 0.5;
+                    egui::pos2(cx, t.data_to_pixel(t.x.min, *y).y)
+                }
+                Roi::VLine { x } => {
+                    let cy = (t.area.top() + t.area.bottom()) * 0.5;
+                    egui::pos2(t.data_to_pixel(*x, t.y.min).x, cy)
+                }
                 // Vertex-handled shapes: each edge is a stored vertex.
                 _ => match edge {
                     RoiEdge::Vertex(n) => self.vertex_pixel(t, *n).unwrap_or_else(center),
@@ -436,7 +468,35 @@ impl Roi {
                             (area.top(), area.bottom()),
                         )
                     }
-                    _ => unreachable!("outer match restricts this arm to Rect/HRange/VRange"),
+                    // Single horizontal line: its sole edge is `Bottom` at the
+                    // line's screen y, grabbable anywhere across the full width.
+                    Roi::HLine { y } => {
+                        let py = t.data_to_pixel(t.x.min, *y).y;
+                        (
+                            None,
+                            None,
+                            Some(py),
+                            None,
+                            (area.left(), area.right()),
+                            (py, py),
+                        )
+                    }
+                    // Single vertical line: its sole edge is `Left` at the line's
+                    // screen x, grabbable anywhere across the full height.
+                    Roi::VLine { x } => {
+                        let px = t.data_to_pixel(*x, t.y.min).x;
+                        (
+                            Some(px),
+                            None,
+                            None,
+                            None,
+                            (px, px),
+                            (area.top(), area.bottom()),
+                        )
+                    }
+                    _ => unreachable!(
+                        "outer match restricts this arm to Rect/HRange/VRange/HLine/VLine"
+                    ),
                 };
                 // Corner handles (Rect only) take priority: a cursor near a
                 // corner is also near both adjoining edges, so resolve corners
@@ -553,6 +613,18 @@ impl Roi {
                 RoiEdge::Right => *x = (dx.min(x.0), dx.max(x.0)),
                 _ => {}
             },
+            // Single line: the sole edge sets the line's scalar position (silx
+            // `HorizontalLineROI.setPosition` / `VerticalLineROI.setPosition`).
+            Roi::HLine { y } => {
+                if let RoiEdge::Bottom = edge {
+                    *y = dy;
+                }
+            }
+            Roi::VLine { x } => {
+                if let RoiEdge::Left = edge {
+                    *x = dx;
+                }
+            }
             Roi::Point { x, y } => {
                 if let RoiEdge::Vertex(0) = edge {
                     *x = dx;
@@ -708,6 +780,10 @@ impl Roi {
             // A band ignores the axis it spans across.
             Roi::HRange { y: (y0, y1) } => y >= *y0 && y <= *y1,
             Roi::VRange { x: (x0, x1) } => x >= *x0 && x <= *x1,
+            // Single line: exact position match on the bounded axis (silx
+            // `HorizontalLineROI.contains` `positions[:, 1] == roi_x`).
+            Roi::HLine { y: ly } => y == *ly,
+            Roi::VLine { x: lx } => x == *lx,
             Roi::Point { x: px, y: py } => x == *px && y == *py,
             Roi::Cross { center } => x == center.0 || y == center.1,
             Roi::Line { start, end } => segment_intersects_unit_square(*start, *end, pos),
@@ -802,6 +878,10 @@ impl Roi {
                 edge((*x1, 0.0)),
                 center(((x0 + x1) * 0.5, 0.0)),
             ],
+            // Horizontal/VerticalLineROI: one draggable handle at the line
+            // position (silx's single Y/X marker at x=0 / y=0).
+            Roi::HLine { y } => vec![v((0.0, *y))],
+            Roi::VLine { x } => vec![v((*x, 0.0))],
             // PointROI: a single vertex handle.
             Roi::Point { x, y } => vec![v((*x, *y))],
             // CrossROI: a single square drag handle at the center. silx builds
@@ -893,6 +973,9 @@ impl Roi {
                 x.0 += dx;
                 x.1 += dx;
             }
+            // A single line moves only on its bounded axis.
+            Roi::HLine { y } => *y += dy,
+            Roi::VLine { x } => *x += dx,
             Roi::Point { x, y } => {
                 *x += dx;
                 *y += dy;
@@ -1510,6 +1593,65 @@ mod tests {
         );
         // A vertical-edge probe finds nothing (no Left/Right on a band).
         assert_eq!(roi.edge_at(&t(), pos2(0.0, 50.0), 4.0), None);
+    }
+
+    #[test]
+    fn hline_is_grabbable_anywhere_along_its_span_and_moves_in_y() {
+        // Single horizontal line at y=4. `t()` is y-up (non-inverted), so data
+        // y=4 maps to screen y = 100 - 10*4 = 60, full width.
+        let mut roi = Roi::HLine { y: 4.0 };
+        assert_eq!(roi.edges(), vec![RoiEdge::Bottom]);
+        // Grab near the line at any x within grab radius.
+        assert_eq!(
+            roi.edge_at(&t(), pos2(5.0, 61.0), 4.0),
+            Some(RoiEdge::Bottom)
+        );
+        assert_eq!(
+            roi.edge_at(&t(), pos2(95.0, 59.0), 4.0),
+            Some(RoiEdge::Bottom)
+        );
+        // Far from the line in Y -> no grab.
+        assert_eq!(roi.edge_at(&t(), pos2(50.0, 20.0), 4.0), None);
+        // Dragging the edge sets the line's y (no normalization needed).
+        roi.move_edge(RoiEdge::Bottom, (7.0, 6.5));
+        assert_eq!(roi, Roi::HLine { y: 6.5 });
+        // Translate only moves the bounded (Y) axis.
+        roi.translate(3.0, -1.5);
+        assert_eq!(roi, Roi::HLine { y: 5.0 });
+    }
+
+    #[test]
+    fn vline_is_grabbable_anywhere_along_its_span_and_moves_in_x() {
+        // Single vertical line at x=2 -> screen x=20, full height.
+        let mut roi = Roi::VLine { x: 2.0 };
+        assert_eq!(roi.edges(), vec![RoiEdge::Left]);
+        assert_eq!(
+            roi.edge_at(&t(), pos2(21.0, 10.0), 4.0),
+            Some(RoiEdge::Left)
+        );
+        assert_eq!(
+            roi.edge_at(&t(), pos2(19.0, 90.0), 4.0),
+            Some(RoiEdge::Left)
+        );
+        assert_eq!(roi.edge_at(&t(), pos2(60.0, 50.0), 4.0), None);
+        roi.move_edge(RoiEdge::Left, (8.0, 3.0));
+        assert_eq!(roi, Roi::VLine { x: 8.0 });
+        roi.translate(-1.0, 5.0);
+        assert_eq!(roi, Roi::VLine { x: 7.0 });
+    }
+
+    #[test]
+    fn line_roi_contains_only_on_the_line_and_has_one_handle() {
+        let h = Roi::HLine { y: 4.0 };
+        assert!(h.contains((123.0, 4.0))); // any x, exact y
+        assert!(!h.contains((123.0, 4.1)));
+        assert_eq!(h.handles().len(), 1);
+        assert_eq!(h.handles()[0].kind, HandleKind::Vertex);
+
+        let v = Roi::VLine { x: 2.0 };
+        assert!(v.contains((2.0, -50.0))); // exact x, any y
+        assert!(!v.contains((2.1, -50.0)));
+        assert_eq!(v.handles().len(), 1);
     }
 
     #[test]

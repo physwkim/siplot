@@ -1087,6 +1087,12 @@ pub enum RoiDrawKind {
     /// Vertical band over an X range, full Y (our `Roi::VRange`; silx
     /// `HorizontalRangeROI` spans X with two vertical markers).
     VRange,
+    /// Single full-span horizontal line at a Y (silx `HorizontalLineROI`,
+    /// `_plotShape = "hline"`; our `Roi::HLine`).
+    HLine,
+    /// Single full-span vertical line at an X (silx `VerticalLineROI`,
+    /// `_plotShape = "vline"`; our `Roi::VLine`).
+    VLine,
     /// Single point (silx `PointROI`).
     Point,
     /// Line segment (silx `LineROI`).
@@ -1116,6 +1122,8 @@ impl RoiDrawKind {
             RoiDrawKind::Rect => "rectangle",
             RoiDrawKind::HRange => "hrange",
             RoiDrawKind::VRange => "vrange",
+            RoiDrawKind::HLine => "hline",
+            RoiDrawKind::VLine => "vline",
             RoiDrawKind::Point => "point",
             RoiDrawKind::Line => "line",
             RoiDrawKind::Polygon => "polygon",
@@ -1145,6 +1153,8 @@ pub fn roi_draw_mode(kind: RoiDrawKind) -> DrawMode {
         RoiDrawKind::Ellipse => DrawMode::Ellipse,
         RoiDrawKind::Polygon => DrawMode::Polygon,
         RoiDrawKind::Point | RoiDrawKind::Cross => DrawMode::Point,
+        RoiDrawKind::HLine => DrawMode::HLine,
+        RoiDrawKind::VLine => DrawMode::VLine,
         RoiDrawKind::Line
         | RoiDrawKind::Circle
         | RoiDrawKind::HRange
@@ -1229,6 +1239,10 @@ pub fn roi_from_draw(kind: RoiDrawKind, params: &DrawParams) -> Option<Roi> {
         (RoiDrawKind::VRange, DrawParams::Line { start, end }) => Some(Roi::VRange {
             x: (start.0.min(end.0), start.0.max(end.0)),
         }),
+        // HLine/VLine: a single full-span line at the captured position (silx
+        // `Horizontal/VerticalLineROI.setFirstShapePoints`, `items/roi.py:402`/`:473`).
+        (RoiDrawKind::HLine, DrawParams::HLine { y }) => Some(Roi::HLine { y: *y }),
+        (RoiDrawKind::VLine, DrawParams::VLine { x }) => Some(Roi::VLine { x: *x }),
         // Arc: the faithful silx default arc from the 2 diameter points.
         (RoiDrawKind::Arc, DrawParams::Line { start, end }) => {
             Some(arc_from_two_points(*start, *end))
@@ -1587,6 +1601,8 @@ mod tests {
         assert_eq!(RoiDrawKind::Rect.short_name(), "rectangle");
         assert_eq!(RoiDrawKind::HRange.short_name(), "hrange");
         assert_eq!(RoiDrawKind::VRange.short_name(), "vrange");
+        assert_eq!(RoiDrawKind::HLine.short_name(), "hline");
+        assert_eq!(RoiDrawKind::VLine.short_name(), "vline");
         assert_eq!(RoiDrawKind::Point.short_name(), "point");
         assert_eq!(RoiDrawKind::Line.short_name(), "line");
         assert_eq!(RoiDrawKind::Polygon.short_name(), "polygon");
@@ -2453,6 +2469,8 @@ mod tests {
         assert_eq!(roi_draw_mode(K::Circle), D::Line);
         assert_eq!(roi_draw_mode(K::HRange), D::Line);
         assert_eq!(roi_draw_mode(K::VRange), D::Line);
+        assert_eq!(roi_draw_mode(K::HLine), D::HLine);
+        assert_eq!(roi_draw_mode(K::VLine), D::VLine);
         assert_eq!(roi_draw_mode(K::Arc), D::Line);
         assert_eq!(roi_draw_mode(K::Band), D::Line);
     }
@@ -2598,6 +2616,31 @@ mod tests {
         assert_eq!(
             roi_from_draw(RoiDrawKind::VRange, &p),
             Some(Roi::VRange { x: (2.0, 8.0) })
+        );
+    }
+
+    #[test]
+    fn roi_from_draw_hline_vline_capture_the_single_position() {
+        // HLine: the captured row y becomes a single-position line.
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::HLine, &DrawParams::HLine { y: 4.5 }),
+            Some(Roi::HLine { y: 4.5 })
+        );
+        // VLine: the captured column x.
+        assert_eq!(
+            roi_from_draw(RoiDrawKind::VLine, &DrawParams::VLine { x: -2.0 }),
+            Some(Roi::VLine { x: -2.0 })
+        );
+        // Mismatched params (HLine kind with a Line drag) cannot occur and is dropped.
+        assert_eq!(
+            roi_from_draw(
+                RoiDrawKind::HLine,
+                &DrawParams::Line {
+                    start: (0.0, 0.0),
+                    end: (1.0, 1.0)
+                }
+            ),
+            None
         );
     }
 

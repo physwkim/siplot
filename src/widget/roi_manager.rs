@@ -238,6 +238,8 @@ fn roi_kind(roi: &Roi) -> &'static str {
         Roi::Rect { .. } => "rectangle",
         Roi::HRange { .. } => "hrange",
         Roi::VRange { .. } => "vrange",
+        Roi::HLine { .. } => "hline",
+        Roi::VLine { .. } => "vline",
         Roi::Point { .. } => "point",
         Roi::Cross { .. } => "cross",
         Roi::Line { .. } => "line",
