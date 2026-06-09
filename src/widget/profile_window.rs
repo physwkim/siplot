@@ -9,10 +9,61 @@ use crate::widget::high_level::{
     Plot1D, ProfileMethod, aligned_profile_values, line_profile_band, rect_profile_values,
 };
 
-/// Compute the `(x, y)` profile curve for `roi` over a row-major image,
+/// A single named profile curve extracted from a profile ROI: a legend label, a
+/// draw color, and the `(x, y)` samples. A line/range/rect ROI yields one of
+/// these; a [`Roi::Cross`] yields two (silx `ProfileImageCrossROI`'s horizontal
+/// and vertical sub-profiles), which is why extraction returns a `Vec`.
+struct ProfileCurve {
+    label: &'static str,
+    color: Color32,
+    x: Vec<f64>,
+    y: Vec<f64>,
+}
+
+/// The horizontal full-row profile `(x, y)` through image `row` (silx
+/// `ProfileImageHorizontalLineROI` / `_alignedFullProfile`): `x` is the column
+/// index, `y` the band reduction over `line_width` rows centered on `row`. The
+/// caller attaches a label/color to wrap it into a [`ProfileCurve`].
+fn horizontal_profile_xy(
+    width: u32,
+    height: u32,
+    data: &[f32],
+    row: f64,
+    line_width: u32,
+    method: ProfileMethod,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    aligned_profile_values(width, height, data, row, line_width, true, method)
+        .ok()
+        .map(|y| {
+            let x = (0..width as usize).map(|i| i as f64).collect();
+            (x, y)
+        })
+}
+
+/// The vertical full-column profile `(x, y)` through image `col` (silx
+/// `ProfileImageVerticalLineROI`): `x` is the row index, `y` the band reduction
+/// over `line_width` columns centered on `col`.
+fn vertical_profile_xy(
+    width: u32,
+    height: u32,
+    data: &[f32],
+    col: f64,
+    line_width: u32,
+    method: ProfileMethod,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    aligned_profile_values(width, height, data, col, line_width, false, method)
+        .ok()
+        .map(|y| {
+            let x = (0..height as usize).map(|i| i as f64).collect();
+            (x, y)
+        })
+}
+
+/// Compute the named profile curve(s) for `roi` over a row-major image,
 /// integrating a band of `line_width` pixels and reducing it with `method`
-/// (silx `ProfileToolButtons` line-width + mean/sum). Returns `None` for ROI
-/// kinds that have no profile. Pure dispatch over the tested profile extractors:
+/// (silx `ProfileToolButtons` line-width + mean/sum). Returns an empty `Vec` for
+/// ROI kinds that have no profile. Pure dispatch over the tested profile
+/// extractors:
 ///
 /// - [`Roi::Line`] -> [`line_profile_band`] (bilinear band, silx
 ///   `BilinearImage.profile_line`).
@@ -21,47 +72,102 @@ use crate::widget::high_level::{
 ///   the range's midpoint with `line_width` as the integration band (silx
 ///   `_alignedFullProfile`; `int(position)` placement). `line_width == 1`,
 ///   `Mean` reproduces the single-row/column average.
-fn profile_for_roi(
+/// - [`Roi::Cross`] -> **two** curves, the horizontal row-profile and the
+///   vertical column-profile through the cross center, shown simultaneously
+///   (silx `ProfileImageCrossROI`, which manages an `hline` + `vline` sub-ROI).
+fn profiles_for_roi(
     width: u32,
     height: u32,
     data: &[f32],
     roi: &Roi,
     line_width: u32,
     method: ProfileMethod,
-) -> Option<(Vec<f64>, Vec<f64>)> {
+) -> Vec<ProfileCurve> {
     match roi {
         Roi::Line { start, end } => {
-            line_profile_band(width, height, data, *start, *end, line_width, method).ok()
+            line_profile_band(width, height, data, *start, *end, line_width, method)
+                .ok()
+                .map(|(x, y)| ProfileCurve {
+                    label: "profile",
+                    color: Color32::YELLOW,
+                    x,
+                    y,
+                })
+                .into_iter()
+                .collect()
         }
         Roi::Rect { x, y } => {
-            rect_profile_values(width, height, data, (x.0, x.1, y.0, y.1), true, method).ok()
+            rect_profile_values(width, height, data, (x.0, x.1, y.0, y.1), true, method)
+                .ok()
+                .map(|(x, y)| ProfileCurve {
+                    label: "profile",
+                    color: Color32::YELLOW,
+                    x,
+                    y,
+                })
+                .into_iter()
+                .collect()
         }
         Roi::HRange { y } => {
             let row = (y.0 + y.1) / 2.0;
-            aligned_profile_values(width, height, data, row, line_width, true, method)
-                .ok()
-                .map(|y_vals| {
-                    let x_vals: Vec<f64> = (0..width as usize).map(|i| i as f64).collect();
-                    (x_vals, y_vals)
+            horizontal_profile_xy(width, height, data, row, line_width, method)
+                .map(|(x, y)| ProfileCurve {
+                    label: "profile",
+                    color: Color32::YELLOW,
+                    x,
+                    y,
                 })
+                .into_iter()
+                .collect()
         }
         Roi::VRange { x } => {
             let col = (x.0 + x.1) / 2.0;
-            aligned_profile_values(width, height, data, col, line_width, false, method)
-                .ok()
-                .map(|y_vals| {
-                    let x_vals: Vec<f64> = (0..height as usize).map(|i| i as f64).collect();
-                    (x_vals, y_vals)
+            vertical_profile_xy(width, height, data, col, line_width, method)
+                .map(|(x, y)| ProfileCurve {
+                    label: "profile",
+                    color: Color32::YELLOW,
+                    x,
+                    y,
                 })
+                .into_iter()
+                .collect()
         }
-        _ => None,
+        // Cross profile: extract both the horizontal (row through cy) and
+        // vertical (column through cx) full profiles and show them together,
+        // mirroring silx `ProfileImageCrossROI` (two sub-ROIs, one window).
+        Roi::Cross { center } => {
+            let (cx, cy) = *center;
+            let h =
+                horizontal_profile_xy(width, height, data, cy, line_width, method).map(|(x, y)| {
+                    ProfileCurve {
+                        label: "h profile",
+                        color: Color32::YELLOW,
+                        x,
+                        y,
+                    }
+                });
+            let v =
+                vertical_profile_xy(width, height, data, cx, line_width, method).map(|(x, y)| {
+                    ProfileCurve {
+                        label: "v profile",
+                        color: Color32::from_rgb(0, 200, 255),
+                        x,
+                        y,
+                    }
+                });
+            [h, v].into_iter().flatten().collect()
+        }
+        _ => Vec::new(),
     }
 }
 
 /// A window widget to display the 1D profile of an image based on an ROI.
 pub struct ProfileWindow {
     plot: Plot1D,
-    curve_handle: Option<ItemHandle>,
+    /// Handles of the live profile curves. One for a line/range/rect ROI; two
+    /// for a cross ROI (the horizontal and vertical sub-profiles). Rebuilt when
+    /// the curve count changes between updates (silx `ProfileImageCrossROI`).
+    curve_handles: Vec<ItemHandle>,
     window_id: egui::Id,
     open: bool,
     /// Band width in pixels for the profile integration (silx
@@ -91,7 +197,7 @@ impl ProfileWindow {
 
         Self {
             plot,
-            curve_handle: None,
+            curve_handles: Vec::new(),
             window_id: egui::Id::new(plot_id).with("profile_window"),
             open: false,
             line_width: 1,
@@ -140,22 +246,32 @@ impl ProfileWindow {
     /// Re-calculate and update the profile curve based on the given ROI, using
     /// the current line width and reduction method.
     pub fn update_profile(&mut self, width: u32, height: u32, data: &[f32], roi: &Roi) {
-        let profile = profile_for_roi(width, height, data, roi, self.line_width, self.method);
+        let curves = profiles_for_roi(width, height, data, roi, self.line_width, self.method);
+        if curves.is_empty() {
+            return;
+        }
 
-        if let Some((x, y)) = profile {
-            if let Some(handle) = self.curve_handle {
-                let curve = CurveData::new(x, y, Color32::YELLOW);
+        // When the curve count changes (line/range/rect ↔ cross), drop the old
+        // handles so stale curves do not linger; otherwise update in place.
+        if self.curve_handles.len() != curves.len() {
+            for handle in self.curve_handles.drain(..) {
+                self.plot.remove(handle);
+            }
+        }
+
+        for (i, c) in curves.into_iter().enumerate() {
+            if let Some(&handle) = self.curve_handles.get(i) {
+                let curve = CurveData::new(c.x, c.y, c.color);
                 self.plot.update_curve_data(handle, &curve);
             } else {
-                self.curve_handle =
-                    Some(
-                        self.plot
-                            .add_curve_with_legend(&x, &y, Color32::YELLOW, "profile"),
-                    );
+                let handle = self
+                    .plot
+                    .add_curve_with_legend(&c.x, &c.y, c.color, c.label);
+                self.curve_handles.push(handle);
             }
-            // Auto-scale limits based on data.
-            self.plot.reset_zoom_to_data();
         }
+        // Auto-scale limits based on data.
+        self.plot.reset_zoom_to_data();
     }
 
     /// Show the profile in its own native OS window (a separate egui viewport).
@@ -267,36 +383,59 @@ mod tests {
     fn profile_for_roi_hrange_width_and_method() {
         let data = ramp_3x3();
         // HRange centred on row 1: width 1, Mean -> just row 1 = [10, 11, 12].
-        let (_x, y) = profile_for_roi(
+        let curves = profiles_for_roi(
             3,
             3,
             &data,
             &Roi::HRange { y: (1.0, 1.0) },
             1,
             ProfileMethod::Mean,
-        )
-        .unwrap();
-        assert_eq!(y, vec![10.0, 11.0, 12.0]);
+        );
+        assert_eq!(curves.len(), 1);
+        assert_eq!(curves[0].y, vec![10.0, 11.0, 12.0]);
 
         // Width 3, Sum -> every column summed over all three rows:
         // col c -> (0+10+20) + c*3 = 30 + 3c = [30, 33, 36].
-        let (_x, y) = profile_for_roi(
+        let curves = profiles_for_roi(
             3,
             3,
             &data,
             &Roi::HRange { y: (1.0, 1.0) },
             3,
             ProfileMethod::Sum,
-        )
-        .unwrap();
-        assert_eq!(y, vec![30.0, 33.0, 36.0]);
+        );
+        assert_eq!(curves.len(), 1);
+        assert_eq!(curves[0].y, vec![30.0, 33.0, 36.0]);
     }
 
     #[test]
-    fn profile_for_roi_returns_none_for_unsupported_kind() {
+    fn profile_for_roi_cross_yields_horizontal_and_vertical_curves() {
+        // A cross at (col=1, row=1) extracts BOTH the row-1 horizontal profile
+        // and the col-1 vertical profile simultaneously (silx
+        // ProfileImageCrossROI), width 1 / Mean = the raw line.
+        let data = ramp_3x3();
+        let curves = profiles_for_roi(
+            3,
+            3,
+            &data,
+            &Roi::Cross { center: (1.0, 1.0) },
+            1,
+            ProfileMethod::Mean,
+        );
+        assert_eq!(curves.len(), 2);
+        // Horizontal profile = row 1 across columns: value == 10 + col.
+        assert_eq!(curves[0].label, "h profile");
+        assert_eq!(curves[0].y, vec![10.0, 11.0, 12.0]);
+        // Vertical profile = column 1 across rows: value == row*10 + 1.
+        assert_eq!(curves[1].label, "v profile");
+        assert_eq!(curves[1].y, vec![1.0, 11.0, 21.0]);
+    }
+
+    #[test]
+    fn profile_for_roi_returns_empty_for_unsupported_kind() {
         let data = ramp_3x3();
         assert!(
-            profile_for_roi(
+            profiles_for_roi(
                 3,
                 3,
                 &data,
@@ -304,7 +443,7 @@ mod tests {
                 1,
                 ProfileMethod::Mean,
             )
-            .is_none()
+            .is_empty()
         );
     }
 }
