@@ -6,33 +6,25 @@
 //!
 //! [`Plot`]: crate::core::plot::Plot
 
-use crate::core::items::LineStyle;
 use crate::widget::high_level::{ImageView, PlotWidget, ScatterView};
 
-/// The line-style cycle used by [`curve_style_cycle`], in order. A drawn curve
-/// steps Solid → Dashed → DashDot → Dotted → (wrap to Solid).
-///
-/// silx `CurveStyleAction` instead cycles the *default* `(plot lines, plot
-/// points)` booleans through `(line) → (line+symbol) → (symbol) → (line)`,
-/// applying to every curve. This port has no plot-wide default-style toggle, so
-/// it cycles the active curve's concrete [`LineStyle`] through the drawn
-/// patterns; [`LineStyle::None`] and [`LineStyle::Custom`] are not part of the
-/// cycle (a curve in either maps to `Solid` on the next step via
-/// [`next_line_style`]).
-const LINE_STYLE_CYCLE: [LineStyle; 4] = [
-    LineStyle::Solid,
-    LineStyle::Dashed,
-    LineStyle::DashDot,
-    LineStyle::Dotted,
-];
-
-/// The next line style after `current` in [`LINE_STYLE_CYCLE`]. A style not in
-/// the cycle (`None`, `Custom`) steps to the first entry (`Solid`). Pure and
-/// deterministic so the cycle is unit-testable without a GPU backend.
-pub fn next_line_style(current: &LineStyle) -> LineStyle {
-    match LINE_STYLE_CYCLE.iter().position(|s| s == current) {
-        Some(idx) => LINE_STYLE_CYCLE[(idx + 1) % LINE_STYLE_CYCLE.len()].clone(),
-        None => LINE_STYLE_CYCLE[0].clone(),
+/// Advance the plot-wide default curve style `(lines, points)` one step,
+/// porting silx `CurveStyleAction._actionTriggered` (`actions/control.py`:
+/// 338-349): the state cycles line-only → line+symbol → symbol-only →
+/// line-only, and the invalid `(false, false)` (neither line nor symbol)
+/// recovers to line-only exactly as silx special-cases it. Pure and
+/// deterministic so the cycle is unit-testable without a plot.
+pub fn next_curve_style_state(current: (bool, bool)) -> (bool, bool) {
+    // silx: `states = (True, False), (True, True), (False, True)`.
+    const STATES: [(bool, bool); 3] = [(true, false), (true, true), (false, true)];
+    if current == (false, false) {
+        return (true, false);
+    }
+    match STATES.iter().position(|state| *state == current) {
+        Some(index) => STATES[(index + 1) % STATES.len()],
+        // Unreachable for the three valid states handled above; recover to the
+        // line-only base rather than indexing out of range.
+        None => (true, false),
     }
 }
 
@@ -180,12 +172,12 @@ pub fn zoom_back(plot: &mut PlotWidget) -> bool {
     }
 }
 
-/// Cycle the active curve's line style to the next style in
-/// [`LINE_STYLE_CYCLE`], mirroring silx `CurveStyleAction` (which cycles the
-/// plot-wide default line/points state). Returns the new [`LineStyle`], or
-/// `None` when there is no active curve with a retained style.
-pub fn curve_style_cycle(plot: &mut PlotWidget) -> Option<LineStyle> {
-    plot.cycle_active_curve_style()
+/// Cycle the plot-wide default curve style, mirroring silx `CurveStyleAction`:
+/// advances the `(plot lines, plot points)` state via [`next_curve_style_state`]
+/// and applies the new defaults to every curve. Returns the new
+/// `(lines, points)` state.
+pub fn curve_style_cycle(plot: &mut PlotWidget) -> (bool, bool) {
+    plot.cycle_curve_style()
 }
 
 /// Toggle the X-axis autoscale flag, mirroring silx `XAxisAutoScaleAction`
@@ -241,39 +233,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn next_line_style_cycles_deterministically_and_wraps() {
-        assert_eq!(next_line_style(&LineStyle::Solid), LineStyle::Dashed);
-        assert_eq!(next_line_style(&LineStyle::Dashed), LineStyle::DashDot);
-        assert_eq!(next_line_style(&LineStyle::DashDot), LineStyle::Dotted);
-        // Wraps back to the first entry.
-        assert_eq!(next_line_style(&LineStyle::Dotted), LineStyle::Solid);
-        // Styles outside the cycle step to the first entry.
-        assert_eq!(next_line_style(&LineStyle::None), LineStyle::Solid);
-        assert_eq!(
-            next_line_style(&LineStyle::Custom {
-                offset: 0.0,
-                pattern: vec![1.0, 2.0],
-            }),
-            LineStyle::Solid
-        );
-    }
-
-    #[test]
-    fn cycling_changes_stored_line_style_on_curve_data() {
-        // Mirror cycle_active_curve_style's body on a bare CurveData (no GPU
-        // backend): clone the retained curve, advance its stored line style.
-        use crate::render::gpu_curve::CurveData;
-        use egui::Color32;
-
-        let mut data = CurveData::new(vec![0.0, 1.0], vec![0.0, 1.0], Color32::WHITE)
-            .with_line_style(LineStyle::Solid);
-        assert_eq!(data.line_style, LineStyle::Solid);
-
-        data.line_style = next_line_style(&data.line_style);
-        assert_eq!(data.line_style, LineStyle::Dashed, "first cycle");
-
-        data.line_style = next_line_style(&data.line_style);
-        assert_eq!(data.line_style, LineStyle::DashDot, "second cycle");
+    fn curve_style_state_cycles_like_silx_and_recovers_invalid() {
+        // silx cycle: line-only → line+symbol → symbol-only → line-only.
+        assert_eq!(next_curve_style_state((true, false)), (true, true));
+        assert_eq!(next_curve_style_state((true, true)), (false, true));
+        assert_eq!(next_curve_style_state((false, true)), (true, false));
+        // The invalid (no line, no symbol) state recovers to line-only.
+        assert_eq!(next_curve_style_state((false, false)), (true, false));
     }
 
     #[test]

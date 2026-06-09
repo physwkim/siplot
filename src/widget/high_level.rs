@@ -3068,6 +3068,16 @@ pub struct PlotWidget {
     /// applied (silx `PlotWidget.setActiveCurveHandling`). When `false`, every
     /// curve renders with its own base style. Enabled by default.
     active_curve_handling: bool,
+    /// Plot-wide default curve line state (silx `PlotWidget._plotLines`,
+    /// `isDefaultPlotLines` / `setDefaultPlotLines`). `true` → every curve drawn
+    /// with a solid line, `false` → no line. silx initializes this to `True`.
+    default_plot_lines: bool,
+    /// Plot-wide default curve symbol state (silx `PlotWidget._defaultPlotPoints`,
+    /// `isDefaultPlotPoints` / `setDefaultPlotPoints`). `true` → every curve drawn
+    /// with the `o` (Circle) symbol (`silx.config.DEFAULT_PLOT_SYMBOL`), `false` →
+    /// no symbol. silx initializes this to
+    /// `silx.config.DEFAULT_PLOT_CURVE_SYMBOL_MODE` (`False`).
+    default_plot_points: bool,
     events: Vec<PlotEvent>,
     /// Open legend rename popup: the item being renamed and its edit buffer
     /// (silx `RenameCurveDialog`). `None` when no rename is in progress.
@@ -3095,6 +3105,10 @@ impl PlotWidget {
                 ..CurveStyle::default()
             },
             active_curve_handling: true,
+            // silx PlotWidget.__init__: setDefaultPlotPoints(DEFAULT_PLOT_CURVE_SYMBOL_MODE=False),
+            // setDefaultPlotLines(True).
+            default_plot_lines: true,
+            default_plot_points: false,
             events: Vec::new(),
             rename_state: None,
         }
@@ -4667,17 +4681,88 @@ impl PlotWidget {
             .map(|data| data.line_style.clone())
     }
 
-    /// Cycle the active curve's line style to the next style (silx
-    /// `CurveStyleAction`), re-applying the full retained curve so color, symbol,
-    /// width, and error bars are preserved. Returns the new [`LineStyle`], or
-    /// `None` if there is no active curve with a retained style.
-    pub fn cycle_active_curve_style(&mut self) -> Option<LineStyle> {
-        let handle = self.active_curve()?;
-        let mut data = self.record_curve_data(handle)?.clone();
-        let next = crate::widget::actions::control::next_line_style(&data.line_style);
-        data.line_style = next.clone();
-        self.update_curve_data(handle, &data);
-        Some(next)
+    /// Whether curves default to being drawn with a connecting line (silx
+    /// `PlotWidget.isDefaultPlotLines`).
+    pub fn is_default_plot_lines(&self) -> bool {
+        self.default_plot_lines
+    }
+
+    /// Whether curves default to being drawn with point markers (silx
+    /// `PlotWidget.isDefaultPlotPoints`).
+    pub fn is_default_plot_points(&self) -> bool {
+        self.default_plot_points
+    }
+
+    /// Set the default line style of every curve, mirroring silx
+    /// `PlotWidget.setDefaultPlotLines`: `true` applies a solid line (silx
+    /// `"-"`), `false` removes the line (silx `" "`). Like silx, this resets the
+    /// line style of all existing curves (silx iterates `getAllCurves`; siplot
+    /// iterates [`PlotItemKind::Curve`] items, the equivalent set — histograms
+    /// and scatters are excluded). Returns the number of curves whose line style
+    /// actually changed.
+    pub fn set_default_plot_lines(&mut self, flag: bool) -> usize {
+        self.default_plot_lines = flag;
+        let line_style = if flag {
+            LineStyle::Solid
+        } else {
+            LineStyle::None
+        };
+        let mut changed = 0;
+        for handle in self.handles_by_kind(PlotItemKind::Curve) {
+            let Some(mut data) = self.record_curve_data(handle).cloned() else {
+                continue;
+            };
+            if data.line_style == line_style {
+                continue;
+            }
+            data.line_style = line_style.clone();
+            if self.update_curve_data(handle, &data) {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// Set the default symbol of every curve, mirroring silx
+    /// `PlotWidget.setDefaultPlotPoints`: `true` applies the `o` (Circle) symbol
+    /// (`silx.config.DEFAULT_PLOT_SYMBOL`), `false` removes the symbol. Resets
+    /// the symbol of all existing curves (same item set as
+    /// [`Self::set_default_plot_lines`]). Returns the number of curves whose
+    /// symbol actually changed.
+    pub fn set_default_plot_points(&mut self, flag: bool) -> usize {
+        self.default_plot_points = flag;
+        let symbol = if flag { Some(Symbol::Circle) } else { None };
+        let mut changed = 0;
+        for handle in self.handles_by_kind(PlotItemKind::Curve) {
+            let Some(mut data) = self.record_curve_data(handle).cloned() else {
+                continue;
+            };
+            if data.symbol == symbol {
+                continue;
+            }
+            data.symbol = symbol;
+            if self.update_curve_data(handle, &data) {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// Cycle the plot-wide default curve style, mirroring silx
+    /// `CurveStyleAction`: advances the `(lines, points)` state line-only →
+    /// line+symbol → symbol-only → line-only (via
+    /// [`crate::widget::actions::control::next_curve_style_state`]), then applies
+    /// the new defaults to every curve through [`Self::set_default_plot_lines`]
+    /// and [`Self::set_default_plot_points`]. Returns the new `(lines, points)`
+    /// state.
+    pub fn cycle_curve_style(&mut self) -> (bool, bool) {
+        let next = crate::widget::actions::control::next_curve_style_state((
+            self.default_plot_lines,
+            self.default_plot_points,
+        ));
+        self.set_default_plot_lines(next.0);
+        self.set_default_plot_points(next.1);
+        next
     }
 
     /// Move a curve between the left (`YAxis::Left`) and right (`YAxis::Right`)
