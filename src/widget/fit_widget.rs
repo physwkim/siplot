@@ -95,28 +95,154 @@ fn background_label(background: Background) -> &'static str {
         .unwrap_or_else(|| background.name())
 }
 
-/// silx `Parameters.code_options` display string for a [`Constraint`].
-fn constraint_label(constraint: Constraint) -> &'static str {
-    match constraint {
-        Constraint::Free => "FREE",
-        Constraint::Positive => "POSITIVE",
-        Constraint::Quoted { .. } => "QUOTED",
-        Constraint::Fixed => "FIXED",
-        Constraint::Factor { .. } => "FACTOR",
-        Constraint::Delta { .. } => "DELTA",
-        Constraint::Sum { .. } => "SUM",
-        Constraint::Ignored => "IGNORE",
+/// A constraint "code" the user picks in the parameter table, without its
+/// payload — silx `Parameters.code_options` (`Parameters.py:205-215`). This is
+/// what the combo selects; the payload (`QUOTED` min/max, `FACTOR`/`DELTA`/`SUM`
+/// reference + value) is then edited in the adjacent fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstraintKind {
+    /// `FREE` — no restriction.
+    Free,
+    /// `POSITIVE` — kept positive.
+    Positive,
+    /// `QUOTED` — confined to a `[min, max]` interval.
+    Quoted,
+    /// `FIXED` — held at its starting value.
+    Fixed,
+    /// `FACTOR` — tied to another parameter by a multiplier.
+    Factor,
+    /// `DELTA` — tied to another parameter by an additive offset.
+    Delta,
+    /// `SUM` — the pair tied to a constant sum.
+    Sum,
+    /// `IGNORE` — held and stripped from the model call.
+    Ignore,
+}
+
+/// silx `Parameters.code_options` display string for a [`ConstraintKind`].
+fn constraint_kind_label(kind: ConstraintKind) -> &'static str {
+    match kind {
+        ConstraintKind::Free => "FREE",
+        ConstraintKind::Positive => "POSITIVE",
+        ConstraintKind::Quoted => "QUOTED",
+        ConstraintKind::Fixed => "FIXED",
+        ConstraintKind::Factor => "FACTOR",
+        ConstraintKind::Delta => "DELTA",
+        ConstraintKind::Sum => "SUM",
+        ConstraintKind::Ignore => "IGNORE",
     }
 }
 
-/// The per-parameter constraints offered by the [`FitWidget`] constraint editor.
+/// The code of an existing [`Constraint`] (drops its payload).
+fn constraint_kind(constraint: Constraint) -> ConstraintKind {
+    match constraint {
+        Constraint::Free => ConstraintKind::Free,
+        Constraint::Positive => ConstraintKind::Positive,
+        Constraint::Quoted { .. } => ConstraintKind::Quoted,
+        Constraint::Fixed => ConstraintKind::Fixed,
+        Constraint::Factor { .. } => ConstraintKind::Factor,
+        Constraint::Delta { .. } => ConstraintKind::Delta,
+        Constraint::Sum { .. } => ConstraintKind::Sum,
+        Constraint::Ignored => ConstraintKind::Ignore,
+    }
+}
+
+/// The constraint codes offered in the editor combo — silx
+/// `Parameters.code_options` minus the group-management `ADD`/`SHOW` pseudo-codes
+/// and `IGNORE`. siplot fits a single model (one parameter group), so there is
+/// no redundant grouped parameter for `IGNORE` to drop, and no second group for
+/// `ADD`; the remaining seven are the per-parameter constraints
+/// `core::fitting::leastsq_constrained` enforces.
+const UI_CONSTRAINT_KINDS: [ConstraintKind; 7] = [
+    ConstraintKind::Free,
+    ConstraintKind::Positive,
+    ConstraintKind::Quoted,
+    ConstraintKind::Fixed,
+    ConstraintKind::Factor,
+    ConstraintKind::Delta,
+    ConstraintKind::Sum,
+];
+
+/// Whether `constraint` ties a parameter to another (`FACTOR`/`DELTA`/`SUM`) or
+/// drops it (`IGNORE`) — such a parameter cannot itself be the *reference* of a
+/// tie (silx `getRelatedCandidates` excludes these, `Parameters.py:578-583`).
+fn is_tied(constraint: Constraint) -> bool {
+    matches!(
+        constraint,
+        Constraint::Factor { .. }
+            | Constraint::Delta { .. }
+            | Constraint::Sum { .. }
+            | Constraint::Ignored
+    )
+}
+
+/// The "best" related parameter for a `FACTOR`/`DELTA`/`SUM` tie on
+/// `param_index`, mirroring silx `Parameters.getRelatedCandidates`
+/// (`Parameters.py:565-600`): the first *other* parameter whose own constraint
+/// is not itself a tie or `IGNORE` (you cannot chain ties). Returns `None` when
+/// no candidate exists — silx `setCodeValue` rejects the change in that case
+/// (`Parameters.py:477-479`).
 ///
-/// This is the silx subset that needs no extra input — `FREE` / `POSITIVE` /
-/// `FIXED`. `QUOTED` (min/max fields) and `FACTOR` / `DELTA` / `SUM` (a
-/// reference-parameter picker) are supported by `core::fitting::leastsq_constrained`
-/// but not yet exposed in this combo.
-const UI_CONSTRAINT_CHOICES: [Constraint; 3] =
-    [Constraint::Free, Constraint::Positive, Constraint::Fixed];
+/// silx additionally prefers the previous `relatedto` or a parameter sharing the
+/// same base name; the single-peak models this editor serves have distinct
+/// parameter names, so that refinement collapses to the first candidate.
+fn default_related_reference(param_index: usize, constraints: &[Constraint]) -> Option<usize> {
+    (0..constraints.len()).find(|&j| j != param_index && !is_tied(constraints[j]))
+}
+
+/// Build the [`Constraint`] for a newly-selected [`ConstraintKind`] on
+/// parameter `param_index`, seeding silx defaults. `FACTOR`/`DELTA`/`SUM` need a
+/// related parameter ([`default_related_reference`]); when none exists this
+/// returns `None`, mirroring silx `setCodeValue` rejecting the selection. The
+/// `QUOTED` seed `[0, 1]` is a placeholder the user edits in the min/max fields
+/// (silx seeds from the fit theory's estimate, which this manual editor lacks).
+fn make_constraint(
+    kind: ConstraintKind,
+    param_index: usize,
+    constraints: &[Constraint],
+) -> Option<Constraint> {
+    Some(match kind {
+        ConstraintKind::Free => Constraint::Free,
+        ConstraintKind::Positive => Constraint::Positive,
+        ConstraintKind::Quoted => Constraint::Quoted { min: 0.0, max: 1.0 },
+        ConstraintKind::Fixed => Constraint::Fixed,
+        ConstraintKind::Ignore => Constraint::Ignored,
+        ConstraintKind::Factor => Constraint::Factor {
+            reference: default_related_reference(param_index, constraints)?,
+            factor: 1.0,
+        },
+        ConstraintKind::Delta => Constraint::Delta {
+            reference: default_related_reference(param_index, constraints)?,
+            delta: 0.0,
+        },
+        ConstraintKind::Sum => Constraint::Sum {
+            reference: default_related_reference(param_index, constraints)?,
+            sum: 0.0,
+        },
+    })
+}
+
+/// A combo that picks the *reference* parameter for a `FACTOR`/`DELTA`/`SUM`
+/// tie on `param_index`, offering every other parameter not itself tied/ignored
+/// (`tieable[j]`), shown by name (silx `relatedto` candidate list).
+fn reference_param_combo(
+    ui: &mut egui::Ui,
+    param_index: usize,
+    reference: &mut usize,
+    names: &[String],
+    tieable: &[bool],
+) {
+    let selected = names.get(*reference).map(String::as_str).unwrap_or("?");
+    egui::ComboBox::from_id_salt(("fit_ref_combo", param_index))
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            for (j, nm) in names.iter().enumerate() {
+                if tieable.get(j).copied().unwrap_or(false) {
+                    ui.selectable_value(reference, j, nm.as_str());
+                }
+            }
+        });
+}
 
 /// The selectable fit model in [`FitWidget`].
 ///
@@ -663,9 +789,11 @@ impl FitWidget {
                 // Per-parameter table (silx `FitWidget`), shown for the
                 // single-peak iterative models: an editable initial-value column
                 // (populated after the first fit; the next fit starts from it)
-                // plus a constraint combo. The FREE/POSITIVE/FIXED subset needs
-                // no extra input; other silx codes are core-supported but not yet
-                // exposed (see `UI_CONSTRAINT_CHOICES`).
+                // plus a constraint cell — a code combo (`UI_CONSTRAINT_KINDS`)
+                // and the payload editor for the selected code (QUOTED min/max,
+                // FACTOR/DELTA/SUM reference picker + value), all driving
+                // `core::fitting::leastsq_constrained` (silx `Parameters`
+                // Constraints column + cons1/cons2).
                 if let Some(peak_model) = self.selected_choice.peak_model() {
                     let names = peak_model.param_names();
                     self.ensure_constraints_len(names.len());
@@ -687,17 +815,68 @@ impl FitWidget {
                                             ui.label("—");
                                         }
                                     }
-                                    egui::ComboBox::from_id_salt(("fit_constraint_combo", i))
-                                        .selected_text(constraint_label(self.constraints[i]))
-                                        .show_ui(ui, |ui| {
-                                            for choice in UI_CONSTRAINT_CHOICES {
-                                                ui.selectable_value(
-                                                    &mut self.constraints[i],
-                                                    choice,
-                                                    constraint_label(choice),
-                                                );
+                                    ui.horizontal(|ui| {
+                                        let current = constraint_kind(self.constraints[i]);
+                                        let mut kind = current;
+                                        egui::ComboBox::from_id_salt(("fit_constraint_combo", i))
+                                            .selected_text(constraint_kind_label(kind))
+                                            .show_ui(ui, |ui| {
+                                                for choice in UI_CONSTRAINT_KINDS {
+                                                    ui.selectable_value(
+                                                        &mut kind,
+                                                        choice,
+                                                        constraint_kind_label(choice),
+                                                    );
+                                                }
+                                            });
+                                        if kind != current {
+                                            // silx rejects FACTOR/DELTA/SUM when no
+                                            // related parameter exists; leave it.
+                                            if let Some(c) =
+                                                make_constraint(kind, i, &self.constraints)
+                                            {
+                                                self.constraints[i] = c;
                                             }
-                                        });
+                                        }
+                                        // Reference-picker candidates (snapshot
+                                        // before the &mut borrow below).
+                                        let tieable: Vec<bool> = self
+                                            .constraints
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(j, c)| j != i && !is_tied(*c))
+                                            .collect();
+                                        match &mut self.constraints[i] {
+                                            Constraint::Quoted { min, max } => {
+                                                ui.label("min");
+                                                ui.add(egui::DragValue::new(min).speed(0.1));
+                                                ui.label("max");
+                                                ui.add(egui::DragValue::new(max).speed(0.1));
+                                            }
+                                            Constraint::Factor { reference, factor } => {
+                                                reference_param_combo(
+                                                    ui, i, reference, &names, &tieable,
+                                                );
+                                                ui.label("×");
+                                                ui.add(egui::DragValue::new(factor).speed(0.1));
+                                            }
+                                            Constraint::Delta { reference, delta } => {
+                                                reference_param_combo(
+                                                    ui, i, reference, &names, &tieable,
+                                                );
+                                                ui.label("+");
+                                                ui.add(egui::DragValue::new(delta).speed(0.1));
+                                            }
+                                            Constraint::Sum { reference, sum } => {
+                                                reference_param_combo(
+                                                    ui, i, reference, &names, &tieable,
+                                                );
+                                                ui.label("Σ−");
+                                                ui.add(egui::DragValue::new(sum).speed(0.1));
+                                            }
+                                            _ => {}
+                                        }
+                                    });
                                     ui.end_row();
                                 }
                             });
@@ -898,40 +1077,120 @@ mod tests {
     #[test]
     fn constraint_labels_match_silx_code_options() {
         // silx `Parameters.code_options` display strings.
-        assert_eq!(constraint_label(Constraint::Free), "FREE");
-        assert_eq!(constraint_label(Constraint::Positive), "POSITIVE");
+        assert_eq!(constraint_kind_label(ConstraintKind::Free), "FREE");
+        assert_eq!(constraint_kind_label(ConstraintKind::Positive), "POSITIVE");
+        assert_eq!(constraint_kind_label(ConstraintKind::Quoted), "QUOTED");
+        assert_eq!(constraint_kind_label(ConstraintKind::Fixed), "FIXED");
+        assert_eq!(constraint_kind_label(ConstraintKind::Factor), "FACTOR");
+        assert_eq!(constraint_kind_label(ConstraintKind::Delta), "DELTA");
+        assert_eq!(constraint_kind_label(ConstraintKind::Sum), "SUM");
+        assert_eq!(constraint_kind_label(ConstraintKind::Ignore), "IGNORE");
+        // The combo exposes silx `code_options` minus the group-management
+        // `ADD`/`SHOW` and the group-only `IGNORE`.
         assert_eq!(
-            constraint_label(Constraint::Quoted { min: 0.0, max: 1.0 }),
-            "QUOTED"
+            UI_CONSTRAINT_KINDS,
+            [
+                ConstraintKind::Free,
+                ConstraintKind::Positive,
+                ConstraintKind::Quoted,
+                ConstraintKind::Fixed,
+                ConstraintKind::Factor,
+                ConstraintKind::Delta,
+                ConstraintKind::Sum,
+            ]
         );
-        assert_eq!(constraint_label(Constraint::Fixed), "FIXED");
+    }
+
+    #[test]
+    fn constraint_kind_drops_payload() {
         assert_eq!(
-            constraint_label(Constraint::Factor {
-                reference: 0,
-                factor: 2.0
+            constraint_kind(Constraint::Quoted { min: 2.0, max: 9.0 }),
+            ConstraintKind::Quoted
+        );
+        assert_eq!(
+            constraint_kind(Constraint::Factor {
+                reference: 3,
+                factor: 0.5
             }),
-            "FACTOR"
+            ConstraintKind::Factor
+        );
+        assert_eq!(constraint_kind(Constraint::Ignored), ConstraintKind::Ignore);
+    }
+
+    #[test]
+    fn make_constraint_seeds_silx_defaults_for_payload_codes() {
+        // FREE/POSITIVE/FIXED need no related parameter and no reference.
+        let solo = [Constraint::Free];
+        assert_eq!(
+            make_constraint(ConstraintKind::Positive, 0, &solo),
+            Some(Constraint::Positive)
         );
         assert_eq!(
-            constraint_label(Constraint::Delta {
+            make_constraint(ConstraintKind::Fixed, 0, &solo),
+            Some(Constraint::Fixed)
+        );
+        // QUOTED seeds the [0, 1] placeholder interval.
+        assert_eq!(
+            make_constraint(ConstraintKind::Quoted, 0, &solo),
+            Some(Constraint::Quoted { min: 0.0, max: 1.0 })
+        );
+        // FACTOR/DELTA/SUM tie to the first other free parameter, seeded 1/0/0.
+        let three = [Constraint::Free, Constraint::Free, Constraint::Free];
+        assert_eq!(
+            make_constraint(ConstraintKind::Factor, 1, &three),
+            Some(Constraint::Factor {
                 reference: 0,
-                delta: 1.0
-            }),
-            "DELTA"
+                factor: 1.0
+            })
         );
         assert_eq!(
-            constraint_label(Constraint::Sum {
+            make_constraint(ConstraintKind::Delta, 0, &three),
+            Some(Constraint::Delta {
+                reference: 1,
+                delta: 0.0
+            })
+        );
+        assert_eq!(
+            make_constraint(ConstraintKind::Sum, 0, &three),
+            Some(Constraint::Sum {
+                reference: 1,
+                sum: 0.0
+            })
+        );
+    }
+
+    #[test]
+    fn make_constraint_rejects_tie_with_no_candidate() {
+        // A single parameter has no other to tie to (silx returns False).
+        let solo = [Constraint::Free];
+        assert_eq!(make_constraint(ConstraintKind::Factor, 0, &solo), None);
+        assert_eq!(make_constraint(ConstraintKind::Delta, 0, &solo), None);
+        assert_eq!(make_constraint(ConstraintKind::Sum, 0, &solo), None);
+    }
+
+    #[test]
+    fn related_reference_skips_self_and_tied_parameters() {
+        // param 0: only candidate is param 2 (param 1 is itself a tie, excluded).
+        let constraints = [
+            Constraint::Free,
+            Constraint::Factor {
+                reference: 2,
+                factor: 1.0,
+            },
+            Constraint::Positive,
+        ];
+        assert_eq!(default_related_reference(0, &constraints), Some(2));
+        // No untied other parameter -> None (matches make_constraint rejection).
+        let all_tied = [
+            Constraint::Free,
+            Constraint::Ignored,
+            Constraint::Sum {
                 reference: 0,
-                sum: 1.0
-            }),
-            "SUM"
-        );
-        assert_eq!(constraint_label(Constraint::Ignored), "IGNORE");
-        // The UI exposes only the no-extra-input subset.
-        assert_eq!(
-            UI_CONSTRAINT_CHOICES,
-            [Constraint::Free, Constraint::Positive, Constraint::Fixed]
-        );
+                sum: 1.0,
+            },
+        ];
+        assert_eq!(default_related_reference(1, &all_tied), Some(0));
+        assert_eq!(default_related_reference(0, &[Constraint::Free]), None);
     }
 
     #[test]
