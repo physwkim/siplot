@@ -444,6 +444,12 @@ pub struct Plot {
     /// `items/shape.py:289`). Each is clipped to the current viewport and drawn
     /// every frame.
     lines: Vec<Line>,
+    /// Whether the arrow keys pan the data area when the plot is focused (silx
+    /// `setPanWithArrowKeys` / `isPanWithArrowKeys`). Defaults to `true`,
+    /// matching silx `PlotWidget._panWithArrowKeys = True`. When `false` the
+    /// widget ignores arrow-key presses (silx gates the same handler on
+    /// `if self._panWithArrowKeys` in `PlotWidget._handleArrowKey`).
+    pan_with_arrow_keys: bool,
 }
 
 /// One snapshot in [`Plot::limits_history`]: the left-axes limits plus the
@@ -503,6 +509,7 @@ impl Plot {
             x_tick_mode: TickMode::Numeric,
             x_time_zone: TimeZone::Utc,
             lines: Vec::new(),
+            pan_with_arrow_keys: true,
         }
     }
 
@@ -679,6 +686,20 @@ impl Plot {
             self.axes_displayed = displayed;
             self.set_dirty(false);
         }
+    }
+
+    /// Whether the arrow keys pan the data area when the plot is focused (silx
+    /// `isPanWithArrowKeys`).
+    pub fn pan_with_arrow_keys(&self) -> bool {
+        self.pan_with_arrow_keys
+    }
+
+    /// Enable or disable arrow-key panning (silx `setPanWithArrowKeys`). Unlike
+    /// most setters this does not mark the plot dirty: it only changes how a
+    /// future key press is handled, never the current frame (silx
+    /// `setPanWithArrowKeys` sets the flag without `_setDirtyPlot`).
+    pub fn set_pan_with_arrow_keys(&mut self, pan: bool) {
+        self.pan_with_arrow_keys = pan;
     }
 
     /// The current redraw-dirty state (silx `_getDirtyPlot`).
@@ -1395,6 +1416,23 @@ mod tests {
         plot.set_axes_displayed(false);
         assert!(!plot.axes_displayed());
         assert_eq!(plot.dirty(), DirtyState::Full);
+    }
+
+    #[test]
+    fn pan_with_arrow_keys_defaults_true_and_set_does_not_dirty() {
+        let mut plot = Plot::new(0);
+        // silx PlotWidget._panWithArrowKeys = True.
+        assert!(plot.pan_with_arrow_keys(), "default enabled");
+
+        // setPanWithArrowKeys is a plain flag set: it never marks the plot dirty
+        // (it only changes how a future key press is handled, not the frame).
+        plot.set_pan_with_arrow_keys(false);
+        assert!(!plot.pan_with_arrow_keys());
+        assert_eq!(plot.dirty(), DirtyState::Clean, "toggling must not dirty");
+
+        plot.set_pan_with_arrow_keys(true);
+        assert!(plot.pan_with_arrow_keys());
+        assert_eq!(plot.dirty(), DirtyState::Clean);
     }
 
     #[test]

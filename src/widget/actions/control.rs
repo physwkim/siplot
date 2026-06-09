@@ -47,6 +47,18 @@ pub fn show_axis_toggle(plot: &mut PlotWidget) -> bool {
     next
 }
 
+/// Toggle whether the arrow keys pan the data area when the plot is focused,
+/// mirroring silx `PanWithArrowKeysAction` (`actions/control.py`): the checkable
+/// action's `_actionTriggered(checked)` calls `plot.setPanWithArrowKeys(checked)`,
+/// flipping the current state.
+///
+/// Returns the new `pan_with_arrow_keys` value after the toggle.
+pub fn toggle_pan_with_arrow_keys(plot: &mut PlotWidget) -> bool {
+    let next = !plot.plot().pan_with_arrow_keys();
+    plot.plot_mut().set_pan_with_arrow_keys(next);
+    next
+}
+
 /// silx zoom step factor (`ZoomInAction` calls `applyZoomToPlot(plot, 1.1)`;
 /// `ZoomOutAction` calls `applyZoomToPlot(plot, 1.0 / 1.1)`,
 /// `actions/control.py`). ZoomIn shrinks each axis range by this factor, ZoomOut
@@ -401,5 +413,24 @@ mod tests {
         let next = !plot.axes_displayed();
         plot.set_axes_displayed(next);
         assert!(plot.axes_displayed(), "second toggle shows again");
+    }
+
+    #[test]
+    fn pan_with_arrow_keys_toggle_flips_flag() {
+        // A bare Plot model exercises the same set_pan_with_arrow_keys transition
+        // the action drives through PlotWidget, without a GPU backend.
+        use crate::core::plot::Plot;
+
+        let mut plot = Plot::new(0);
+        assert!(plot.pan_with_arrow_keys(), "default is enabled (silx True)");
+
+        // Mirror toggle_pan_with_arrow_keys's body on the bare model.
+        let next = !plot.pan_with_arrow_keys();
+        plot.set_pan_with_arrow_keys(next);
+        assert!(!plot.pan_with_arrow_keys(), "first toggle disables");
+
+        let next = !plot.pan_with_arrow_keys();
+        plot.set_pan_with_arrow_keys(next);
+        assert!(plot.pan_with_arrow_keys(), "second toggle re-enables");
     }
 }

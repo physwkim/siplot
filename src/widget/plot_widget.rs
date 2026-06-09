@@ -816,10 +816,12 @@ fn apply_interaction(
     // aspect-ratio expansion), so pan/zoom act on exactly what is on screen.
     let base = (view.x.min, view.x.max, view.y.min, view.y.max);
 
-    // Arrow-key pan: when the plot area has keyboard focus, arrow keys pan by a
-    // fraction of the view (silx `PanWithArrowKeysAction` -> `PlotWidget.pan`
-    // with factor 0.1). One press is one pan step.
-    if response.has_focus() {
+    // Arrow-key pan: when the plot area has keyboard focus and arrow-key panning
+    // is enabled, arrow keys pan by a fraction of the view (silx
+    // `PanWithArrowKeysAction` -> `PlotWidget.pan` with factor 0.1). One press is
+    // one pan step. silx gates the same handler on `if self._panWithArrowKeys`
+    // (`PlotWidget._handleArrowKey`), so a disabled plot ignores the keys.
+    if response.has_focus() && plot.pan_with_arrow_keys() {
         for (key, dir) in [
             (egui::Key::ArrowLeft, interaction::PanDirection::Left),
             (egui::Key::ArrowRight, interaction::PanDirection::Right),
