@@ -5181,6 +5181,44 @@ impl PlotWidget {
         }
     }
 
+    /// Feed *every* plot item that has retained scalar data into a
+    /// [`StatsWidget`], one row per item labelled by its legend — silx
+    /// `StatsWidget` in its default all-items mode, the counterpart to the
+    /// active-only [`Self::feed_active_stats`] (silx `setDisplayOnlyActiveItem`
+    /// chooses between them). Items with no retained scalar data (RGBA images,
+    /// triangles, shapes, markers) are skipped. Returns the number of rows fed.
+    ///
+    /// `viewport` is the visible data rectangle `((x0, x1), (y0, y1))`, used only
+    /// when the widget's on-visible-data toggle is enabled.
+    pub fn feed_all_stats(
+        &self,
+        stats: &mut crate::widget::stats_widget::StatsWidget,
+        viewport: Option<((f64, f64), (f64, f64))>,
+    ) -> usize {
+        let labeled = self.all_stats_labeled_data();
+        let inputs: Vec<(&str, crate::widget::stats_widget::StatsInput<'_>)> = labeled
+            .iter()
+            .map(|(label, data)| (label.as_str(), retained_data_to_stats_input(data)))
+            .collect();
+        stats.recompute(&inputs, viewport);
+        inputs.len()
+    }
+
+    /// `(legend, retained data)` for every item with retained scalar data, in
+    /// item order — the shared selection behind [`Self::feed_all_stats`] /
+    /// [`Self::show_all_stats_widget`] (silx all-items `StatsWidget`).
+    fn all_stats_labeled_data(&self) -> Vec<(String, &RetainedItemData)> {
+        self.item_records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .data
+                    .as_ref()
+                    .map(|data| (self.legend_label(record), data))
+            })
+            .collect()
+    }
+
     /// Compute per-ROI statistics over the active item's retained data and store
     /// them in `widget` (silx `ROIStatsWidget` bound to the active item): one
     /// row per ROI on the plot, reduced inside that ROI via [`image_roi_stats`]
@@ -5318,6 +5356,26 @@ impl PlotWidget {
                 stats.ui(ui, &[], viewport);
             }
         }
+    }
+
+    /// Feed *all* items with retained scalar data into a [`StatsWidget`] and
+    /// render its table (silx all-items `StatsWidget`). Combines
+    /// [`Self::feed_all_stats`]'s selection with [`StatsWidget::ui`]; the table
+    /// follows every plot item, recomputing as items are added/removed.
+    ///
+    /// [`StatsWidget::ui`]: crate::widget::stats_widget::StatsWidget::ui
+    pub fn show_all_stats_widget(
+        &self,
+        ui: &mut egui::Ui,
+        stats: &mut crate::widget::stats_widget::StatsWidget,
+        viewport: Option<((f64, f64), (f64, f64))>,
+    ) {
+        let labeled = self.all_stats_labeled_data();
+        let inputs: Vec<(&str, crate::widget::stats_widget::StatsInput<'_>)> = labeled
+            .iter()
+            .map(|(label, data)| (label.as_str(), retained_data_to_stats_input(data)))
+            .collect();
+        stats.ui(ui, &inputs, viewport);
     }
 
     /// Draw an egui-native plot toolbar.
