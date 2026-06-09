@@ -1720,6 +1720,21 @@ fn data_range_from_bounds(bounds: DataBounds) -> DataRange {
     }
 }
 
+/// Map accumulated widget [`DataBounds`] to the model [`DataRange`] *cache*
+/// (silx `_updateDataRange`, returned by `getDataRange`): the raw per-axis
+/// min/max with no degenerate-span padding — a single data point reads as
+/// `(v, v)`, matching silx (the non-degenerate span + data margins are a
+/// refit-time concern applied by [`data_range_from_bounds`], not stored in the
+/// cache). An axis with no data maps to `None`. Pure (no GPU) so it is
+/// unit-testable.
+fn raw_data_range_from_bounds(bounds: DataBounds) -> DataRange {
+    DataRange {
+        x: bounds.x.map(|b| (b.min, b.max)),
+        y: bounds.y_left.map(|b| (b.min, b.max)),
+        y2: bounds.y_right.map(|b| (b.min, b.max)),
+    }
+}
+
 fn finite_bounds(values: &[f64]) -> Option<Bounds1D> {
     values
         .iter()
@@ -3487,6 +3502,16 @@ impl PlotWidget {
             bounds.include_bounds(record.bounds);
         }
         self.data_bounds = bounds;
+        // Keep the model's data-range cache live (silx invalidates `_dataRange`
+        // on `_notifyContentChanged` and recomputes it in `_updateDataRange`).
+        // This is the single funnel for every content change, so pushing the raw
+        // per-axis bounds here makes `Plot::data_range()` reflect the data on all
+        // paths instead of reading as all-`None`. The refit
+        // (`apply_limits_from_data_bounds`) keeps using the non-degenerate-padded
+        // range; only the cache content changes here.
+        self.backend
+            .plot_mut()
+            .set_data_range(raw_data_range_from_bounds(self.data_bounds));
     }
 
     fn remove_records_by_kinds(&mut self, predicate: impl Fn(PlotItemKind) -> bool) {
@@ -11357,6 +11382,42 @@ mod tests {
         assert!(xmax > xmin, "degenerate X must be padded: {xmin}..{xmax}");
         assert_eq!(range.y, Some((-1.0, 1.0)));
         assert_eq!(range.y2, None);
+    }
+
+    #[test]
+    fn raw_data_range_from_bounds_keeps_raw_bounds_unpadded() {
+        // The data-range CACHE (silx getDataRange) holds the raw min/max: a
+        // single data point reads as (v, v), NOT the as_non_degenerate padding
+        // the refit path applies. An axis with no data stays None.
+        let bounds = DataBounds {
+            x: Some(Bounds1D::new(4.0, 4.0).unwrap()),
+            y_left: Some(Bounds1D::new(-5.0, 5.0).unwrap()),
+            y_right: None,
+        };
+        let range = raw_data_range_from_bounds(bounds);
+        assert_eq!(range.x, Some((4.0, 4.0)), "single point must stay (v, v)");
+        assert_eq!(range.y, Some((-5.0, 5.0)));
+        assert_eq!(range.y2, None);
+    }
+
+    #[test]
+    fn recompute_data_bounds_populates_live_data_range_cache() {
+        // Reproduce the cache write `recompute_data_bounds` now performs on its
+        // model owner (`PlotWidget` itself needs a GPU `RenderState`): every
+        // content change pushes the raw bounds, so `Plot::data_range()` reflects
+        // the data instead of reading as all-`None` (closes row 1028).
+        let mut plot = Plot::new(0);
+        assert_eq!(
+            plot.data_range(),
+            DataRange::default(),
+            "empty before any data"
+        );
+        let bounds = data_bounds((10.0, 20.0), (-5.0, 5.0), Some((-1.0, 1.0)));
+        plot.set_data_range(raw_data_range_from_bounds(bounds));
+        let range = plot.data_range();
+        assert_eq!(range.x, Some((10.0, 20.0)));
+        assert_eq!(range.y, Some((-5.0, 5.0)));
+        assert_eq!(range.y2, Some((-1.0, 1.0)));
     }
 
     #[test]
