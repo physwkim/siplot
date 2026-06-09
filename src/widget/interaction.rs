@@ -1182,6 +1182,34 @@ pub fn roi_draw_mode(kind: RoiDrawKind) -> DrawMode {
     }
 }
 
+/// A keyboard action over the active ROI session, mirroring silx
+/// `InteractiveRegionOfInterestManager.eventFilter` (`tools/roi.py:1072-1098`).
+///
+/// silx binds **no** per-shape keys — the roadmap's "R for Rect" / key→shape map
+/// was speculative; the real bindings are validate-on-Enter and undo-last-ROI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoiKeyAction {
+    /// Return/Enter: finish/validate the in-progress drawing (silx `quit()` in
+    /// `ENTER` / `AUTO_ENTER` validation mode; siplot uses it to close a
+    /// polygon at its committed vertices, the `validate` path).
+    Validate,
+    /// Delete / Backspace / Ctrl+Z: remove the most recently added ROI (silx
+    /// `removeRoi(rois[-1])`).
+    UndoLast,
+}
+
+/// Map a key press to its ROI action, or `None` if the key is unbound (silx
+/// `InteractiveRegionOfInterestManager.eventFilter`). `command` is whether the
+/// platform command modifier (Ctrl, or ⌘ on macOS) is held, gating `Z` → undo.
+pub fn roi_key_action(key: egui::Key, command: bool) -> Option<RoiKeyAction> {
+    match key {
+        egui::Key::Enter => Some(RoiKeyAction::Validate),
+        egui::Key::Delete | egui::Key::Backspace => Some(RoiKeyAction::UndoLast),
+        egui::Key::Z if command => Some(RoiKeyAction::UndoLast),
+        _ => None,
+    }
+}
+
 /// Build the [`Roi`] from a finished draw's [`DrawParams`], the
 /// `setFirstShapePoints` equivalent per ROI class (`items/roi.py`,
 /// `items/_arc_roi.py`, `items/_band_roi.py`). Returns `None` for a
@@ -2992,6 +3020,30 @@ mod tests {
             arc_three_point_drag(&rect, ArcControlPoint::Start, (5.0, 5.0)),
             rect
         );
+    }
+
+    #[test]
+    fn roi_key_action_maps_silx_bindings_only() {
+        use egui::Key;
+        // Enter validates; Delete/Backspace undo the last ROI.
+        assert_eq!(
+            roi_key_action(Key::Enter, false),
+            Some(RoiKeyAction::Validate)
+        );
+        assert_eq!(
+            roi_key_action(Key::Delete, false),
+            Some(RoiKeyAction::UndoLast)
+        );
+        assert_eq!(
+            roi_key_action(Key::Backspace, false),
+            Some(RoiKeyAction::UndoLast)
+        );
+        // Z undoes only with the command modifier (silx Ctrl+Z).
+        assert_eq!(roi_key_action(Key::Z, true), Some(RoiKeyAction::UndoLast));
+        assert_eq!(roi_key_action(Key::Z, false), None);
+        // silx binds no per-shape keys: "R for Rect" and friends are unbound.
+        assert_eq!(roi_key_action(Key::R, false), None);
+        assert_eq!(roi_key_action(Key::E, true), None);
     }
 
     #[test]

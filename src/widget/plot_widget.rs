@@ -1050,18 +1050,44 @@ fn apply_interaction(
     let mut roi_created = None;
     let mut roi_preview = None;
     let mut draw_event = None;
+    // ROI keyboard shortcut for this frame (silx
+    // `InteractiveRegionOfInterestManager.eventFilter`): scan the key events,
+    // consuming the first one `roi_key_action` recognizes so it does not leak to
+    // other widgets. Enter validates the in-progress polygon; Delete/Backspace/
+    // Ctrl+Z (⌘Z on macOS) undo the last ROI. Active only while an ROI session is
+    // armed (`RoiCreate`), matching silx installing the filter on the manager.
+    let roi_key = if matches!(mode, PlotInteractionMode::RoiCreate(_)) {
+        ui.input_mut(|i| {
+            let mut action = None;
+            i.events.retain(|e| {
+                if action.is_none()
+                    && let egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } = e
+                    && let Some(a) = interaction::roi_key_action(*key, modifiers.command)
+                {
+                    action = Some(a);
+                    return false; // consume this key event
+                }
+                true
+            });
+            action
+        })
+    } else {
+        None
+    };
     if let PlotInteractionMode::RoiCreate(kind) = mode {
         let draw_id = id.with("roi-draw");
         let mut draw = ui
             .data_mut(|d| d.get_temp::<interaction::DrawState>(draw_id))
             .unwrap_or_else(|| interaction::DrawState::new(interaction::roi_draw_mode(kind)));
         // Close-polygon action (silx `ClosePolygonInteractionAction` →
-        // `interaction()._validate()`): pressing Enter while drawing a polygon
-        // finishes it at the committed vertices without needing to snap back to
-        // the first point. Consumes the key so it does not leak to other widgets.
-        let close_polygon =
-            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        let event = if close_polygon {
+        // `interaction()._validate()`): Enter finishes the polygon at its
+        // committed vertices without snapping back to the first point.
+        let event = if roi_key == Some(interaction::RoiKeyAction::Validate) {
             draw.validate()
         } else {
             feed_draw_state(&mut draw, response, view)
@@ -1143,7 +1169,15 @@ fn apply_interaction(
     // `_isMouseHoverRoi`: the ROI submenu is built for the hovered ROI). The
     // menu only *signals* the choice; `high_level.rs` performs the mutation
     // through its owning API so the ROI events fire.
-    let mut roi_removed = None;
+    // Undo-last-ROI keyboard shortcut (silx `removeRoi(rois[-1])`): signal the
+    // last ROI's index for removal; the high-level owner performs the mutation +
+    // event, like the context-menu Remove path, keeping one removal owner.
+    let mut roi_removed = match roi_key {
+        Some(interaction::RoiKeyAction::UndoLast) if !plot.rois.is_empty() => {
+            Some(plot.rois.len() - 1)
+        }
+        _ => None,
+    };
     let mut roi_make_current = None;
     let roi_menu_id = response.id.with("roi_context_target");
     if response.secondary_clicked()
