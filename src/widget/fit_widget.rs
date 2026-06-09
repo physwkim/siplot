@@ -2,9 +2,13 @@ use egui::Color32;
 use egui_wgpu::RenderState;
 
 use crate::core::backend::ItemHandle;
+use crate::core::background::{
+    Background, DEFAULT_SNIP_WIDTH, DEFAULT_STRIP_ITERATIONS, DEFAULT_STRIP_THRESHOLD_FACTOR,
+    DEFAULT_STRIP_WIDTH,
+};
 use crate::core::fitting::{
-    FitFunction, FitResult, GaussianEstimateFit, IterativeFit, IterativeFitResult, LinearFit,
-    PeakModel,
+    DEFAULT_DELTACHI, DEFAULT_MAX_ITER, FitFunction, FitResult, GaussianEstimateFit, IterativeFit,
+    IterativeFitResult, LinearFit, PeakModel, fit_peak_with_background,
 };
 use crate::core::plot::PlotId;
 use crate::render::gpu_curve::CurveData;
@@ -51,6 +55,42 @@ fn default_fit_range_of(x_data: &[f64]) -> (f64, f64) {
         }
         None => (0.0, 1.0),
     }
+}
+
+/// The background theories offered by the [`FitWidget`] background combo, in
+/// silx `bgtheories.THEORY` order, each paired with its silx display label.
+const BACKGROUND_CHOICES: [(Background, &str); 9] = [
+    (Background::None, "No Background"),
+    (Background::Constant, "Constant"),
+    (Background::Linear, "Linear"),
+    (
+        Background::Strip {
+            width: DEFAULT_STRIP_WIDTH,
+            niterations: DEFAULT_STRIP_ITERATIONS,
+            factor: DEFAULT_STRIP_THRESHOLD_FACTOR,
+        },
+        "Strip",
+    ),
+    (
+        Background::Snip {
+            width: DEFAULT_SNIP_WIDTH,
+        },
+        "Snip",
+    ),
+    (Background::Polynomial { degree: 2 }, "Degree 2 Polynomial"),
+    (Background::Polynomial { degree: 3 }, "Degree 3 Polynomial"),
+    (Background::Polynomial { degree: 4 }, "Degree 4 Polynomial"),
+    (Background::Polynomial { degree: 5 }, "Degree 5 Polynomial"),
+];
+
+/// The combo label for `background`: its [`BACKGROUND_CHOICES`] entry, or the
+/// generic [`Background::name`] when it is a non-default parameterisation.
+fn background_label(background: Background) -> &'static str {
+    BACKGROUND_CHOICES
+        .iter()
+        .find(|(bg, _)| *bg == background)
+        .map(|(_, label)| *label)
+        .unwrap_or_else(|| background.name())
 }
 
 /// The selectable fit model in [`FitWidget`].
@@ -153,6 +193,9 @@ pub struct FitWidget {
     /// Optional fit range `[xmin, xmax]`; `None` fits the whole curve
     /// (silx `FitWidget` xmin/xmax).
     fit_range: Option<(f64, f64)>,
+    /// Background theory subtracted before an iterative peak fit (silx
+    /// `FitWidget` background combo). `None` fits the raw data unchanged.
+    background: Background,
 }
 
 impl FitWidget {
@@ -177,6 +220,7 @@ impl FitWidget {
             selected_choice: FitModelChoice::Linear,
             iterative_result: None,
             fit_range: None,
+            background: Background::None,
         }
     }
 
@@ -201,6 +245,20 @@ impl FitWidget {
     /// Set the selected fit model choice.
     pub fn set_selected_choice(&mut self, choice: FitModelChoice) {
         self.selected_choice = choice;
+    }
+
+    /// The background theory subtracted before an iterative peak fit (silx
+    /// `FitWidget` background combo).
+    pub fn fit_background(&self) -> Background {
+        self.background
+    }
+
+    /// Set the background theory subtracted before an iterative peak fit. The
+    /// analytical Linear / Gaussian-estimate choices ignore it; iterative peak
+    /// models fit the background-subtracted residual and display the
+    /// reconstructed total curve.
+    pub fn set_fit_background(&mut self, background: Background) {
+        self.background = background;
     }
 
     /// The most recent iterative-fit result (covariance / chi-square), if the
@@ -294,21 +352,45 @@ impl FitWidget {
             }
             choice => {
                 // One of the iterative peak models.
-                let model = IterativeFit::new(
-                    choice
-                        .peak_model()
-                        .expect("non-analytical choice has a peak model"),
-                );
-                match model.fit_full(&xs, &ys) {
-                    Some(ir) => {
-                        let fit = ir.fit.clone();
-                        self.iterative_result = Some(ir);
-                        Some(fit)
-                    }
-                    None => {
-                        self.iterative_result = None;
-                        None
-                    }
+                let peak_model = choice
+                    .peak_model()
+                    .expect("non-analytical choice has a peak model");
+                match self.background {
+                    // No background: the original path, unchanged.
+                    Background::None => match IterativeFit::new(peak_model).fit_full(&xs, &ys) {
+                        Some(ir) => {
+                            let fit = ir.fit.clone();
+                            self.iterative_result = Some(ir);
+                            Some(fit)
+                        }
+                        None => {
+                            self.iterative_result = None;
+                            None
+                        }
+                    },
+                    // Background theory selected: fit the peak on the
+                    // background-subtracted residual and draw the reconstructed
+                    // total curve, keeping the peak's solver diagnostics for the
+                    // results table (silx background-then-peak workflow).
+                    bg => match fit_peak_with_background(
+                        peak_model,
+                        bg,
+                        &xs,
+                        &ys,
+                        DEFAULT_MAX_ITER,
+                        DEFAULT_DELTACHI,
+                    ) {
+                        Some(bp) => {
+                            let mut fit = bp.peak.fit.clone();
+                            fit.y_fit = bp.total;
+                            self.iterative_result = Some(bp.peak);
+                            Some(fit)
+                        }
+                        None => {
+                            self.iterative_result = None;
+                            None
+                        }
+                    },
                 }
             }
         };
@@ -398,6 +480,20 @@ impl FitWidget {
                     if ui.button("Fit").clicked() {
                         self.perform_fit_choice();
                     }
+                });
+
+                // Background theory (silx `FitWidget` background combo). Applies
+                // to the iterative peak models; the analytical Linear /
+                // Gaussian-estimate choices ignore it.
+                ui.horizontal(|ui| {
+                    ui.label("Background:");
+                    egui::ComboBox::from_id_salt("fit_background_combo")
+                        .selected_text(background_label(self.background))
+                        .show_ui(ui, |ui| {
+                            for (bg, label) in BACKGROUND_CHOICES {
+                                ui.selectable_value(&mut self.background, bg, label);
+                            }
+                        });
                 });
 
                 // Fit-range selection (silx `FitWidget` xmin/xmax): the checkbox
@@ -573,6 +669,39 @@ mod tests {
             );
             assert_eq!(choice.peak_model().is_some(), !analytical);
         }
+    }
+
+    #[test]
+    fn background_choices_match_silx_theory_order() {
+        // silx `bgtheories.THEORY` insertion order.
+        let labels: Vec<&str> = BACKGROUND_CHOICES.iter().map(|(_, l)| *l).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "No Background",
+                "Constant",
+                "Linear",
+                "Strip",
+                "Snip",
+                "Degree 2 Polynomial",
+                "Degree 3 Polynomial",
+                "Degree 4 Polynomial",
+                "Degree 5 Polynomial",
+            ]
+        );
+        // The first entry is the no-background default.
+        assert_eq!(BACKGROUND_CHOICES[0].0, Background::None);
+    }
+
+    #[test]
+    fn background_label_resolves_choices_and_falls_back() {
+        // Each canonical choice round-trips to its silx label.
+        for (bg, label) in BACKGROUND_CHOICES {
+            assert_eq!(background_label(bg), label);
+        }
+        // A non-default parameterisation falls back to the generic name.
+        let custom = Background::Polynomial { degree: 9 };
+        assert_eq!(background_label(custom), custom.name());
     }
 
     #[test]

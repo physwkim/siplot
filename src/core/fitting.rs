@@ -1990,6 +1990,77 @@ pub fn fit_multi_gaussian(
     .ok()
 }
 
+/// Outcome of [`fit_peak_with_background`]: the peak fit on the
+/// background-subtracted residual, the estimated background curve, and the
+/// total displayed curve.
+#[derive(Debug, Clone)]
+pub struct BackgroundPeakFit {
+    /// The peak fit on the background-subtracted residual. `peak.fit.parameters`
+    /// are in the [`PeakModel`]'s own parameterisation; per-parameter errors come
+    /// from [`IterativeFitResult::std_errors`].
+    pub peak: IterativeFitResult,
+    /// The background curve estimated from the data and sampled at the fit `x`
+    /// (held fixed during the peak fit), length `x.len()`.
+    pub background: Vec<f64>,
+    /// The total curve to display, `background[i] + peak.fit.y_fit[i]`.
+    pub total: Vec<f64>,
+}
+
+/// Fit `model` on top of an estimated `background`, mirroring silx `FitManager`'s
+/// background-then-peak workflow.
+///
+/// The background is estimated from the data with [`Background`] (silx
+/// `estimate_*`: the strip/snip filters, or a polynomial least-squares-fitted to
+/// the strip background — silx `EstimatePolyOnStrip = True`), subtracted from
+/// `y`, and the [`PeakModel`] is fitted to the residual. The background is then
+/// added back to produce [`BackgroundPeakFit::total`].
+///
+/// Returns `None` on length mismatch, empty input, or when the peak fit fails.
+///
+/// # Deviation from silx
+///
+/// silx's background theories are `is_background=True` [`FitTheory`]s whose
+/// parameters are concatenated with the peak parameters into ONE `leastsq`, so
+/// the analytic-background coefficients (Constant / Linear / Polynomial) are
+/// refined *simultaneously* with the peak. Here the background is estimated once
+/// and held fixed while the peak is fitted on the residual. A simultaneous
+/// refinement is blocked by siplot's single-peak [`PeakModel`]s baking in their
+/// own trailing constant-background parameter: a free analytic-background
+/// constant would be collinear with it (singular covariance). Removing that
+/// baked-in constant is a [`PeakModel`] redesign tracked separately.
+///
+/// [`Background`]: crate::core::background::Background
+pub fn fit_peak_with_background(
+    model: PeakModel,
+    background: crate::core::background::Background,
+    x: &[f64],
+    y: &[f64],
+    max_iter: usize,
+    deltachi: f64,
+) -> Option<BackgroundPeakFit> {
+    if x.is_empty() || x.len() != y.len() {
+        return None;
+    }
+    let bg = background.compute(x, y);
+    let residual: Vec<f64> = y.iter().zip(&bg).map(|(&yi, &bi)| yi - bi).collect();
+    let fitter = IterativeFit {
+        model,
+        max_iter,
+        deltachi,
+    };
+    let peak = fitter.fit_full(x, &residual)?;
+    let total: Vec<f64> = bg
+        .iter()
+        .zip(&peak.fit.y_fit)
+        .map(|(&bi, &fi)| bi + fi)
+        .collect();
+    Some(BackgroundPeakFit {
+        peak,
+        background: bg,
+        total,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2891,5 +2962,134 @@ mod tests {
         assert!((p[0] - truth[0]).abs() < 1.0, "height {}", p[0]);
         assert!((p[1] - truth[1]).abs() < 1.0, "center {}", p[1]);
         assert!((p[3] - truth[3]).abs() < 1.0, "bg {}", p[3]);
+    }
+
+    // --- Peak-on-background fit (silx background-then-peak workflow) --------
+
+    #[test]
+    fn fit_peak_with_background_none_is_byte_identical_to_plain_fit() {
+        use crate::core::background::Background;
+        let xs = grid(100);
+        let ys = gaussian_model(&xs, &[100.0, 50.0, 8.0, 0.0]);
+        let bgfit = fit_peak_with_background(
+            PeakModel::Gaussian,
+            Background::None,
+            &xs,
+            &ys,
+            DEFAULT_MAX_ITER,
+            DEFAULT_DELTACHI,
+        )
+        .unwrap();
+        let plain = IterativeFit::new(PeakModel::Gaussian)
+            .fit_full(&xs, &ys)
+            .unwrap();
+        // No background: residual == y exactly, so the peak fit and the total
+        // curve match the plain iterative fit bit-for-bit.
+        assert!(bgfit.background.iter().all(|&b| b == 0.0));
+        assert_eq!(bgfit.peak.fit.parameters, plain.fit.parameters);
+        assert_eq!(bgfit.total, bgfit.peak.fit.y_fit);
+        assert_eq!(bgfit.total, plain.fit.y_fit);
+    }
+
+    #[test]
+    fn fit_peak_with_background_constant_offset_recovers_peak() {
+        use crate::core::background::Background;
+        let xs = grid(100);
+        // Gaussian sitting on a +25 constant pedestal (the gaussian model's
+        // trailing parameter is its own constant background).
+        let ys = gaussian_model(&xs, &[100.0, 50.0, 8.0, 25.0]);
+        let bgfit = fit_peak_with_background(
+            PeakModel::Gaussian,
+            Background::Constant,
+            &xs,
+            &ys,
+            DEFAULT_MAX_ITER,
+            DEFAULT_DELTACHI,
+        )
+        .unwrap();
+        // Constant background = min(y) ≈ the 25 pedestal (tails approach it).
+        assert!(
+            (bgfit.background[0] - 25.0).abs() < 1.0,
+            "background {}",
+            bgfit.background[0]
+        );
+        assert!(bgfit.background.iter().all(|&b| b == bgfit.background[0]));
+        // Centre recovered, and the reconstructed total tracks the data.
+        let p = &bgfit.peak.fit.parameters;
+        assert!((p[1] - 50.0).abs() < 2.0, "centre {}", p[1]);
+        let max_err = ys
+            .iter()
+            .zip(&bgfit.total)
+            .map(|(&d, &t)| (d - t).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_err < 5.0, "max |data - total| = {max_err}");
+    }
+
+    #[test]
+    fn fit_peak_with_background_linear_recovers_peak_on_slope() {
+        use crate::core::background::Background;
+        let xs = grid(120);
+        // Gaussian on a rising line y = 0.5*x + 10.
+        let base = line(&xs, &[0.5, 10.0]);
+        let peak = gaussian_model(&xs, &[80.0, 60.0, 8.0, 0.0]);
+        let ys: Vec<f64> = base.iter().zip(&peak).map(|(&b, &p)| b + p).collect();
+        let bgfit = fit_peak_with_background(
+            PeakModel::Gaussian,
+            Background::Linear,
+            &xs,
+            &ys,
+            DEFAULT_MAX_ITER,
+            DEFAULT_DELTACHI,
+        )
+        .unwrap();
+        // The fitted background follows the positive slope.
+        assert!(
+            *bgfit.background.last().unwrap() > bgfit.background[0],
+            "background not rising: {} -> {}",
+            bgfit.background[0],
+            bgfit.background.last().unwrap()
+        );
+        // Peak centre and width recovered on the residual.
+        let p = &bgfit.peak.fit.parameters;
+        assert!((p[1] - 60.0).abs() < 3.0, "centre {}", p[1]);
+        assert!((p[2] - 8.0).abs() < 4.0, "fwhm {}", p[2]);
+        // Total tracks the data (peak height 80 → allow a modest residual).
+        let max_err = ys
+            .iter()
+            .zip(&bgfit.total)
+            .map(|(&d, &t)| (d - t).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_err < 12.0, "max |data - total| = {max_err}");
+    }
+
+    #[test]
+    fn fit_peak_with_background_rejects_bad_input() {
+        use crate::core::background::Background;
+        let xs = grid(10);
+        let ys = constant(&xs, &[1.0]);
+        // Length mismatch.
+        assert!(
+            fit_peak_with_background(
+                PeakModel::Gaussian,
+                Background::None,
+                &xs,
+                &ys[..5],
+                DEFAULT_MAX_ITER,
+                DEFAULT_DELTACHI,
+            )
+            .is_none()
+        );
+        // Empty input.
+        assert!(
+            fit_peak_with_background(
+                PeakModel::Gaussian,
+                Background::None,
+                &[],
+                &[],
+                DEFAULT_MAX_ITER,
+                DEFAULT_DELTACHI,
+            )
+            .is_none()
+        );
     }
 }
