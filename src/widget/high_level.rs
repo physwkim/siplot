@@ -7308,6 +7308,31 @@ pub enum CompareMode {
     RedBlueGrayNeg,
 }
 
+/// How the two compared images are placed on a common grid when they differ in
+/// shape, mirroring silx `AlignmentMode` (`tools/compare/core.py`).
+///
+/// siplot implements the three resampling-free / bilinear modes. silx's `AUTO`
+/// mode (SIFT keypoint registration + affine warp) needs a heavy
+/// computer-vision dependency and is not provided; consequently silx's
+/// `getTransformation` — which returns the affine *only* for the SIFT path and
+/// `None` for every mode below — is also omitted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CompareAlignment {
+    /// Both images anchored at the top-left origin on a common
+    /// `max(w_a, w_b) × max(h_a, h_b)` grid, the smaller zero-padded (silx
+    /// `ORIGIN`: `__createMarginImage` at position `(0, 0)`).
+    #[default]
+    Origin,
+    /// Both images centered on the common `max × max` grid, zero-padded (silx
+    /// `CENTER`: `__createMarginImage(center=True)`, offset `size // 2 -
+    /// shape // 2`).
+    Center,
+    /// Image B bilinearly resampled to image A's shape; the common grid is A's
+    /// shape (silx `STRETCH`: `data1 = raw1`, `data2 = __rescaleImage(raw2,
+    /// raw1.shape)`).
+    Stretch,
+}
+
 /// A retained widget that displays two co-registered images with a draggable
 /// split slider, mirroring silx `CompareImages`.
 ///
@@ -7316,7 +7341,7 @@ pub enum CompareMode {
 ///
 /// ```ignore
 /// let mut cmp = CompareImages::new(render_state, 0);
-/// cmp.set_images(width, height, &data_a, &data_b, Colormap::viridis(0.0, 1.0))?;
+/// cmp.set_images((wa, ha), &data_a, (wb, hb), &data_b, Colormap::viridis(0.0, 1.0))?;
 ///
 /// // frame loop
 /// cmp.show_toolbar(ui);
@@ -7324,14 +7349,18 @@ pub enum CompareMode {
 /// ```
 pub struct CompareImages {
     inner: PlotWidget,
-    width: u32,
-    height: u32,
+    width_a: u32,
+    height_a: u32,
+    width_b: u32,
+    height_b: u32,
     data_a: Vec<f32>,
     data_b: Vec<f32>,
     colormap: Colormap,
     composite_handle: Option<ItemHandle>,
     split: f32,
     mode: CompareMode,
+    /// Alignment of A and B on the common display grid (silx `AlignmentMode`).
+    alignment: CompareAlignment,
     dirty: bool,
     /// Latest pointer data position over the plot (silx status bar `self._pos`),
     /// updated each frame in [`Self::show`]; `None` before any pointer move.
@@ -7345,48 +7374,75 @@ impl CompareImages {
         inner.set_keep_data_aspect_ratio(true);
         Self {
             inner,
-            width: 0,
-            height: 0,
+            width_a: 0,
+            height_a: 0,
+            width_b: 0,
+            height_b: 0,
             data_a: Vec::new(),
             data_b: Vec::new(),
             colormap: Colormap::viridis(0.0, 1.0),
             composite_handle: None,
             split: 0.5,
             mode: CompareMode::HalfHalf,
+            alignment: CompareAlignment::default(),
             dirty: false,
             cursor: None,
         }
     }
 
-    /// Upload both images.  Validates `data_a.len() == data_b.len() == width * height`.
+    /// Upload both images. Unlike the old single-shape API, A and B may have
+    /// different shapes (silx `setData(image1, image2)`), each given as a
+    /// `(width, height)` tuple; the [`alignment`] mode decides how they share a
+    /// common display grid. Validates `data_a.len() == width_a * height_a` and
+    /// `data_b.len() == width_b * height_b`.
+    ///
+    /// [`alignment`]: Self::alignment
     pub fn set_images(
         &mut self,
-        width: u32,
-        height: u32,
+        shape_a: (u32, u32),
         data_a: &[f32],
+        shape_b: (u32, u32),
         data_b: &[f32],
         colormap: Colormap,
     ) -> Result<(), PlotDataError> {
-        let expected = (width as usize).saturating_mul(height as usize);
-        if data_a.len() != expected {
+        let (width_a, height_a) = shape_a;
+        let (width_b, height_b) = shape_b;
+        let expected_a = (width_a as usize).saturating_mul(height_a as usize);
+        if data_a.len() != expected_a {
             return Err(PlotDataError::ImageDataLength {
-                expected,
+                expected: expected_a,
                 actual: data_a.len(),
             });
         }
-        if data_b.len() != expected {
+        let expected_b = (width_b as usize).saturating_mul(height_b as usize);
+        if data_b.len() != expected_b {
             return Err(PlotDataError::ImageDataLength {
-                expected,
+                expected: expected_b,
                 actual: data_b.len(),
             });
         }
-        self.width = width;
-        self.height = height;
+        self.width_a = width_a;
+        self.height_a = height_a;
+        self.width_b = width_b;
+        self.height_b = height_b;
         self.data_a = data_a.to_vec();
         self.data_b = data_b.to_vec();
         self.colormap = colormap;
         self.dirty = true;
         Ok(())
+    }
+
+    /// Current image-alignment mode (silx `getAlignmentMode`).
+    pub fn alignment(&self) -> CompareAlignment {
+        self.alignment
+    }
+
+    /// Set the image-alignment mode (silx `setAlignmentMode`).
+    pub fn set_alignment(&mut self, alignment: CompareAlignment) {
+        if alignment != self.alignment {
+            self.alignment = alignment;
+            self.dirty = true;
+        }
     }
 
     /// Current split position in [0, 1] — fraction of the width shown as A.
@@ -7472,6 +7528,36 @@ impl CompareImages {
                     self.dirty = true;
                 }
             }
+
+            ui.add_space(8.0);
+            ui.label("align:");
+            for (label, tooltip, a) in [
+                (
+                    "orig",
+                    "Align both images at the top-left origin",
+                    CompareAlignment::Origin,
+                ),
+                (
+                    "ctr",
+                    "Center both images on the common grid",
+                    CompareAlignment::Center,
+                ),
+                (
+                    "fit",
+                    "Stretch image B to image A's shape (bilinear)",
+                    CompareAlignment::Stretch,
+                ),
+            ] {
+                if ui
+                    .selectable_label(self.alignment == a, label)
+                    .on_hover_text(tooltip)
+                    .clicked()
+                    && self.alignment != a
+                {
+                    self.alignment = a;
+                    self.dirty = true;
+                }
+            }
         });
 
         self.mode
@@ -7480,15 +7566,13 @@ impl CompareImages {
     /// Render the comparison image in `ui`.
     pub fn show(&mut self, ui: &mut egui::Ui) -> PlotResponse {
         if self.dirty && !self.data_a.is_empty() {
-            let composite = self.build_composite();
+            let (composite, cw, ch) = self.build_composite();
             if let Some(handle) = self.composite_handle {
                 self.inner
-                    .try_update_rgba_image(handle, self.width, self.height, &composite)
+                    .try_update_rgba_image(handle, cw, ch, &composite)
                     .ok();
             } else {
-                let handle = self
-                    .inner
-                    .add_rgba_image(self.width, self.height, &composite);
+                let handle = self.inner.add_rgba_image(cw, ch, &composite);
                 self.composite_handle = Some(handle);
             }
             self.dirty = false;
@@ -7504,24 +7588,35 @@ impl CompareImages {
     }
 
     /// The raw A and B pixel values under data position `(x, y)`, mirroring silx
-    /// `CompareImages.getRawPixelData`. Each is `None` when that image has no
-    /// data or the position is outside it. siplot has a single ORIGIN alignment
-    /// (both images share one geometry placed at the origin with unit pixel
-    /// size), so unlike silx there are no CENTER/STRETCH/AUTO coordinate
-    /// remappings — the value is `raw[int(y)][int(x)]` for both.
+    /// `CompareImages.getRawPixelData`. `(x, y)` is in the reference of the
+    /// displayed (aligned) grid; it is mapped back to each raw image's own
+    /// coordinates per the [`alignment`](Self::alignment) mode by
+    /// [`compare_aligned_coords`]. Each value is `None` when that image has no
+    /// data or the mapped position is outside it.
     pub fn raw_pixel_data(&self, x: f64, y: f64) -> (Option<f32>, Option<f32>) {
+        let ((xa, ya), (xb, yb)) = compare_aligned_coords(
+            self.alignment,
+            x,
+            y,
+            self.width_a,
+            self.height_a,
+            self.width_b,
+            self.height_b,
+        );
         (
-            compare_pixel_at(self.width, self.height, &self.data_a, x, y),
-            compare_pixel_at(self.width, self.height, &self.data_b, x, y),
+            compare_pixel_at(self.width_a, self.height_a, &self.data_a, xa, ya),
+            compare_pixel_at(self.width_b, self.height_b, &self.data_b, xb, yb),
         )
     }
 
     /// Show a status bar with the cursor's data coordinate and the raw A / B
     /// pixel values under it (silx `CompareImagesStatusBar`, the `ImageA:`/
-    /// `ImageB:` labels). silx additionally shows an alignment-transform label;
-    /// siplot has no image-alignment modes (no SIFT/affine — see the alignment
-    /// rows), so that label is omitted. Call after [`Self::show`], which updates
-    /// the tracked cursor. GPU/UI — not covered by the tests.
+    /// `ImageB:` labels). silx additionally shows an affine-transform label, but
+    /// silx populates that transform only from its SIFT (`AUTO`) alignment —
+    /// `getTransformation` is `None` for ORIGIN/CENTER/STRETCH — and siplot does
+    /// not provide the SIFT path, so the label has nothing to show and is
+    /// omitted. Call after [`Self::show`], which updates the tracked cursor.
+    /// GPU/UI — not covered by the tests.
     pub fn show_status_bar(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -7541,30 +7636,44 @@ impl CompareImages {
         });
     }
 
-    /// Build the composite RGBA pixel array for the current mode and split.
-    fn build_composite(&self) -> Vec<[u8; 4]> {
-        let w = self.width as usize;
-        let h = self.height as usize;
+    /// Build the composite RGBA pixel array for the current mode and split,
+    /// returning it with the common-grid `(width, height)`.
+    ///
+    /// The two raw images are first placed on a shared grid by
+    /// [`align_compare_images`] per the alignment mode (silx
+    /// `__updateData`); every visualization mode then operates on the aligned
+    /// `data1`/`data2`, which always have identical shape.
+    fn build_composite(&self) -> (Vec<[u8; 4]>, u32, u32) {
+        let (data1, data2, cw, ch) = align_compare_images(
+            self.alignment,
+            &self.data_a,
+            self.width_a,
+            self.height_a,
+            &self.data_b,
+            self.width_b,
+            self.height_b,
+        );
+        let w = cw as usize;
+        let h = ch as usize;
 
-        match self.mode {
-            CompareMode::OnlyA => colormap_to_rgba(self.width, &self.data_a, &self.colormap),
-            CompareMode::OnlyB => colormap_to_rgba(self.width, &self.data_b, &self.colormap),
+        let pixels = match self.mode {
+            CompareMode::OnlyA => colormap_to_rgba(cw, &data1, &self.colormap),
+            CompareMode::OnlyB => colormap_to_rgba(cw, &data2, &self.colormap),
             CompareMode::HalfHalf => {
-                let rgba_a = colormap_to_rgba(self.width, &self.data_a, &self.colormap);
-                let rgba_b = colormap_to_rgba(self.width, &self.data_b, &self.colormap);
-                let split_col = (self.split * self.width as f32).round() as usize;
+                let rgba_a = colormap_to_rgba(cw, &data1, &self.colormap);
+                let rgba_b = colormap_to_rgba(cw, &data2, &self.colormap);
+                let split_col = (self.split * cw as f32).round() as usize;
                 split_composite(&rgba_a, &rgba_b, w, h, split_col, false)
             }
             CompareMode::SplitHorizontal => {
-                let rgba_a = colormap_to_rgba(self.width, &self.data_a, &self.colormap);
-                let rgba_b = colormap_to_rgba(self.width, &self.data_b, &self.colormap);
-                let split_row = (self.split * self.height as f32).round() as usize;
+                let rgba_a = colormap_to_rgba(cw, &data1, &self.colormap);
+                let rgba_b = colormap_to_rgba(cw, &data2, &self.colormap);
+                let split_row = (self.split * ch as f32).round() as usize;
                 split_composite(&rgba_a, &rgba_b, w, h, split_row, true)
             }
-            CompareMode::Subtract => self
-                .data_a
+            CompareMode::Subtract => data1
                 .iter()
-                .zip(self.data_b.iter())
+                .zip(data2.iter())
                 .map(|(&a, &b)| {
                     let diff = (a - b).clamp(-1.0, 1.0);
                     if diff > 0.0 {
@@ -7577,12 +7686,13 @@ impl CompareImages {
                 })
                 .collect(),
             CompareMode::RedBlueGray => {
-                red_blue_gray_composite(&self.data_a, &self.data_b, &self.colormap, false)
+                red_blue_gray_composite(&data1, &data2, &self.colormap, false)
             }
             CompareMode::RedBlueGrayNeg => {
-                red_blue_gray_composite(&self.data_a, &self.data_b, &self.colormap, true)
+                red_blue_gray_composite(&data1, &data2, &self.colormap, true)
             }
-        }
+        };
+        (pixels, cw, ch)
     }
 }
 
@@ -7603,6 +7713,167 @@ pub fn compare_pixel_at(width: u32, height: u32, data: &[f32], x: f64, y: f64) -
         return None;
     }
     data.get(row * width as usize + col).copied()
+}
+
+/// Place a scalar image into a zero-padded `dst_w × dst_h` grid, mirroring silx
+/// `CompareImages.__createMarginImage` (intensity branch:
+/// `data = numpy.zeros(size); data[pos0:.., pos1:..] = image`). When `center`,
+/// the source is offset by silx's `size // 2 - shape // 2` per axis; otherwise
+/// it is anchored at the top-left `(0, 0)`. `src` is row-major `src_w × src_h`.
+/// Requires `src_w <= dst_w` and `src_h <= dst_h` (silx asserts the same); the
+/// destination is `dst_w * dst_h` zeros with the source copied in. Pure, so the
+/// padding/centering is unit-testable.
+fn margin_image(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    center: bool,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; dst_w * dst_h];
+    if src_w == 0 || src_h == 0 || src_w > dst_w || src_h > dst_h {
+        return out;
+    }
+    // silx: pos0 = size[0]//2 - shape[0]//2, pos1 = size[1]//2 - shape[1]//2
+    // (non-negative since dst >= src), or (0, 0) for the top-left anchor.
+    let (pos_row, pos_col) = if center {
+        (dst_h / 2 - src_h / 2, dst_w / 2 - src_w / 2)
+    } else {
+        (0, 0)
+    };
+    for r in 0..src_h {
+        let dst_base = (pos_row + r) * dst_w + pos_col;
+        let src_base = r * src_w;
+        out[dst_base..dst_base + src_w].copy_from_slice(&src[src_base..src_base + src_w]);
+    }
+    out
+}
+
+/// Bilinearly resample a scalar image to `dst_w × dst_h`, mirroring silx
+/// `CompareImages.__rescaleArray` + `silx.image.bilinear.BilinearImage`. Output
+/// pixel `(or, oc)` samples the source at corner-aligned coordinates
+/// `row = or * (src_h - 1)/(dst_h - 1)`, `col = oc * (src_w - 1)/(dst_w - 1)`,
+/// with the four-tap bilinear weights of silx's `c_funct` (indices clamped into
+/// the image — silx clamps the coordinate to `[0, dim - 1]`). A destination
+/// extent of 1 along an axis maps to source index 0 there (silx's `0/0` would be
+/// NaN; siplot samples the first line instead). `src` is row-major
+/// `src_w × src_h`. Pure, so the resampling is unit-testable.
+fn rescale_array(src: &[f32], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; dst_w * dst_h];
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return out;
+    }
+    let row_scale = if dst_h > 1 {
+        (src_h - 1) as f64 / (dst_h - 1) as f64
+    } else {
+        0.0
+    };
+    let col_scale = if dst_w > 1 {
+        (src_w - 1) as f64 / (dst_w - 1) as f64
+    } else {
+        0.0
+    };
+    let sample = |row: f64, col: f64| -> f32 {
+        // silx c_funct clamps the coordinate into [0, dim - 1] first.
+        let row = row.clamp(0.0, (src_h - 1) as f64);
+        let col = col.clamp(0.0, (src_w - 1) as f64);
+        let r0 = row.floor() as usize;
+        let c0 = col.floor() as usize;
+        let r1 = (r0 + 1).min(src_h - 1);
+        let c1 = (c0 + 1).min(src_w - 1);
+        let fr = row - r0 as f64;
+        let fc = col - c0 as f64;
+        let at = |r: usize, c: usize| src[r * src_w + c] as f64;
+        let top = at(r0, c0) * (1.0 - fc) + at(r0, c1) * fc;
+        let bot = at(r1, c0) * (1.0 - fc) + at(r1, c1) * fc;
+        (top * (1.0 - fr) + bot * fr) as f32
+    };
+    for or in 0..dst_h {
+        for oc in 0..dst_w {
+            out[or * dst_w + oc] = sample(or as f64 * row_scale, oc as f64 * col_scale);
+        }
+    }
+    out
+}
+
+/// Place the two raw images on a shared display grid for `mode`, mirroring silx
+/// `CompareImages.__updateData` (intensity branch). Returns `(data1, data2,
+/// common_w, common_h)` with both vectors row-major `common_w × common_h`:
+/// - [`Origin`](CompareAlignment::Origin)/[`Center`](CompareAlignment::Center):
+///   common grid is `(max(w_a, w_b), max(h_a, h_b))`, each image zero-padded
+///   (top-left, or centered) via [`margin_image`].
+/// - [`Stretch`](CompareAlignment::Stretch): common grid is A's shape; A is kept
+///   verbatim and B is bilinearly resampled to it via [`rescale_array`].
+///
+/// Pure, so the alignment is unit-testable without a GPU backend.
+fn align_compare_images(
+    mode: CompareAlignment,
+    a: &[f32],
+    wa: u32,
+    ha: u32,
+    b: &[f32],
+    wb: u32,
+    hb: u32,
+) -> (Vec<f32>, Vec<f32>, u32, u32) {
+    match mode {
+        CompareAlignment::Origin | CompareAlignment::Center => {
+            let cw = wa.max(wb);
+            let ch = ha.max(hb);
+            let center = matches!(mode, CompareAlignment::Center);
+            let (cwu, chu) = (cw as usize, ch as usize);
+            let d1 = margin_image(a, wa as usize, ha as usize, cwu, chu, center);
+            let d2 = margin_image(b, wb as usize, hb as usize, cwu, chu, center);
+            (d1, d2, cw, ch)
+        }
+        CompareAlignment::Stretch => {
+            let d2 = rescale_array(b, wb as usize, hb as usize, wa as usize, ha as usize);
+            (a.to_vec(), d2, wa, ha)
+        }
+    }
+}
+
+/// Map a display-grid coordinate `(x, y)` back to each raw image's own
+/// coordinates per the alignment mode, mirroring silx
+/// `CompareImages.getRawPixelData`. Returns `((x_a, y_a), (x_b, y_b))`.
+///
+/// - [`Origin`](CompareAlignment::Origin): identity for both (silx ORIGIN).
+/// - [`Center`](CompareAlignment::Center): subtract each image's centering
+///   offset `(max_dim - dim) * 0.5` (silx CENTER).
+/// - [`Stretch`](CompareAlignment::Stretch): A is identity (it is the grid); B
+///   is scaled by the per-axis size ratio, `x_b = x * w_b / w_a`,
+///   `y_b = y * h_b / h_a`. (silx's source writes `y2 = x * w2 / w1` here, a
+///   transcription typo that uses the column coordinate and width ratio for the
+///   row; siplot uses the row mapping so the readout matches the displayed
+///   stretched pixel.)
+///
+/// Pure, so the per-mode remap is unit-testable.
+fn compare_aligned_coords(
+    mode: CompareAlignment,
+    x: f64,
+    y: f64,
+    wa: u32,
+    ha: u32,
+    wb: u32,
+    hb: u32,
+) -> ((f64, f64), (f64, f64)) {
+    match mode {
+        CompareAlignment::Origin => ((x, y), (x, y)),
+        CompareAlignment::Center => {
+            let xx = wa.max(wb) as f64;
+            let yy = ha.max(hb) as f64;
+            let xa = x - (xx - wa as f64) * 0.5;
+            let xb = x - (xx - wb as f64) * 0.5;
+            let ya = y - (yy - ha as f64) * 0.5;
+            let yb = y - (yy - hb as f64) * 0.5;
+            ((xa, ya), (xb, yb))
+        }
+        CompareAlignment::Stretch => {
+            let xb = x * wb as f64 / wa as f64;
+            let yb = y * hb as f64 / ha as f64;
+            ((x, y), (xb, yb))
+        }
+    }
 }
 
 /// Format one image's status-bar value (silx `CompareImagesStatusBar._formatData`
@@ -13317,5 +13588,120 @@ mod tests {
         // A value formats as silx "%f" (six decimals).
         assert_eq!(format_compare_value(false, Some(1.5)), "1.500000");
         assert_eq!(format_compare_value(false, Some(0.0)), "0.000000");
+    }
+
+    #[test]
+    fn margin_image_origin_anchors_top_left() {
+        // 2x2 source into a 4x3 grid (dst_w=4, dst_h=3), top-left anchored:
+        // the source occupies rows 0..2, cols 0..2; the rest is zero (silx
+        // __createMarginImage, pos = (0, 0)).
+        let src = [1.0_f32, 2.0, 3.0, 4.0]; // row0: 1 2 | row1: 3 4
+        let out = margin_image(&src, 2, 2, 4, 3, false);
+        assert_eq!(
+            out,
+            vec![
+                1.0, 2.0, 0.0, 0.0, // row 0
+                3.0, 4.0, 0.0, 0.0, // row 1
+                0.0, 0.0, 0.0, 0.0, // row 2
+            ]
+        );
+    }
+
+    #[test]
+    fn margin_image_center_uses_silx_floor_offset() {
+        // 2x2 source into a 4x4 grid, centered: silx offset = size//2 - shape//2
+        // = 4//2 - 2//2 = 2 - 1 = 1 on each axis, so the source sits at rows/cols
+        // 1..3.
+        let src = [1.0_f32, 2.0, 3.0, 4.0];
+        let out = margin_image(&src, 2, 2, 4, 4, true);
+        assert_eq!(
+            out,
+            vec![
+                0.0, 0.0, 0.0, 0.0, // row 0
+                0.0, 1.0, 2.0, 0.0, // row 1
+                0.0, 3.0, 4.0, 0.0, // row 2
+                0.0, 0.0, 0.0, 0.0, // row 3
+            ]
+        );
+    }
+
+    #[test]
+    fn rescale_array_identity_returns_input() {
+        // Resampling to the same shape samples each pixel exactly (integer
+        // coordinates, zero fractional weight).
+        let src = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3 wide, 2 tall
+        let out = rescale_array(&src, 3, 2, 3, 2);
+        assert_eq!(out, src.to_vec());
+    }
+
+    #[test]
+    fn rescale_array_upscales_bilinearly() {
+        // 2x1 source [0, 10] (width 2, height 1) upscaled to width 3, height 1.
+        // Corner-aligned: out col c samples src col c*(2-1)/(3-1) = c*0.5, so
+        // c=0 -> 0.0, c=1 -> 5.0 (midpoint), c=2 -> 10.0.
+        let src = [0.0_f32, 10.0];
+        let out = rescale_array(&src, 2, 1, 3, 1);
+        assert_eq!(out, vec![0.0, 5.0, 10.0]);
+    }
+
+    #[test]
+    fn align_compare_images_origin_pads_to_max_grid() {
+        // A is 1x1, B is 2x2. ORIGIN -> common grid max(1,2) x max(1,2) = 2x2,
+        // both top-left anchored.
+        let a = [9.0_f32];
+        let b = [1.0_f32, 2.0, 3.0, 4.0];
+        let (d1, d2, cw, ch) = align_compare_images(CompareAlignment::Origin, &a, 1, 1, &b, 2, 2);
+        assert_eq!((cw, ch), (2, 2));
+        assert_eq!(d1, vec![9.0, 0.0, 0.0, 0.0]); // A at top-left, padded
+        assert_eq!(d2, vec![1.0, 2.0, 3.0, 4.0]); // B fills the grid
+    }
+
+    #[test]
+    fn align_compare_images_center_centers_smaller() {
+        // A is 1x1, B is 3x3. CENTER -> 3x3 grid; A centered at offset
+        // 3//2 - 1//2 = 1, so it lands at (row 1, col 1).
+        let a = [7.0_f32];
+        let b: Vec<f32> = (1..=9).map(|v| v as f32).collect();
+        let (d1, d2, cw, ch) = align_compare_images(CompareAlignment::Center, &a, 1, 1, &b, 3, 3);
+        assert_eq!((cw, ch), (3, 3));
+        assert_eq!(
+            d1,
+            vec![0.0, 0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 0.0] // A at center
+        );
+        assert_eq!(d2, b); // B fills the grid
+    }
+
+    #[test]
+    fn align_compare_images_stretch_resamples_b_to_a_shape() {
+        // A is 3x1, B is 2x1 [0, 10]. STRETCH -> common grid = A's shape (3x1);
+        // A verbatim, B bilinearly resampled to width 3 -> [0, 5, 10].
+        let a = [1.0_f32, 2.0, 3.0];
+        let b = [0.0_f32, 10.0];
+        let (d1, d2, cw, ch) = align_compare_images(CompareAlignment::Stretch, &a, 3, 1, &b, 2, 1);
+        assert_eq!((cw, ch), (3, 1));
+        assert_eq!(d1, a.to_vec());
+        assert_eq!(d2, vec![0.0, 5.0, 10.0]);
+    }
+
+    #[test]
+    fn compare_aligned_coords_remaps_per_mode() {
+        // ORIGIN: identity for both.
+        assert_eq!(
+            compare_aligned_coords(CompareAlignment::Origin, 4.0, 5.0, 2, 2, 6, 6),
+            ((4.0, 5.0), (4.0, 5.0))
+        );
+        // CENTER: A (2x2) in a 6x6 grid is offset by (6-2)*0.5 = 2; B (6x6) by 0.
+        // So display (3,3) maps to A (1,1) and B (3,3).
+        assert_eq!(
+            compare_aligned_coords(CompareAlignment::Center, 3.0, 3.0, 2, 2, 6, 6),
+            ((1.0, 1.0), (3.0, 3.0))
+        );
+        // STRETCH: A is identity; B scaled by w_b/w_a and h_b/h_a. A is 4x2,
+        // B is 8x6, display (2, 1) -> B (2*8/4, 1*6/2) = (4, 3). (NOT silx's
+        // typo y2 = x*w2/w1 = 2*8/4 = 4.)
+        assert_eq!(
+            compare_aligned_coords(CompareAlignment::Stretch, 2.0, 1.0, 4, 2, 8, 6),
+            ((2.0, 1.0), (4.0, 3.0))
+        );
     }
 }

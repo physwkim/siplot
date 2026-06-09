@@ -219,7 +219,7 @@ fn main() {
         let (w, h) = (128u32, 128u32);
         let (a, b) = build_compare_images(w, h);
         let mut cmp = CompareImages::new(rs, 0);
-        cmp.set_images(w, h, &a, &b, Colormap::viridis(0.0, 1.0))
+        cmp.set_images((w, h), &a, (w, h), &b, Colormap::viridis(0.0, 1.0))
             .expect("data matches dimensions");
         cmp.set_graph_title("CompareImages — A vs B");
         Box::new(move |ui: &mut egui::Ui| {

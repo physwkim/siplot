@@ -25,8 +25,14 @@ impl CompareApp {
         let (data_a, data_b) = build_images();
 
         let mut cmp = CompareImages::new(rs, 0);
-        cmp.set_images(WIDTH, HEIGHT, &data_a, &data_b, Colormap::viridis(0.0, 1.0))
-            .expect("generated data matches dimensions");
+        cmp.set_images(
+            (WIDTH, HEIGHT),
+            &data_a,
+            (WIDTH, HEIGHT),
+            &data_b,
+            Colormap::viridis(0.0, 1.0),
+        )
+        .expect("generated data matches dimensions");
         cmp.set_graph_title("CompareImages — A vs B");
 
         Self { cmp }
