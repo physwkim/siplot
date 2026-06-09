@@ -1055,7 +1055,17 @@ fn apply_interaction(
         let mut draw = ui
             .data_mut(|d| d.get_temp::<interaction::DrawState>(draw_id))
             .unwrap_or_else(|| interaction::DrawState::new(interaction::roi_draw_mode(kind)));
-        let event = feed_draw_state(&mut draw, response, view);
+        // Close-polygon action (silx `ClosePolygonInteractionAction` →
+        // `interaction()._validate()`): pressing Enter while drawing a polygon
+        // finishes it at the committed vertices without needing to snap back to
+        // the first point. Consumes the key so it does not leak to other widgets.
+        let close_polygon =
+            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let event = if close_polygon {
+            draw.validate()
+        } else {
+            feed_draw_state(&mut draw, response, view)
+        };
 
         if let Some(interaction::DrawEvent::Finished { params, .. }) = &event {
             if let Some(roi) = interaction::roi_from_draw(kind, params) {

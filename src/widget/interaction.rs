@@ -644,6 +644,24 @@ impl DrawState {
         self.phase = Phase::Idle;
     }
 
+    /// Programmatically finish the in-progress polygon at its committed
+    /// vertices, regardless of the cursor position — silx
+    /// `SelectPolygon._validate`, triggered by silx
+    /// `ClosePolygonInteractionAction`. Returns the `Finished` event when a real
+    /// polygon is in progress (the seeded pair plus at least one appended
+    /// vertex, the same `len > 2` gate as the snap-close path), leaving the state
+    /// idle; returns `None` and leaves the state untouched otherwise (not in
+    /// polygon mode, idle, or too few vertices to close).
+    pub fn validate(&mut self) -> Option<DrawEvent> {
+        if self.mode != DrawMode::Polygon {
+            return None;
+        }
+        match &self.phase {
+            Phase::Polygon { points, .. } if points.len() > 2 => Some(self.close_polygon()),
+            _ => None,
+        }
+    }
+
     // --- internal helpers -------------------------------------------------
 
     fn within_threshold(a: (f32, f32), b: (f32, f32), threshold: f32) -> bool {
@@ -1961,6 +1979,50 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(!s.is_active());
+    }
+
+    #[test]
+    fn validate_closes_in_progress_polygon_anywhere() {
+        // silx ClosePolygonInteractionAction / _validate: closes the polygon at
+        // the committed vertices even though the cursor is nowhere near the first
+        // point.
+        let mut s = DrawState::new(DrawMode::Polygon).with_close_threshold(4.0);
+        s.on_press(di((0.0, 0.0), (0.0, 0.0)));
+        s.on_release(di((10.0, 0.0), (100.0, 0.0)));
+        s.on_release(di((10.0, 10.0), (100.0, 100.0)));
+        // Cursor parked far from the first point; validate still closes.
+        s.on_move(di((5.0, 5.0), (50.0, 50.0)));
+        let fin = s.validate().expect("validate closes");
+        match fin {
+            DrawEvent::Finished {
+                mode: DrawMode::Polygon,
+                params: DrawParams::Polygon { vertices },
+            } => {
+                // The committed ring (cursor tail dropped), like the snap-close path.
+                assert_eq!(vertices, vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!s.is_active());
+    }
+
+    #[test]
+    fn validate_is_noop_without_a_real_polygon_or_in_other_modes() {
+        // Idle polygon: nothing to close.
+        let mut s = DrawState::new(DrawMode::Polygon);
+        assert!(s.validate().is_none());
+
+        // Only the seeded pair (len == 2, no appended vertex): same len > 2 gate
+        // as the snap-close path, so validate does not close and leaves it active.
+        s.on_press(di((0.0, 0.0), (0.0, 0.0)));
+        assert!(s.validate().is_none());
+        assert!(s.is_active());
+
+        // Wrong mode: a rectangle draw is never closed by validate.
+        let mut r = DrawState::new(DrawMode::Rectangle);
+        r.on_press(di((0.0, 0.0), (0.0, 0.0)));
+        assert!(r.validate().is_none());
+        assert!(r.is_active());
     }
 
     #[test]
