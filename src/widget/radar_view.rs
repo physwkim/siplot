@@ -27,10 +27,13 @@
 //! The coordinate mapping, clamp, and hit-test are kept as pure functions
 //! ([`DataRect`], [`RadarMapping`]) so they are unit-tested without a device.
 //!
-//! Deferred (see this wave's report): wiring the emitted limits to an actual
-//! `Plot2D` pan and auto-updating `data_extent`/`viewport` from the live plot
-//! (silx `setPlotWidget` / `_updateDataContent`, lines 245-359); the
-//! high-level integration file is reserved for another cluster.
+//! Integration: `ImageView` wires the full silx binding — it feeds the data
+//! extent via [`RadarView::set_data_bounds`] (silx `_updateDataContent` from
+//! `getDataRange`), syncs the viewport each frame via
+//! [`RadarView::set_viewport_limits`] (silx `__setVisibleRectFromPlot`),
+//! renders with [`RadarView::ui`], and forwards a viewport drag to
+//! `Plot2D::set_limits` (silx `visibleRectDragged` → `setLimits`, lines
+//! 245-359). The on-screen paint stays GPU-unverified.
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2, pos2};
 
