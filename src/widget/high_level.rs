@@ -7155,6 +7155,9 @@ pub struct CompareImages {
     split: f32,
     mode: CompareMode,
     dirty: bool,
+    /// Latest pointer data position over the plot (silx status bar `self._pos`),
+    /// updated each frame in [`Self::show`]; `None` before any pointer move.
+    cursor: Option<[f64; 2]>,
 }
 
 impl CompareImages {
@@ -7173,6 +7176,7 @@ impl CompareImages {
             split: 0.5,
             mode: CompareMode::HalfHalf,
             dirty: false,
+            cursor: None,
         }
     }
 
@@ -7301,7 +7305,52 @@ impl CompareImages {
             }
             self.dirty = false;
         }
-        self.inner.show(ui)
+        let response = self.inner.show(ui);
+        // Track the cursor data position for the status bar (silx status bar's
+        // `mouseMoved` -> `self._pos`); keep the last position on frames with no
+        // pointer event, matching silx.
+        if let Some(cursor) = cursor_from_pointer_event(response.pointer_event.as_ref()) {
+            self.cursor = Some(cursor);
+        }
+        response
+    }
+
+    /// The raw A and B pixel values under data position `(x, y)`, mirroring silx
+    /// `CompareImages.getRawPixelData`. Each is `None` when that image has no
+    /// data or the position is outside it. siplot has a single ORIGIN alignment
+    /// (both images share one geometry placed at the origin with unit pixel
+    /// size), so unlike silx there are no CENTER/STRETCH/AUTO coordinate
+    /// remappings — the value is `raw[int(y)][int(x)]` for both.
+    pub fn raw_pixel_data(&self, x: f64, y: f64) -> (Option<f32>, Option<f32>) {
+        (
+            compare_pixel_at(self.width, self.height, &self.data_a, x, y),
+            compare_pixel_at(self.width, self.height, &self.data_b, x, y),
+        )
+    }
+
+    /// Show a status bar with the cursor's data coordinate and the raw A / B
+    /// pixel values under it (silx `CompareImagesStatusBar`, the `ImageA:`/
+    /// `ImageB:` labels). silx additionally shows an alignment-transform label;
+    /// siplot has no image-alignment modes (no SIFT/affine — see the alignment
+    /// rows), so that label is omitted. Call after [`Self::show`], which updates
+    /// the tracked cursor. GPU/UI — not covered by the tests.
+    pub fn show_status_bar(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let (a_text, b_text) = match self.cursor {
+                Some([x, y]) => {
+                    ui.label(format!("X: {x:.1}  Y: {y:.1}"));
+                    let (a, b) = self.raw_pixel_data(x, y);
+                    (
+                        format_compare_value(self.data_a.is_empty(), a),
+                        format_compare_value(self.data_b.is_empty(), b),
+                    )
+                }
+                None => ("NA".to_string(), "NA".to_string()),
+            };
+            ui.label(format!("ImageA: {a_text}"));
+            ui.label(format!("ImageB: {b_text}"));
+        });
     }
 
     /// Build the composite RGBA pixel array for the current mode and split.
@@ -7339,6 +7388,41 @@ impl CompareImages {
                     }
                 })
                 .collect(),
+        }
+    }
+}
+
+/// The raw value of an image pixel at data position `(x, y)`, or `None` when
+/// the position is outside the image (silx `CompareImages.getRawPixelData`,
+/// ORIGIN alignment: `value = raw[int(y), int(x)]`, with out-of-range returning
+/// no element). `data` is row-major `width × height`. A negative coordinate is
+/// out of range (silx checks `< 0`); for the non-negative interior `x as usize`
+/// matches Python's `int()` truncation toward zero. Pure and deterministic, so
+/// the lookup is unit-testable without a GPU backend.
+pub fn compare_pixel_at(width: u32, height: u32, data: &[f32], x: f64, y: f64) -> Option<f32> {
+    if x < 0.0 || y < 0.0 {
+        return None;
+    }
+    let col = x as usize;
+    let row = y as usize;
+    if col >= width as usize || row >= height as usize {
+        return None;
+    }
+    data.get(row * width as usize + col).copied()
+}
+
+/// Format one image's status-bar value (silx `CompareImagesStatusBar._formatData`
+/// scalar branch + the empty/out-of-range fallbacks). `no_image` is `true` when
+/// that image has no data at all (silx `raw is None` -> "No image"); otherwise a
+/// value formats as silx `"%f"` (six decimals) and `None` (outside the image) is
+/// "NA". Pure, so the formatting is unit-testable.
+fn format_compare_value(no_image: bool, value: Option<f32>) -> String {
+    if no_image {
+        "no image".to_string()
+    } else {
+        match value {
+            Some(v) => format!("{v:.6}"),
+            None => "NA".to_string(),
         }
     }
 }
@@ -12771,5 +12855,35 @@ mod tests {
         deduped.sort_unstable();
         deduped.dedup();
         assert_eq!(labels.len(), deduped.len(), "labels must be unique");
+    }
+
+    #[test]
+    fn compare_pixel_at_looks_up_origin_aligned_pixel() {
+        // 3x2 row-major image (width=3, height=2): rows [0,1,2] then [3,4,5].
+        let data = [0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0];
+        // int(x), int(y): (0.0,0.0) -> data[0]; (2.x,1.x) -> row 1 col 2 = 5.
+        assert_eq!(compare_pixel_at(3, 2, &data, 0.0, 0.0), Some(0.0));
+        assert_eq!(compare_pixel_at(3, 2, &data, 2.9, 1.9), Some(5.0));
+        // Truncation toward zero on the non-negative interior (silx int()).
+        assert_eq!(compare_pixel_at(3, 2, &data, 1.7, 0.2), Some(1.0));
+        // Out of range (>= width / >= height) -> None.
+        assert_eq!(compare_pixel_at(3, 2, &data, 3.0, 0.0), None);
+        assert_eq!(compare_pixel_at(3, 2, &data, 0.0, 2.0), None);
+        // Negative coordinate -> None (silx checks `< 0`).
+        assert_eq!(compare_pixel_at(3, 2, &data, -0.1, 0.0), None);
+        // No data -> None.
+        assert_eq!(compare_pixel_at(3, 2, &[], 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn format_compare_value_matches_silx_status_bar() {
+        // No image at all -> "no image" (silx `raw is None`).
+        assert_eq!(format_compare_value(true, None), "no image");
+        assert_eq!(format_compare_value(true, Some(1.0)), "no image");
+        // Has data, outside the image -> "NA".
+        assert_eq!(format_compare_value(false, None), "NA");
+        // A value formats as silx "%f" (six decimals).
+        assert_eq!(format_compare_value(false, Some(1.5)), "1.500000");
+        assert_eq!(format_compare_value(false, Some(0.0)), "0.000000");
     }
 }
