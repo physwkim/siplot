@@ -8,8 +8,9 @@ use crate::core::background::{
 };
 use crate::core::fitting::{
     DEFAULT_DELTACHI, DEFAULT_MAX_ITER, FitFunction, FitResult, GaussianEstimateFit, IterativeFit,
-    IterativeFitResult, LinearFit, PeakModel, fit_peak_with_background,
+    IterativeFitResult, LinearFit, PeakModel, fit_multi_gaussian_full, fit_peak_with_background,
 };
+use crate::core::peaks::{DEFAULT_PEAK_SENSITIVITY, guess_fwhm};
 use crate::core::plot::PlotId;
 use crate::render::gpu_curve::CurveData;
 use crate::widget::high_level::Plot1D;
@@ -121,11 +122,14 @@ pub enum FitModelChoice {
     IterativeSlit,
     /// Iterative arctan step up.
     IterativeAtanStepUp,
+    /// Multi-peak Gaussian fit with automatic peak search (silx `sum_gauss`
+    /// theory): locate N peaks and fit them simultaneously.
+    MultiGaussian,
 }
 
 impl FitModelChoice {
     /// All choices, in display order.
-    pub const ALL: [FitModelChoice; 10] = [
+    pub const ALL: [FitModelChoice; 11] = [
         FitModelChoice::Linear,
         FitModelChoice::GaussianEstimate,
         FitModelChoice::IterativeGaussian,
@@ -136,6 +140,7 @@ impl FitModelChoice {
         FitModelChoice::IterativeStepUp,
         FitModelChoice::IterativeSlit,
         FitModelChoice::IterativeAtanStepUp,
+        FitModelChoice::MultiGaussian,
     ];
 
     /// Display name for the combo box.
@@ -151,6 +156,7 @@ impl FitModelChoice {
             FitModelChoice::IterativeStepUp => "Step Up (Iterative)",
             FitModelChoice::IterativeSlit => "Slit (Iterative)",
             FitModelChoice::IterativeAtanStepUp => "Arctan Step Up (Iterative)",
+            FitModelChoice::MultiGaussian => "Gaussians (Multi-peak)",
         }
     }
 
@@ -166,7 +172,10 @@ impl FitModelChoice {
             FitModelChoice::IterativeStepUp => Some(PeakModel::StepUp),
             FitModelChoice::IterativeSlit => Some(PeakModel::Slit),
             FitModelChoice::IterativeAtanStepUp => Some(PeakModel::AtanStepUp),
-            FitModelChoice::Linear | FitModelChoice::GaussianEstimate => None,
+            // Composite / analytical choices have no single peak model.
+            FitModelChoice::Linear
+            | FitModelChoice::GaussianEstimate
+            | FitModelChoice::MultiGaussian => None,
         }
     }
 }
@@ -349,6 +358,31 @@ impl FitWidget {
             FitModelChoice::GaussianEstimate => {
                 self.iterative_result = None;
                 GaussianEstimateFit.fit(&xs, &ys)
+            }
+            FitModelChoice::MultiGaussian => {
+                // Auto peak-search multi-Gaussian (silx `sum_gauss` theory):
+                // seed the search width from the data (`guess_fwhm`) and fit all
+                // located peaks simultaneously. The background combo does not
+                // apply — the multi-gaussian model carries no per-peak constant
+                // and silx's `StripBackgroundFlag` is off by default.
+                match fit_multi_gaussian_full(
+                    &xs,
+                    &ys,
+                    guess_fwhm(&ys),
+                    DEFAULT_PEAK_SENSITIVITY,
+                    DEFAULT_MAX_ITER,
+                    DEFAULT_DELTACHI,
+                ) {
+                    Some(ir) => {
+                        let fit = ir.fit.clone();
+                        self.iterative_result = Some(ir);
+                        Some(fit)
+                    }
+                    None => {
+                        self.iterative_result = None;
+                        None
+                    }
+                }
             }
             choice => {
                 // One of the iterative peak models.
@@ -657,17 +691,22 @@ mod tests {
 
     #[test]
     fn all_choices_listed_once_in_order() {
-        assert_eq!(FitModelChoice::ALL.len(), 10);
+        assert_eq!(FitModelChoice::ALL.len(), 11);
         assert_eq!(FitModelChoice::ALL[0], FitModelChoice::Linear);
         assert_eq!(FitModelChoice::ALL[5], FitModelChoice::IterativePseudoVoigt);
         assert_eq!(FitModelChoice::ALL[9], FitModelChoice::IterativeAtanStepUp);
-        // Every non-analytical choice maps to a fit model.
+        assert_eq!(FitModelChoice::ALL[10], FitModelChoice::MultiGaussian);
+        // Only the single-peak iterative choices map to one `PeakModel`; the
+        // analytical (Linear / Gaussian-estimate) and composite (multi-peak)
+        // choices have none.
         for choice in FitModelChoice::ALL {
-            let analytical = matches!(
+            let single_peak = !matches!(
                 choice,
-                FitModelChoice::Linear | FitModelChoice::GaussianEstimate
+                FitModelChoice::Linear
+                    | FitModelChoice::GaussianEstimate
+                    | FitModelChoice::MultiGaussian
             );
-            assert_eq!(choice.peak_model().is_some(), !analytical);
+            assert_eq!(choice.peak_model().is_some(), single_peak);
         }
     }
 

@@ -1990,6 +1990,39 @@ pub fn fit_multi_gaussian(
     .ok()
 }
 
+/// Run the multi-peak Gaussian fit ([`fit_multi_gaussian`]) and package it as an
+/// [`IterativeFitResult`] for display.
+///
+/// The fitted curve is [`multi_gaussian_model`] evaluated over the located
+/// peaks; the parameter vector is the flat `(height, centre, fwhm)` triples;
+/// the per-peak names are `Height i` / `Center i` / `FWHM i` (1-based); and the
+/// solver covariance / chi-square come straight from the constrained solve.
+/// Returns `None` when no peak is seeded or the solver fails.
+pub fn fit_multi_gaussian_full(
+    x: &[f64],
+    y: &[f64],
+    search_fwhm: f64,
+    sensitivity: f64,
+    max_iter: usize,
+    deltachi: f64,
+) -> Option<IterativeFitResult> {
+    let solver = fit_multi_gaussian(x, y, search_fwhm, sensitivity, max_iter, deltachi)?;
+    let y_fit = multi_gaussian_model(x, &solver.parameters);
+    let mut param_names = Vec::with_capacity(solver.parameters.len());
+    for peak in 0..solver.parameters.len() / 3 {
+        let i = peak + 1;
+        param_names.push(format!("Height {i}"));
+        param_names.push(format!("Center {i}"));
+        param_names.push(format!("FWHM {i}"));
+    }
+    let fit = FitResult {
+        y_fit,
+        parameters: solver.parameters.clone(),
+        param_names,
+    };
+    Some(IterativeFitResult { fit, solver })
+}
+
 /// Outcome of [`fit_peak_with_background`]: the peak fit on the
 /// background-subtracted residual, the estimated background curve, and the
 /// total displayed curve.
@@ -2766,6 +2799,42 @@ mod tests {
         assert!((p2[1] - 70.0).abs() < 1.0, "centre2 {}", p2[1]);
         assert!((p2[0] - 80.0).abs() < 5.0, "height2 {}", p2[0]);
         assert!((p2[2] - 6.0).abs() < 1.0, "fwhm2 {}", p2[2]);
+    }
+
+    #[test]
+    fn fit_multi_gaussian_full_packages_names_errors_and_curve() {
+        let xs = grid(100);
+        let mut ys = gaussian_model(&xs, &[100.0, 30.0, 8.0, 0.0]);
+        for (yi, g) in ys
+            .iter_mut()
+            .zip(gaussian_model(&xs, &[80.0, 70.0, 6.0, 0.0]))
+        {
+            *yi += g;
+        }
+        let ir = fit_multi_gaussian_full(
+            &xs,
+            &ys,
+            8.0,
+            DEFAULT_PEAK_SENSITIVITY,
+            DEFAULT_MAX_ITER,
+            DEFAULT_DELTACHI,
+        )
+        .expect("multi-peak fit should succeed");
+        let n = ir.fit.parameters.len();
+        assert!(n >= 6 && n.is_multiple_of(3), "param count {n}");
+        // Names, values, and errors all line up for the results table.
+        assert_eq!(ir.fit.param_names.len(), n);
+        assert_eq!(ir.std_errors().len(), n);
+        assert_eq!(ir.fit.y_fit.len(), xs.len());
+        // Per-peak naming is 1-based Height/Center/FWHM triples.
+        assert_eq!(ir.fit.param_names[0], "Height 1");
+        assert_eq!(ir.fit.param_names[1], "Center 1");
+        assert_eq!(ir.fit.param_names[2], "FWHM 1");
+        // The packaged curve equals the model evaluated at the fitted params.
+        assert_eq!(ir.fit.y_fit, multi_gaussian_model(&xs, &ir.fit.parameters));
+        // Both peaks recovered.
+        assert!((nearest_peak(&ir.fit.parameters, 30.0)[1] - 30.0).abs() < 1.0);
+        assert!((nearest_peak(&ir.fit.parameters, 70.0)[1] - 70.0).abs() < 1.0);
     }
 
     #[test]
