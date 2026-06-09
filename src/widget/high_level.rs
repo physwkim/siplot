@@ -10243,6 +10243,43 @@ impl StackView {
         calibrated_image_z(index, self.perspective, &self.calibrations)
     }
 
+    /// Extract an axis-aligned band profile from every frame along the browsed
+    /// dimension and stack them, mirroring silx `Profile3DToolBar`'s
+    /// `ProfileImageStackHorizontalLineROI` / `...VerticalLineROI`.
+    ///
+    /// Operates on the loaded volume under the current
+    /// [`perspective`](Self::perspective); see [`stack_aligned_profile`] for the
+    /// band-placement rule. Returns `None` in flat-frames mode (no volume) or on
+    /// a shape mismatch. The data-layer half of the 3D-profile tool; rendering the
+    /// stacked profile in a side plot is the caller's UI.
+    pub fn stack_aligned_profile(
+        &self,
+        position: f64,
+        roi_width: u32,
+        horizontal: bool,
+        method: ProfileMethod,
+    ) -> Option<StackProfile> {
+        let (data, shape) = self.volume.as_ref()?;
+        stack_aligned_profile(
+            data,
+            *shape,
+            self.perspective,
+            position,
+            roi_width,
+            horizontal,
+            method,
+        )
+    }
+
+    /// Extract a line-segment profile from every frame along the browsed
+    /// dimension and stack them (silx `Profile3DToolBar`'s
+    /// `ProfileImageStackLineROI`). Requires a loaded volume; returns `None` in
+    /// flat-frames mode.
+    pub fn stack_line_profile(&self, start: (f64, f64), end: (f64, f64)) -> Option<StackProfile> {
+        let (data, shape) = self.volume.as_ref()?;
+        stack_line_profile(data, *shape, self.perspective, start, end)
+    }
+
     /// Number of frames in the stack.
     pub fn frame_count(&self) -> usize {
         self.frames.len()
