@@ -268,8 +268,8 @@ pub trait Backend {
     /// Render the figure to `path` in the given [`SaveFormat`] at `dpi`.
     ///
     /// Generalizes [`Self::save_graph`] (PNG-only) over silx's raster save
-    /// formats (PNG/PPM/SVG/TIFF), faithful to silx
-    /// `BackendBase.saveGraph(fileName, fileFormat, dpi)`.
+    /// formats (PNG/PPM/SVG/TIFF) plus the raster-embedding EPS/PDF, faithful to
+    /// silx `BackendBase.saveGraph(fileName, fileFormat, dpi)`.
     fn save_graph_with_format(
         &self,
         path: &Path,

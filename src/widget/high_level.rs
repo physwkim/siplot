@@ -6567,7 +6567,7 @@ impl PlotWidget {
 
     /// Render the figure to `path` in the given [`SaveFormat`] at `dpi`,
     /// generalizing [`Self::save_graph`] (PNG-only) over silx's raster save
-    /// formats (PNG/PPM/SVG/TIFF). Faithful to silx
+    /// formats (PNG/PPM/SVG/TIFF) plus the raster-embedding EPS/PDF. Faithful to silx
     /// `BackendBase.saveGraph(fileName, fileFormat, dpi)`. The GPU readback +
     /// file write are native shims; the per-format encoding is unit-tested in
     /// [`crate::render::save`].
@@ -6582,9 +6582,9 @@ impl PlotWidget {
     }
 
     /// Save to `path`, dispatching by its extension (silx `SaveAction`):
-    /// a `.csv` path writes the active curve's `(x, y)` data; a raster figure
-    /// extension (`png`/`ppm`/`svg`/`tif`/`tiff`) renders the figure to a `size`
-    /// pixel image in the matching [`SaveFormat`]. Returns `Ok(true)` when a file
+    /// a `.csv` path writes the active curve's `(x, y)` data; a figure
+    /// extension (`png`/`ppm`/`svg`/`tif`/`tiff`/`eps`/`pdf`) renders the figure
+    /// to a `size` pixel image in the matching [`SaveFormat`]. Returns `Ok(true)` when a file
     /// was written, `Ok(false)` when the path's extension is not a recognized save
     /// target or (for CSV) there is no active curve to save.
     ///
@@ -6628,6 +6628,8 @@ impl PlotWidget {
             .add_filter("PPM figure", &["ppm"])
             .add_filter("SVG figure", &["svg"])
             .add_filter("TIFF figure", &["tif", "tiff"])
+            .add_filter("EPS figure", &["eps"])
+            .add_filter("PDF figure", &["pdf"])
             .add_filter("Curve CSV", &["csv"])
             .save_file()
         else {
@@ -11678,12 +11680,20 @@ mod tests {
             Some(SaveTarget::Figure(SaveFormat::Tiff))
         );
         assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.eps")),
+            Some(SaveTarget::Figure(SaveFormat::Eps))
+        );
+        assert_eq!(
+            SaveTarget::from_path(Path::new("/tmp/fig.pdf")),
+            Some(SaveTarget::Figure(SaveFormat::Pdf))
+        );
+        assert_eq!(
             SaveTarget::from_path(Path::new("/tmp/curve.csv")),
             Some(SaveTarget::CurveCsv)
         );
-        // Unknown / matplotlib-only / extensionless paths are not save targets,
+        // Still-unsupported (jpeg) / extensionless paths are not save targets,
         // so save_to_path returns Ok(false) for them.
-        assert_eq!(SaveTarget::from_path(Path::new("/tmp/fig.pdf")), None);
+        assert_eq!(SaveTarget::from_path(Path::new("/tmp/fig.jpeg")), None);
         assert_eq!(SaveTarget::from_path(Path::new("/tmp/noext")), None);
     }
 

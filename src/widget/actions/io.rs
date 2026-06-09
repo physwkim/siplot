@@ -30,9 +30,9 @@ pub enum SaveTarget {
 
 impl SaveTarget {
     /// Resolve a file extension (case-insensitive, no leading dot) to a save
-    /// target. `csv` saves curve data; the raster extensions recognized by
-    /// [`SaveFormat::from_extension`] (`png`, `ppm`, `svg`, `tif`/`tiff`) save
-    /// the figure. Returns `None` for unknown extensions.
+    /// target. `csv` saves curve data; the extensions recognized by
+    /// [`SaveFormat::from_extension`] (`png`, `ppm`, `svg`, `tif`/`tiff`,
+    /// `eps`, `pdf`) save the figure. Returns `None` for unknown extensions.
     pub fn from_extension(ext: &str) -> Option<Self> {
         if ext.eq_ignore_ascii_case("csv") {
             return Some(SaveTarget::CurveCsv);
@@ -170,8 +170,17 @@ mod tests {
             SaveTarget::from_extension("svg"),
             Some(SaveTarget::Figure(SaveFormat::Svg))
         );
-        // Unknown / matplotlib-only extensions are rejected.
-        assert_eq!(SaveTarget::from_extension("pdf"), None);
+        // The raster-embedding vector formats now resolve through SaveFormat.
+        assert_eq!(
+            SaveTarget::from_extension("eps"),
+            Some(SaveTarget::Figure(SaveFormat::Eps))
+        );
+        assert_eq!(
+            SaveTarget::from_extension("pdf"),
+            Some(SaveTarget::Figure(SaveFormat::Pdf))
+        );
+        // Still-unsupported / unknown extensions are rejected.
+        assert_eq!(SaveTarget::from_extension("jpeg"), None);
         assert_eq!(SaveTarget::from_extension("xyz"), None);
     }
 

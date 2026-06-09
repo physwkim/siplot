@@ -13,14 +13,15 @@
 //!
 //! Beyond PNG, the raster snapshot can also be exported as PPM (P6), SVG (a
 //! base64 PNG `<image>`), uncompressed baseline TIFF (with DPI resolution
-//! tags), and EPS (an embedded `colorimage` raster), mirroring silx
-//! `PlotImageFile.saveImageToFile` / `BackendBase.saveGraph(fileName,
-//! fileFormat, dpi)`. [`save_graph_with_format`] dispatches by [`SaveFormat`],
-//! and each `encode_*` helper is a pure function over the RGBA pixels so it is
-//! testable without a GPU or the filesystem.
+//! tags), EPS (an embedded `colorimage` raster), and PDF (a single-page
+//! `/DeviceRGB` image XObject), mirroring silx `PlotImageFile.saveImageToFile`
+//! / `BackendBase.saveGraph(fileName, fileFormat, dpi)`.
+//! [`save_graph_with_format`] dispatches by [`SaveFormat`], and each `encode_*`
+//! helper is a pure function over the RGBA pixels so it is testable without a
+//! GPU or the filesystem.
 //!
 //! DEFERRED (not implemented here): true *vector* export of plot primitives
-//! (the SVG/EPS embed the rendered raster rather than re-emitting geometry,
+//! (the SVG/EPS/PDF embed the rendered raster rather than re-emitting geometry,
 //! which would require the backend to record draw ops); JPEG (needs a DCT
 //! encoder crate); and matplotlib-parity DPI scaling of the actual render (DPI
 //! is recorded in the TIFF resolution tags but does not rescale the rendered
@@ -621,6 +622,81 @@ pub fn encode_eps(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// Encode tightly packed `width * height` RGBA8 pixels as a single-page PDF
+/// embedding the raster (alpha dropped).
+///
+/// Like [`encode_eps`], this is the faithful raster-embedding substitute for
+/// silx's matplotlib-only vector PDF (siplot has no matplotlib dependency): a
+/// minimal PDF-1.4 file with a catalog, one page sized to the image, and a
+/// `/DeviceRGB` `/ASCIIHexDecode` image XObject drawn by a content stream whose
+/// `cm` matrix scales the unit image to the page. PDF image space puts the
+/// first sample row at the top, so feeding top-to-bottom RGB renders upright
+/// (no Y-flip needed). The cross-reference table records each object's byte
+/// offset. Pure over the RGBA pixels (no GPU / filesystem) so it is directly
+/// testable.
+pub fn encode_pdf(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let rgb = rgba_to_rgb(rgba, width, height);
+    // Image stream: ASCII-hex samples terminated by the '>' EOD marker.
+    let mut hex = String::with_capacity(rgb.len() * 2 + 1);
+    push_ascii_hex(&mut hex, &rgb);
+    hex.push('>');
+    let img_len = hex.len();
+
+    // Content stream: scale the unit image to the page and paint it.
+    let content = format!("q {width} 0 0 {height} 0 0 cm /Im0 Do Q");
+    let content_len = content.len();
+
+    let mut out: Vec<u8> = Vec::with_capacity(img_len + 600);
+    // Byte offset of each object (index = object number; slot 0 is the free head).
+    let mut offsets = [0usize; 6];
+
+    out.extend_from_slice(b"%PDF-1.4\n");
+
+    offsets[1] = out.len();
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    offsets[2] = out.len();
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    offsets[3] = out.len();
+    out.extend_from_slice(
+        format!(
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] \
+             /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
+        )
+        .as_bytes(),
+    );
+
+    offsets[4] = out.len();
+    out.extend_from_slice(
+        format!(
+            "4 0 obj\n<< /Type /XObject /Subtype /Image /Width {width} /Height {height} \
+             /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode \
+             /Length {img_len} >>\nstream\n"
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(hex.as_bytes());
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+
+    offsets[5] = out.len();
+    out.extend_from_slice(format!("5 0 obj\n<< /Length {content_len} >>\nstream\n").as_bytes());
+    out.extend_from_slice(content.as_bytes());
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+
+    // Cross-reference table: 20 bytes per entry (10-digit offset, 5-digit gen).
+    let xref_offset = out.len();
+    out.extend_from_slice(b"xref\n0 6\n");
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for &off in &offsets[1..6] {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
 /// Per-axis log flags `[x, y]` (1.0 = log10) for the shaders, matching a
 /// transform's scales.
 fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
@@ -633,9 +709,10 @@ fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
 /// An output image format for [`save_graph_with_format`].
 ///
 /// Faithful to silx `PlotWidget.saveGraph` / `PlotImageFile.saveImageToFile`,
-/// which support PNG, PPM, SVG, and TIFF over a raster snapshot, plus EPS as the
-/// raster-embedding substitute for silx's matplotlib-only vector EPS. JPEG and
-/// true vector export are not implemented (see the module-level Defer note).
+/// which support PNG, PPM, SVG, and TIFF over a raster snapshot, plus EPS and
+/// PDF as raster-embedding substitutes for silx's matplotlib-only vector EPS/
+/// PDF. JPEG and true vector export are not implemented (see the module-level
+/// Defer note).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SaveFormat {
     /// PNG (RGBA), via [`encode_png`].
@@ -649,14 +726,16 @@ pub enum SaveFormat {
     Tiff,
     /// Encapsulated PostScript embedding the raster (RGB), via [`encode_eps`].
     Eps,
+    /// Single-page PDF embedding the raster (RGB), via [`encode_pdf`].
+    Pdf,
 }
 
 impl SaveFormat {
     /// Map a file extension (case-insensitive, no leading dot) to a format.
     ///
     /// Recognizes silx's raster extensions `png`, `ppm`, `svg`, `tif`/`tiff`
-    /// plus `eps` (raster-embedding). Returns `None` for still-unsupported
-    /// extensions (`pdf`, `ps`, `jpeg`, `jpg`).
+    /// plus `eps`/`pdf` (raster-embedding). Returns `None` for still-unsupported
+    /// extensions (`ps`, `jpeg`, `jpg`).
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_ascii_lowercase().as_str() {
             "png" => Some(SaveFormat::Png),
@@ -664,6 +743,7 @@ impl SaveFormat {
             "svg" => Some(SaveFormat::Svg),
             "tif" | "tiff" => Some(SaveFormat::Tiff),
             "eps" => Some(SaveFormat::Eps),
+            "pdf" => Some(SaveFormat::Pdf),
             _ => None,
         }
     }
@@ -778,6 +858,10 @@ pub fn save_graph_with_format(
             let bytes = encode_eps(&rgba, w, h);
             std::fs::write(path, bytes)?;
         }
+        SaveFormat::Pdf => {
+            let bytes = encode_pdf(&rgba, w, h);
+            std::fs::write(path, bytes)?;
+        }
     }
     Ok(())
 }
@@ -847,13 +931,14 @@ mod tests {
         assert_eq!(SaveFormat::from_extension("TIFF"), Some(SaveFormat::Tiff));
         assert_eq!(SaveFormat::from_extension("eps"), Some(SaveFormat::Eps));
         assert_eq!(SaveFormat::from_extension("EPS"), Some(SaveFormat::Eps));
+        assert_eq!(SaveFormat::from_extension("pdf"), Some(SaveFormat::Pdf));
+        assert_eq!(SaveFormat::from_extension("PDF"), Some(SaveFormat::Pdf));
     }
 
     #[test]
     fn save_format_rejects_still_unsupported_and_unknown_extensions() {
-        // JPEG needs a DCT encoder crate, and true-vector PDF/PS are not the
-        // raster path → still unsupported. (EPS is now raster-embedded.)
-        assert_eq!(SaveFormat::from_extension("pdf"), None);
+        // JPEG needs a DCT encoder crate, and PostScript (`ps`) is not wired →
+        // still unsupported. (EPS and PDF are now raster-embedded.)
         assert_eq!(SaveFormat::from_extension("ps"), None);
         assert_eq!(SaveFormat::from_extension("jpeg"), None);
         assert_eq!(SaveFormat::from_extension("jpg"), None);
@@ -923,6 +1008,54 @@ mod tests {
             .next()
             .expect("hex before grestore");
         let hex: String = body.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        let decoded: Vec<u8> = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(decoded, rgba_to_rgb(&rgba, 2, 2));
+    }
+
+    #[test]
+    fn encode_pdf_is_well_formed_and_xref_offsets_point_at_objects() {
+        let rgba = [
+            10, 20, 30, 255, // (0,0)
+            40, 50, 60, 255, // (0,1)
+            70, 80, 90, 255, // (1,0)
+            100, 110, 120, 255, // (1,1)
+        ];
+        let pdf = encode_pdf(&rgba, 2, 2);
+        let text = std::str::from_utf8(&pdf).expect("PDF body is ASCII here");
+
+        assert!(text.starts_with("%PDF-1.4\n"));
+        assert!(text.contains("/Type /Catalog"));
+        assert!(text.contains("/MediaBox [0 0 2 2]"));
+        assert!(text.contains("/Subtype /Image /Width 2 /Height 2"));
+        assert!(text.contains("/ColorSpace /DeviceRGB"));
+        assert!(text.contains("/Filter /ASCIIHexDecode"));
+        assert!(text.trim_end().ends_with("%%EOF"));
+
+        // startxref points at the `xref` keyword.
+        let sx = text.rfind("startxref\n").expect("startxref");
+        let after = &text[sx + "startxref\n".len()..];
+        let xref_off: usize = after
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .expect("xref offset int");
+        assert!(
+            text[xref_off..].starts_with("xref\n"),
+            "startxref must point at xref"
+        );
+
+        // The image hex stream decodes back to the RGB (alpha-dropped) pixels.
+        let stream_at = text.find("/ASCIIHexDecode").expect("image dict");
+        let body = &text[stream_at..];
+        let body = &body[body.find("stream\n").expect("stream kw") + "stream\n".len()..];
+        let hex = &body[..body.find('>').expect("hex EOD marker")];
+        let hex: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
         let decoded: Vec<u8> = hex
             .as_bytes()
             .chunks_exact(2)
