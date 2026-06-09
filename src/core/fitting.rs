@@ -1802,9 +1802,198 @@ pub fn fit_in_range(
     model.fit_full(&xr, &yr)
 }
 
+// ---------------------------------------------------------------------------
+// Multi-peak (simultaneous) Gaussian fitting.
+//
+// Ports silx `fittheories.estimate_height_position_fwhm` + `functions.sum_gauss`
+// (C `sum_gauss`): locate N peaks with `peak_search`, seed one (height, centre,
+// FWHM) triple per peak, and fit them all at once with the constrained solver.
+// This composes `peak_search` and `leastsq_constrained` into the multi-peak fit
+// that `IterativeFit` (single peak) does not provide.
+// ---------------------------------------------------------------------------
+
+/// Sum of `N` Gaussians (silx `functions.sum_gauss` / C `sum_gauss`).
+///
+/// `params` is a flat vector of `(height, centroid, fwhm)` triples — one per
+/// peak, with **no** background term. `y(x) = Σ_k height_k · exp(-0.5·((x −
+/// centroid_k)/sigma_k)²)`, `sigma = fwhm / (2·√(2·ln2))`, with the C far-tail
+/// guard skipping terms where `(x − centroid)/sigma > 20`. A trailing partial
+/// triple (length not a multiple of 3) is ignored, as silx requires a multiple
+/// of 3.
+pub fn multi_gaussian_model(x: &[f64], params: &[f64]) -> Vec<f64> {
+    let inv = 1.0 / fwhm_to_sigma_factor();
+    let mut y = vec![0.0_f64; x.len()];
+    for triple in params.chunks_exact(3) {
+        let (height, centroid, fwhm) = (triple[0], triple[1], triple[2]);
+        let sigma = fwhm * inv;
+        if sigma == 0.0 {
+            continue;
+        }
+        for (yi, &xi) in y.iter_mut().zip(x.iter()) {
+            let dhelp = (xi - centroid) / sigma;
+            if dhelp <= 20.0 {
+                *yi += height * (-0.5 * dhelp * dhelp).exp();
+            }
+        }
+    }
+    y
+}
+
+/// Estimate initial parameters and fit constraints for a multi-peak Gaussian fit
+/// (silx `estimate_height_position_fwhm`, default config).
+///
+/// Locates peaks with [`peak_search`](crate::core::peaks::peak_search)
+/// (`search_fwhm` floored at 3, `sensitivity` floored at 1; falls back to the
+/// global maximum when none are found, silx `ForcePeakPresence`). Seeds each
+/// peak as `(y[peak], x[peak], 5·|xspan|/n)`, refines the seeds with a quick
+/// 4-iteration constrained fit (height/FWHM positive, centre quoted to ±½ of the
+/// `search_fwhm`-sample x-width), and returns the refined seeds together with the
+/// final per-parameter constraints (height & FWHM `Positive`, centre `Free` —
+/// silx default `PositiveHeightAreaFlag`/`PositiveFwhmFlag` on, `QuotedPositionFlag`
+/// off). Background removal (silx `StripBackgroundFlag`, off by default) is left
+/// to the caller via [`crate::core::background`]. Returns `None` for empty or
+/// length-mismatched input, or when no peak can be seeded.
+pub fn estimate_multi_gaussian(
+    x: &[f64],
+    y: &[f64],
+    search_fwhm: f64,
+    sensitivity: f64,
+) -> Option<(Vec<f64>, Vec<Constraint>)> {
+    let npoints = y.len();
+    if npoints == 0 || x.len() != npoints {
+        return None;
+    }
+    let search_fwhm = search_fwhm.max(3.0);
+    let search_sens = sensitivity.max(1.0);
+
+    let found = crate::core::peaks::peak_search(y, search_fwhm, search_sens);
+    let peaks: Vec<usize> = if found.is_empty() {
+        // silx ForcePeakPresence: use the (first) global maximum.
+        let maxv = y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        match y.iter().position(|&v| v == maxv) {
+            Some(p) => vec![p],
+            None => return None,
+        }
+    } else {
+        found.iter().map(|p| p.index).collect()
+    };
+    if peaks.is_empty() {
+        return None;
+    }
+
+    // silx seeds FWHM as 5 sampling intervals (in x units).
+    let sig = 5.0 * (x[npoints - 1] - x[0]).abs() / npoints as f64;
+    let mut param: Vec<f64> = Vec::with_capacity(peaks.len() * 3);
+    let mut index_largest = 0usize;
+    let mut height_largest = f64::NEG_INFINITY;
+    for (k, &pi) in peaks.iter().enumerate() {
+        let height = y[pi];
+        // silx zeroes a near-zero position only for the first peak.
+        let pos = if k == 0 && x[pi].abs() < 1.0e-16 {
+            0.0
+        } else {
+            x[pi]
+        };
+        param.push(height);
+        param.push(pos);
+        param.push(sig);
+        if height > height_largest {
+            height_largest = height;
+            index_largest = k;
+        }
+    }
+    let _ = index_largest; // used by silx SameFwhmFlag (off by default).
+
+    // Preliminary constraints for the quick refine: height & FWHM positive,
+    // centre quoted around its seed.
+    let sf = search_fwhm as usize;
+    let (fwhmx, use_fwhmx) = if x.len() > sf {
+        ((x[sf] - x[0]).abs(), true)
+    } else {
+        (0.0, false)
+    };
+    let xmin = x.iter().copied().fold(f64::INFINITY, f64::min);
+    let xmax = x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut prelim: Vec<Constraint> = Vec::with_capacity(param.len());
+    for k in 0..peaks.len() {
+        let pos = param[3 * k + 1];
+        prelim.push(Constraint::Positive);
+        if use_fwhmx && fwhmx > 0.0 {
+            prelim.push(Constraint::Quoted {
+                min: pos - 0.5 * fwhmx,
+                max: pos + 0.5 * fwhmx,
+            });
+        } else if xmax > xmin {
+            prelim.push(Constraint::Quoted {
+                min: xmin,
+                max: xmax,
+            });
+        } else {
+            prelim.push(Constraint::Free);
+        }
+        prelim.push(Constraint::Positive);
+    }
+
+    // Quick 4-iteration refine (silx max_iter=4); fall back to the raw seeds.
+    let fittedpar = leastsq_constrained(
+        multi_gaussian_model,
+        x,
+        y,
+        &param,
+        &prelim,
+        None,
+        4,
+        DEFAULT_DELTACHI,
+    )
+    .map(|r| r.parameters)
+    .unwrap_or(param);
+
+    // Final constraints (default config): height & FWHM positive, centre free.
+    let mut cons: Vec<Constraint> = Vec::with_capacity(fittedpar.len());
+    for _ in 0..peaks.len() {
+        cons.push(Constraint::Positive);
+        cons.push(Constraint::Free);
+        cons.push(Constraint::Positive);
+    }
+
+    Some((fittedpar, cons))
+}
+
+/// Fit a sum of Gaussians to `(x, y)`, discovering the peaks automatically
+/// (silx `FitManager` multi-peak Gaussian fit).
+///
+/// Seeds the peaks with [`estimate_multi_gaussian`] then runs the full
+/// constrained Levenberg-Marquardt fit ([`leastsq_constrained`]) over all peaks
+/// simultaneously. The returned [`LeastSqResult::parameters`] is the flat
+/// `(height, centroid, fwhm)` triple vector accepted by [`multi_gaussian_model`].
+/// Returns `None` when no peak can be seeded or the solver fails. Background is
+/// the caller's responsibility (see [`crate::core::background`]).
+pub fn fit_multi_gaussian(
+    x: &[f64],
+    y: &[f64],
+    search_fwhm: f64,
+    sensitivity: f64,
+    max_iter: usize,
+    deltachi: f64,
+) -> Option<LeastSqResult> {
+    let (seeds, cons) = estimate_multi_gaussian(x, y, search_fwhm, sensitivity)?;
+    leastsq_constrained(
+        multi_gaussian_model,
+        x,
+        y,
+        &seeds,
+        &cons,
+        None,
+        max_iter,
+        deltachi,
+    )
+    .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::peaks::DEFAULT_PEAK_SENSITIVITY;
 
     /// Synthetic noiseless Gaussian sampled on a grid.
     fn synth_gaussian(xs: &[f64], height: f64, center: f64, fwhm: f64, bg: f64) -> Vec<f64> {
@@ -2444,6 +2633,107 @@ mod tests {
             .unwrap_err(),
             FitError::NoFreeParameters
         );
+    }
+
+    // --- Multi-peak (simultaneous) Gaussian fit ----------------------------
+
+    fn grid(n: usize) -> Vec<f64> {
+        (0..n).map(|i| i as f64).collect()
+    }
+
+    /// Find the fitted triple whose centre is nearest `target`.
+    fn nearest_peak(params: &[f64], target: f64) -> [f64; 3] {
+        params
+            .chunks_exact(3)
+            .min_by(|a, b| {
+                (a[1] - target)
+                    .abs()
+                    .partial_cmp(&(b[1] - target).abs())
+                    .unwrap()
+            })
+            .map(|t| [t[0], t[1], t[2]])
+            .unwrap()
+    }
+
+    #[test]
+    fn multi_gaussian_model_is_sum_of_single_gaussians() {
+        let xs = grid(100);
+        // Two peaks; compare against two single gaussian_model calls (bg = 0).
+        let a = gaussian_model(&xs, &[100.0, 30.0, 8.0, 0.0]);
+        let b = gaussian_model(&xs, &[60.0, 70.0, 5.0, 0.0]);
+        let sum = multi_gaussian_model(&xs, &[100.0, 30.0, 8.0, 60.0, 70.0, 5.0]);
+        for i in 0..xs.len() {
+            assert!((sum[i] - (a[i] + b[i])).abs() < 1e-9, "mismatch at {i}");
+        }
+    }
+
+    #[test]
+    fn fit_multi_gaussian_recovers_two_peaks() {
+        let xs = grid(100);
+        let mut ys = gaussian_model(&xs, &[100.0, 30.0, 8.0, 0.0]);
+        for (yi, g) in ys
+            .iter_mut()
+            .zip(gaussian_model(&xs, &[80.0, 70.0, 6.0, 0.0]))
+        {
+            *yi += g;
+        }
+        let res = fit_multi_gaussian(
+            &xs,
+            &ys,
+            8.0,
+            DEFAULT_PEAK_SENSITIVITY,
+            DEFAULT_MAX_ITER,
+            DEFAULT_DELTACHI,
+        )
+        .expect("multi-peak fit should succeed");
+        assert!(res.parameters.len() >= 6, "expected >=2 peaks");
+        let p1 = nearest_peak(&res.parameters, 30.0);
+        let p2 = nearest_peak(&res.parameters, 70.0);
+        assert!((p1[1] - 30.0).abs() < 1.0, "centre1 {}", p1[1]);
+        assert!((p1[0] - 100.0).abs() < 5.0, "height1 {}", p1[0]);
+        assert!((p1[2] - 8.0).abs() < 1.0, "fwhm1 {}", p1[2]);
+        assert!((p2[1] - 70.0).abs() < 1.0, "centre2 {}", p2[1]);
+        assert!((p2[0] - 80.0).abs() < 5.0, "height2 {}", p2[0]);
+        assert!((p2[2] - 6.0).abs() < 1.0, "fwhm2 {}", p2[2]);
+    }
+
+    #[test]
+    fn fit_multi_gaussian_single_peak() {
+        let xs = grid(100);
+        let ys = gaussian_model(&xs, &[50.0, 45.0, 7.0, 0.0]);
+        let res = fit_multi_gaussian(
+            &xs,
+            &ys,
+            7.0,
+            DEFAULT_PEAK_SENSITIVITY,
+            DEFAULT_MAX_ITER,
+            DEFAULT_DELTACHI,
+        )
+        .unwrap();
+        let p = nearest_peak(&res.parameters, 45.0);
+        assert!((p[0] - 50.0).abs() < 2.0, "height {}", p[0]);
+        assert!((p[1] - 45.0).abs() < 0.5, "centre {}", p[1]);
+        assert!((p[2] - 7.0).abs() < 0.5, "fwhm {}", p[2]);
+    }
+
+    #[test]
+    fn estimate_multi_gaussian_seeds_height_and_position() {
+        let xs = grid(100);
+        let ys = gaussian_model(&xs, &[50.0, 45.0, 7.0, 0.0]);
+        let (seeds, cons) =
+            estimate_multi_gaussian(&xs, &ys, 7.0, DEFAULT_PEAK_SENSITIVITY).unwrap();
+        assert_eq!(seeds.len() % 3, 0);
+        assert_eq!(seeds.len(), cons.len());
+        // Final constraints: height Positive, centre Free, FWHM Positive.
+        assert_eq!(cons[0], Constraint::Positive);
+        assert_eq!(cons[1], Constraint::Free);
+        assert_eq!(cons[2], Constraint::Positive);
+    }
+
+    #[test]
+    fn estimate_multi_gaussian_rejects_empty_and_mismatch() {
+        assert!(estimate_multi_gaussian(&[], &[], 5.0, 2.5).is_none());
+        assert!(estimate_multi_gaussian(&[0.0, 1.0], &[1.0], 5.0, 2.5).is_none());
     }
 
     // --- Non-peak theories: erf, step/slit/atan models, estimators ---------
