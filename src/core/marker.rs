@@ -72,7 +72,9 @@ pub enum MarkerKind {
 /// they are stored here as enum variants so [`Marker`] stays `Clone` / `Debug` /
 /// `PartialEq`. An arbitrary closure is not stored on the marker (it would break
 /// those derives and is interaction-layer state, not drawn geometry); apply a
-/// custom filter with the pure [`apply_constraint`] free function instead.
+/// custom filter at drag time with [`Marker::drag_with`] (the faithful port of
+/// silx's callable `setConstraint`), or compose the enum presets with the pure
+/// [`apply_constraint`] free function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MarkerConstraint {
     /// No filtering: the marker moves freely to the cursor position (silx
@@ -435,10 +437,35 @@ impl Marker {
     /// This is a no-op when [`is_draggable`](Marker::is_draggable) is `false`,
     /// matching silx, which moves the item on drag only if `isDraggable()`.
     pub fn drag(&mut self, from: (f64, f64), to: (f64, f64)) {
+        let constraint = self.constraint;
+        self.drag_with(to, |x, y| apply_constraint(constraint, from, (x, y)));
+    }
+
+    /// Drag the marker to `to`, filtering the target through an arbitrary
+    /// constraint closure — the general form of [`drag`](Marker::drag) and the
+    /// faithful port of silx's callable `setConstraint` (silx
+    /// `MarkerBase.setPosition` does `x, y = getConstraint()(x, y)`,
+    /// `marker.py:202`, where `getConstraint()` may be any callable, not just the
+    /// `'horizontal'` / `'vertical'` presets).
+    ///
+    /// `constraint` receives the cursor's data-space target `(x, y)` and returns
+    /// the filtered position, exactly like silx's callable signature
+    /// `constraint(x, y) -> (x, y)`. The closure is passed at call time rather
+    /// than stored on the marker: an arbitrary closure would break the
+    /// [`Marker`] `Clone` / `Debug` / `PartialEq` derives and is interaction-layer
+    /// state, not drawn geometry. The serializable presets live on the marker as
+    /// [`MarkerConstraint`] and route here via [`drag`](Marker::drag).
+    ///
+    /// As with [`drag`](Marker::drag), this is a no-op when
+    /// [`is_draggable`](Marker::is_draggable) is `false`, and only the
+    /// coordinate(s) relevant to the marker kind are updated: a point takes both
+    /// filtered coordinates, a vertical line only the filtered X, a horizontal
+    /// line only the filtered Y.
+    pub fn drag_with(&mut self, to: (f64, f64), constraint: impl Fn(f64, f64) -> (f64, f64)) {
         if !self.is_draggable {
             return;
         }
-        let (fx, fy) = apply_constraint(self.constraint, from, to);
+        let (fx, fy) = constraint(to.0, to.1);
         match &mut self.kind {
             MarkerKind::Point { x, y, .. } => {
                 *x = fx;
@@ -580,11 +607,43 @@ mod tests {
     }
 
     #[test]
-    fn custom_constraint_closure_applied_directly() {
-        // The custom path: caller invokes the closure on `to` (silx arbitrary
-        // callable). Here a closure that snaps to integer grid.
-        let snap = |to: (f64, f64)| (to.0.round(), to.1.round());
-        assert_eq!(snap((5.4, 6.6)), (5.0, 7.0));
+    fn drag_with_custom_constraint_filters_a_point_target() {
+        // silx arbitrary callable form: snap the target to the integer grid.
+        let mut m = Marker::point(1.0, 2.0).with_draggable(true);
+        m.drag_with((5.4, 6.6), |x, y| (x.round(), y.round()));
+        assert_eq!(m.position(), (5.0, 7.0));
+    }
+
+    #[test]
+    fn drag_with_updates_only_the_line_marker_axis() {
+        // VLine takes only the filtered X; HLine only the filtered Y.
+        let mut v = Marker::vline(1.0).with_draggable(true);
+        v.drag_with((9.0, 3.0), |x, y| (x.round(), y.round()));
+        assert_eq!(v.kind, MarkerKind::VLine { x: 9.0 });
+
+        let mut h = Marker::hline(1.0).with_draggable(true);
+        h.drag_with((9.0, 3.0), |x, y| (x.round(), y.round()));
+        assert_eq!(h.kind, MarkerKind::HLine { y: 3.0 });
+    }
+
+    #[test]
+    fn drag_with_is_a_noop_when_not_draggable() {
+        // Mirrors `drag`: no movement unless `is_draggable`.
+        let mut m = Marker::point(1.0, 2.0);
+        m.drag_with((5.0, 6.0), |x, y| (x, y));
+        assert_eq!(m.position(), (1.0, 2.0));
+    }
+
+    #[test]
+    fn drag_delegates_to_drag_with_via_enum_presets() {
+        // The preset path still works after `drag` was refactored to delegate.
+        let mut m = Marker::point(1.0, 2.0)
+            .with_draggable(true)
+            .with_constraint(MarkerConstraint::Vertical);
+        let from = m.position();
+        m.drag(from, (5.0, 6.0));
+        // Vertical pins Y to current (2.0), X moves to 5.0.
+        assert_eq!(m.position(), (5.0, 2.0));
     }
 
     #[test]
