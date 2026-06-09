@@ -135,6 +135,35 @@ pub struct RoiHandle {
     pub kind: HandleKind,
 }
 
+/// The three parallel infinite lines describing a band ROI in silx
+/// **UnboundedMode** (silx `BandGeometry.slope` / `intercept` / `edgesIntercept`,
+/// `items/_band_roi.py:99-125`), produced by [`Roi::band_lines`]. A sum type so a
+/// vertical band (`x = const`) and a sloped band (`y = slope·x + c`) each carry
+/// only the fields that have meaning, rather than silx's `inf`-slope encoding
+/// where the `intercept` field doubles as an X value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BandLines {
+    /// A non-vertical band: every line is `y = slope · x + c`. `middle` is the
+    /// `c` of the `begin → end` line; `edges` are the `c` of the two width-offset
+    /// parallel lines.
+    Sloped {
+        /// Shared slope of all three lines.
+        slope: f64,
+        /// Y-intercept of the centre (`begin → end`) line.
+        middle: f64,
+        /// Y-intercepts of the two width-offset edge lines.
+        edges: (f64, f64),
+    },
+    /// A vertical band (`begin.x == end.x`): every line is `x = const`. `middle`
+    /// is the centre line's X; `edges` are the two width-offset edge Xs.
+    Vertical {
+        /// X of the centre (`begin → end`) line.
+        middle: f64,
+        /// X of the two width-offset edge lines.
+        edges: (f64, f64),
+    },
+}
+
 impl Roi {
     /// The screen rectangle this ROI draws into. Bands span the data area on
     /// their free axis.
@@ -747,6 +776,42 @@ impl Roi {
                 _ => {}
             },
         }
+    }
+
+    /// The infinite-line geometry of a band ROI in silx **UnboundedMode** (silx
+    /// `BandGeometry.slope` / `intercept` / `edgesIntercept`,
+    /// `items/_band_roi.py:99-125`): the band drawn as three parallel infinite
+    /// lines — a middle line through `begin → end` plus the two width edges —
+    /// instead of the bounded corner polygon ([`band_corners`] / the default
+    /// BoundedMode). Returns `None` for a non-band ROI.
+    ///
+    /// Where silx encodes a vertical band with an `inf` slope and reuses the
+    /// `intercept` field as an X value, this returns a [`BandLines`] sum type so
+    /// each field has a single meaning.
+    pub fn band_lines(&self) -> Option<BandLines> {
+        let Roi::Band { begin, end, width } = self else {
+            return None;
+        };
+        let n = band_normal(*begin, *end);
+        let off = (0.5 * width * n.0, 0.5 * width * n.1);
+        // Vertical band (silx `begin.x == end.x`): edges are X-offset verticals.
+        if begin.0 == end.0 {
+            return Some(BandLines::Vertical {
+                middle: begin.0,
+                edges: (begin.0 - off.0, begin.0 + off.0),
+            });
+        }
+        let slope = (end.1 - begin.1) / (end.0 - begin.0);
+        let middle = begin.1 - slope * begin.0;
+        let edges = (
+            begin.1 - off.1 - slope * (begin.0 - off.0),
+            begin.1 + off.1 - slope * (begin.0 + off.0),
+        );
+        Some(BandLines::Sloped {
+            slope,
+            middle,
+            edges,
+        })
     }
 
     /// Test whether the data-space point `pos = (x, y)` is inside this ROI.
@@ -2349,6 +2414,78 @@ mod tests {
         assert!(band.contains((0.0, 2.0))); // inside
         assert!(!band.contains((1.5, 2.0))); // past the band edge (normal is x)
         assert!(!band.contains((0.0, 5.0))); // past the end
+    }
+
+    #[test]
+    fn band_lines_horizontal_band_centres_on_the_segment() {
+        // begin=(0,0) end=(4,0) width 2: middle y=0, edges y=±1 (silx Unbounded).
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (4.0, 0.0),
+            width: 2.0,
+        };
+        match band.band_lines().expect("band") {
+            BandLines::Sloped {
+                slope,
+                middle,
+                edges,
+            } => {
+                assert_eq!(slope, 0.0);
+                assert_eq!(middle, 0.0);
+                assert_eq!(edges, (-1.0, 1.0));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn band_lines_vertical_band_uses_x_constants() {
+        // begin=(0,0) end=(0,4) width 2: vertical, middle x=0, edges x=±1.
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (0.0, 4.0),
+            width: 2.0,
+        };
+        match band.band_lines().expect("band") {
+            BandLines::Vertical { middle, edges } => {
+                assert_eq!(middle, 0.0);
+                // normal of a +y segment is (-1, 0): edges at x = 0 ∓ off.0.
+                assert_eq!(edges, (1.0, -1.0));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn band_lines_diagonal_band_edges_are_parallel_offsets() {
+        // begin=(0,0) end=(2,2) width 2√2: slope 1, middle c=0, edges c=±2.
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (2.0, 2.0),
+            width: 2.0 * std::f64::consts::SQRT_2,
+        };
+        match band.band_lines().expect("band") {
+            BandLines::Sloped {
+                slope,
+                middle,
+                edges,
+            } => {
+                assert!((slope - 1.0).abs() <= 1e-12, "slope={slope}");
+                assert!(middle.abs() <= 1e-12, "middle={middle}");
+                assert!((edges.0 - (-2.0)).abs() <= 1e-12, "e0={}", edges.0);
+                assert!((edges.1 - 2.0).abs() <= 1e-12, "e1={}", edges.1);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn band_lines_is_none_for_non_band() {
+        let rect = Roi::Rect {
+            x: (0.0, 1.0),
+            y: (0.0, 1.0),
+        };
+        assert_eq!(rect.band_lines(), None);
     }
 
     #[test]

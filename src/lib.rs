@@ -44,7 +44,7 @@ pub use crate::core::plot::{
     AxisConstraints, DataMargins, DataRange, DirtyState, GraphGrid, Plot, PlotId, TickMode,
     resolved_axis_label,
 };
-pub use crate::core::roi::{ManagedRoi, Roi, RoiEdge, RoiLineStyle};
+pub use crate::core::roi::{BandLines, ManagedRoi, Roi, RoiEdge, RoiLineStyle};
 pub use crate::core::scatter_viz::{
     BinnedStatistic, BinnedStatisticFunction, GridImage, GridMajorOrder, PointsViz, RegularGrid,
     Triangulation, binned_statistic, delaunay, detect_regular_grid, interpolate,
