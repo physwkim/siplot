@@ -77,8 +77,8 @@ pub use crate::render::gpu_image::{
     AggregationMode, ImageData, ImagePixels, InterpolationMode, aggregate_blocks,
 };
 pub use crate::render::save::{
-    SaveError, SaveFormat, encode_png, encode_ppm, encode_svg, encode_tiff, rgba_to_rgb,
-    save_graph, save_graph_with_format,
+    SaveError, SaveFormat, encode_eps, encode_png, encode_ppm, encode_svg, encode_tiff,
+    rgba_to_rgb, save_graph, save_graph_with_format,
 };
 pub use crate::widget::actions;
 pub use crate::widget::actions::io::{SaveTarget, curve_to_csv};

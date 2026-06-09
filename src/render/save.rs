@@ -12,18 +12,19 @@
 //! unit-tested; the GPU render + readback runs only with a real device.
 //!
 //! Beyond PNG, the raster snapshot can also be exported as PPM (P6), SVG (a
-//! base64 PNG `<image>`), and uncompressed baseline TIFF (with DPI resolution
-//! tags), mirroring silx `PlotImageFile.saveImageToFile` /
-//! `BackendBase.saveGraph(fileName, fileFormat, dpi)`. [`save_graph_with_format`]
-//! dispatches by [`SaveFormat`], and each `encode_*` helper is a pure function
-//! over the RGBA pixels so it is testable without a GPU or the filesystem.
+//! base64 PNG `<image>`), uncompressed baseline TIFF (with DPI resolution
+//! tags), and EPS (an embedded `colorimage` raster), mirroring silx
+//! `PlotImageFile.saveImageToFile` / `BackendBase.saveGraph(fileName,
+//! fileFormat, dpi)`. [`save_graph_with_format`] dispatches by [`SaveFormat`],
+//! and each `encode_*` helper is a pure function over the RGBA pixels so it is
+//! testable without a GPU or the filesystem.
 //!
 //! DEFERRED (not implemented here): true *vector* export of plot primitives
-//! (the SVG embeds the rendered raster rather than re-emitting geometry, which
-//! would require the backend to record draw ops); JPEG/EPS/PDF/PS (the
-//! matplotlib-only formats in `PlotWidget.saveGraph`); and matplotlib-parity
-//! DPI scaling of the actual render (DPI is recorded in the TIFF resolution
-//! tags but does not rescale the rendered pixel grid).
+//! (the SVG/EPS embed the rendered raster rather than re-emitting geometry,
+//! which would require the backend to record draw ops); JPEG (needs a DCT
+//! encoder crate); and matplotlib-parity DPI scaling of the actual render (DPI
+//! is recorded in the TIFF resolution tags but does not rescale the rendered
+//! pixel grid).
 
 use std::fmt;
 use std::path::Path;
@@ -574,6 +575,52 @@ pub fn encode_tiff(rgba: &[u8], width: u32, height: u32, dpi: u32) -> Vec<u8> {
     out
 }
 
+/// Lowercase hex digits for the PostScript/PDF ASCII-hex image bodies.
+const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Append `data` as an ASCII-hex stream to `s`, wrapping lines at 40 bytes
+/// (80 hex chars) so neither PostScript nor PDF readers see an over-long line.
+fn push_ascii_hex(s: &mut String, data: &[u8]) {
+    for (i, &b) in data.iter().enumerate() {
+        s.push(HEX_DIGITS[(b >> 4) as usize] as char);
+        s.push(HEX_DIGITS[(b & 0x0F) as usize] as char);
+        if (i + 1) % 40 == 0 {
+            s.push('\n');
+        }
+    }
+}
+
+/// Encode tightly packed `width * height` RGBA8 pixels as an Encapsulated
+/// PostScript (EPS) byte stream embedding the raster (alpha dropped).
+///
+/// Like [`encode_svg`], this is the faithful raster-embedding substitute for
+/// silx's matplotlib-only vector EPS (siplot has no matplotlib dependency): a
+/// minimal EPSF-3.0 document whose body is a single `colorimage` operator. The
+/// `[W 0 0 -H 0 H]` image matrix flips Y so the first scanline (top of the
+/// image) maps to the top of the page, and the RGB samples are fed as
+/// whitespace-tolerant ASCII hex. Pure over the RGBA pixels (no GPU /
+/// filesystem) so it is directly testable.
+pub fn encode_eps(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let rgb = rgba_to_rgb(rgba, width, height);
+    let mut s = String::with_capacity(200 + rgb.len() * 2);
+    s.push_str("%!PS-Adobe-3.0 EPSF-3.0\n");
+    s.push_str(&format!("%%BoundingBox: 0 0 {width} {height}\n"));
+    s.push_str("%%EndComments\n");
+    s.push_str("gsave\n");
+    // Map the unit image square onto the bounding box, then draw the raster.
+    s.push_str(&format!("{width} {height} scale\n"));
+    s.push_str(&format!("/picstr {} string def\n", width as usize * 3));
+    s.push_str(&format!(
+        "{width} {height} 8 [ {width} 0 0 -{height} 0 {height} ]\n"
+    ));
+    s.push_str("{ currentfile picstr readhexstring pop } false 3 colorimage\n");
+    push_ascii_hex(&mut s, &rgb);
+    s.push('\n');
+    s.push_str("grestore\nshowpage\n");
+    s.push_str("%%EOF\n");
+    s.into_bytes()
+}
+
 /// Per-axis log flags `[x, y]` (1.0 = log10) for the shaders, matching a
 /// transform's scales.
 fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
@@ -586,9 +633,9 @@ fn axis_log_flags(t: &crate::core::transform::Transform) -> [f32; 2] {
 /// An output image format for [`save_graph_with_format`].
 ///
 /// Faithful to silx `PlotWidget.saveGraph` / `PlotImageFile.saveImageToFile`,
-/// which support PNG, PPM, SVG, and TIFF over a raster snapshot. JPEG, EPS,
-/// PDF, PS (matplotlib-only) and true vector export are not implemented (see
-/// the module-level Defer note).
+/// which support PNG, PPM, SVG, and TIFF over a raster snapshot, plus EPS as the
+/// raster-embedding substitute for silx's matplotlib-only vector EPS. JPEG and
+/// true vector export are not implemented (see the module-level Defer note).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SaveFormat {
     /// PNG (RGBA), via [`encode_png`].
@@ -600,21 +647,23 @@ pub enum SaveFormat {
     /// Uncompressed baseline TIFF (RGB) with resolution tags, via
     /// [`encode_tiff`].
     Tiff,
+    /// Encapsulated PostScript embedding the raster (RGB), via [`encode_eps`].
+    Eps,
 }
 
 impl SaveFormat {
     /// Map a file extension (case-insensitive, no leading dot) to a format.
     ///
-    /// Recognizes silx's raster extensions: `png`, `ppm`, `svg`, `tif`/`tiff`.
-    /// Returns `None` for unknown or matplotlib-only extensions (`pdf`, `ps`,
-    /// `eps`, `jpeg`, `jpg`), matching silx rejecting unsupported formats in
-    /// the raster backend.
+    /// Recognizes silx's raster extensions `png`, `ppm`, `svg`, `tif`/`tiff`
+    /// plus `eps` (raster-embedding). Returns `None` for still-unsupported
+    /// extensions (`pdf`, `ps`, `jpeg`, `jpg`).
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_ascii_lowercase().as_str() {
             "png" => Some(SaveFormat::Png),
             "ppm" => Some(SaveFormat::Ppm),
             "svg" => Some(SaveFormat::Svg),
             "tif" | "tiff" => Some(SaveFormat::Tiff),
+            "eps" => Some(SaveFormat::Eps),
             _ => None,
         }
     }
@@ -725,6 +774,10 @@ pub fn save_graph_with_format(
             let bytes = encode_tiff(&rgba, w, h, dpi);
             std::fs::write(path, bytes)?;
         }
+        SaveFormat::Eps => {
+            let bytes = encode_eps(&rgba, w, h);
+            std::fs::write(path, bytes)?;
+        }
     }
     Ok(())
 }
@@ -792,14 +845,16 @@ mod tests {
         assert_eq!(SaveFormat::from_extension("svg"), Some(SaveFormat::Svg));
         assert_eq!(SaveFormat::from_extension("tif"), Some(SaveFormat::Tiff));
         assert_eq!(SaveFormat::from_extension("TIFF"), Some(SaveFormat::Tiff));
+        assert_eq!(SaveFormat::from_extension("eps"), Some(SaveFormat::Eps));
+        assert_eq!(SaveFormat::from_extension("EPS"), Some(SaveFormat::Eps));
     }
 
     #[test]
-    fn save_format_rejects_matplotlib_only_and_unknown_extensions() {
-        // matplotlib-only formats are deferred → unsupported in the raster path.
+    fn save_format_rejects_still_unsupported_and_unknown_extensions() {
+        // JPEG needs a DCT encoder crate, and true-vector PDF/PS are not the
+        // raster path → still unsupported. (EPS is now raster-embedded.)
         assert_eq!(SaveFormat::from_extension("pdf"), None);
         assert_eq!(SaveFormat::from_extension("ps"), None);
-        assert_eq!(SaveFormat::from_extension("eps"), None);
         assert_eq!(SaveFormat::from_extension("jpeg"), None);
         assert_eq!(SaveFormat::from_extension("jpg"), None);
         assert_eq!(SaveFormat::from_extension("bmp"), None);
@@ -837,6 +892,43 @@ mod tests {
         assert_eq!(&ppm[header.len()..], &[1, 2, 3, 4, 5, 6]);
         // Total length = header + width*height*3 (2×1 pixels × 3 channels).
         assert_eq!(ppm.len(), header.len() + 6);
+    }
+
+    #[test]
+    fn encode_eps_is_well_formed_and_hex_body_round_trips() {
+        // 2×2 image with distinct pixels; the alpha channel is dropped.
+        let rgba = [
+            10, 20, 30, 255, // (0,0)
+            40, 50, 60, 255, // (0,1)
+            70, 80, 90, 255, // (1,0)
+            100, 110, 120, 255, // (1,1)
+        ];
+        let eps = encode_eps(&rgba, 2, 2);
+        let text = std::str::from_utf8(&eps).expect("EPS is ASCII");
+
+        assert!(text.starts_with("%!PS-Adobe-3.0 EPSF-3.0\n"));
+        assert!(text.contains("%%BoundingBox: 0 0 2 2\n"));
+        // The Y-flip matrix and the colorimage operator drive the raster.
+        assert!(text.contains("2 2 8 [ 2 0 0 -2 0 2 ]"));
+        assert!(text.contains("false 3 colorimage"));
+        assert!(text.trim_end().ends_with("%%EOF"));
+
+        // The ASCII-hex body decodes back to the RGB (alpha-dropped) pixels.
+        // Bound it to before the `grestore` trailer (whose letters are hex too).
+        let body = text
+            .split("colorimage\n")
+            .nth(1)
+            .expect("body after colorimage")
+            .split("\ngrestore")
+            .next()
+            .expect("hex before grestore");
+        let hex: String = body.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        let decoded: Vec<u8> = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(decoded, rgba_to_rgb(&rgba, 2, 2));
     }
 
     // --- NumPy .npy mask codec ---
