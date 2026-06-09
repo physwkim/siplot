@@ -362,6 +362,60 @@ pub fn interpolate(
     None
 }
 
+/// A line profile sampled across scattered data — the result of
+/// [`scatter_line_profile`] (silx `ScatterProfileToolBar` profile).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ScatterLineProfile {
+    /// Sample positions `[x, y]` evenly spaced along the profile segment
+    /// (silx `points` from `numpy.linspace`).
+    pub points: Vec<[f64; 2]>,
+    /// Interpolated value at each sample, index-aligned with `points`. `None`
+    /// where the sample falls outside the scatter's convex hull (silx `NaN`).
+    pub values: Vec<Option<f64>>,
+}
+
+/// Sample a line profile across scattered `(x, y, values)` data — silx
+/// `ScatterProfileToolBar` / `_computeProfile` (`tools/profile/rois.py:737-762`).
+///
+/// Places `n_points` samples evenly along the segment `start`..`end`
+/// (`numpy.linspace(.., endpoint=True)`) and interpolates each through the
+/// scatter's Delaunay triangulation (silx `LinearNDInterpolator`, via
+/// [`delaunay`] + [`interpolate`]): a sample outside the convex hull (no
+/// containing triangle) yields `None`, mirroring silx's `NaN`. Returns the
+/// sample positions paired with their interpolated values.
+///
+/// Fewer than 3 input points — or collinear points — build no triangles, so
+/// every value is `None`. With `n_points == 1` the `start` point is the sole
+/// sample; `n_points == 0` returns empty vectors. `values` must be index-aligned
+/// with `x`/`y` (same length), like [`interpolate`].
+pub fn scatter_line_profile(
+    x: &[f64],
+    y: &[f64],
+    values: &[f64],
+    start: (f64, f64),
+    end: (f64, f64),
+    n_points: usize,
+) -> ScatterLineProfile {
+    let tri = delaunay(x, y);
+    let mut points = Vec::with_capacity(n_points);
+    let mut profile = Vec::with_capacity(n_points);
+    for i in 0..n_points {
+        let t = if n_points <= 1 {
+            0.0
+        } else {
+            i as f64 / (n_points - 1) as f64
+        };
+        let px = start.0 + (end.0 - start.0) * t;
+        let py = start.1 + (end.1 - start.1) * t;
+        points.push([px, py]);
+        profile.push(interpolate(&tri, x, y, values, px, py));
+    }
+    ScatterLineProfile {
+        points,
+        values: profile,
+    }
+}
+
 /// An image grid of interpolated/binned values with an affine data placement
 /// (silx `addImage(data, origin, scale)`).
 #[derive(Clone, Debug, PartialEq)]
@@ -1093,6 +1147,48 @@ mod tests {
         // Well outside the triangle.
         assert!(interpolate(&tri, &x, &y, &values, 5.0, 5.0).is_none());
         assert!(interpolate(&tri, &x, &y, &values, -1.0, -1.0).is_none());
+    }
+
+    #[test]
+    fn scatter_line_profile_interpolates_affine_field_along_line() {
+        // Triangle with an affine field v = x + 2y: (0,0)=0, (2,0)=2, (0,2)=4.
+        // Linear (barycentric) interpolation reproduces it exactly, so a line
+        // from (0,0) to (1,1) samples 0, 1.5, 3.0 at t = 0, 0.5, 1.
+        let x = [0.0, 2.0, 0.0];
+        let y = [0.0, 0.0, 2.0];
+        let values = [0.0, 2.0, 4.0];
+        let prof = scatter_line_profile(&x, &y, &values, (0.0, 0.0), (1.0, 1.0), 3);
+        assert_eq!(prof.points, vec![[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]);
+        let got: Vec<f64> = prof
+            .values
+            .iter()
+            .map(|v| v.expect("inside hull"))
+            .collect();
+        for (g, want) in got.iter().zip([0.0, 1.5, 3.0]) {
+            assert!((g - want).abs() < 1e-9, "got {g}, want {want}");
+        }
+    }
+
+    #[test]
+    fn scatter_line_profile_outside_hull_is_none() {
+        // A segment entirely outside the triangle's convex hull: every sample
+        // falls in no triangle, so every value is None (silx NaN).
+        let x = [0.0, 2.0, 0.0];
+        let y = [0.0, 0.0, 2.0];
+        let values = [0.0, 2.0, 4.0];
+        let prof = scatter_line_profile(&x, &y, &values, (5.0, 5.0), (9.0, 9.0), 4);
+        assert!(prof.values.iter().all(Option::is_none), "{:?}", prof.values);
+    }
+
+    #[test]
+    fn scatter_line_profile_too_few_points_yields_no_values() {
+        // Fewer than 3 input points build no triangles -> all None.
+        let x = [0.0, 1.0];
+        let y = [0.0, 1.0];
+        let values = [1.0, 2.0];
+        let prof = scatter_line_profile(&x, &y, &values, (0.0, 0.0), (1.0, 1.0), 2);
+        assert_eq!(prof.points.len(), 2);
+        assert!(prof.values.iter().all(Option::is_none));
     }
 
     // --- IRREGULAR_GRID image -----------------------------------------------

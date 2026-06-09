@@ -23,7 +23,7 @@ use crate::core::items::{Baseline, LineStyle, ScalarMask, Symbol};
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::plot::{DataMargins, DataRange, GraphGrid, Plot, PlotId};
 use crate::core::roi::{ManagedRoi, Roi, RoiLineStyle};
-use crate::core::scatter_viz::GridImage;
+use crate::core::scatter_viz::{GridImage, ScatterLineProfile};
 use crate::core::shape::{Shape, ShapeKind};
 use crate::core::transform::{Margins, Scale, YAxis};
 use crate::core::triangles::Triangles;
@@ -9358,6 +9358,31 @@ impl ScatterView {
     /// The active scatter visualization mode (silx `Scatter.getVisualization`).
     pub fn visualization(&self) -> ScatterVisualization {
         self.visualization
+    }
+
+    /// Extract a line profile across the scatter data (silx
+    /// `ScatterProfileToolBar` / `_computeProfile`, `tools/profile/rois.py:737`).
+    ///
+    /// Samples `n_points` evenly along `start`..`end` and interpolates each
+    /// through the scatter's Delaunay mesh (silx `LinearNDInterpolator`, via
+    /// [`crate::core::scatter_viz::scatter_line_profile`]). Returns the sampled
+    /// [`ScatterLineProfile`] (positions + interpolated values), or `None` when
+    /// no data has been set or every sample lies outside the convex hull (silx
+    /// `_computeProfile` returns `None` when nothing is finite). The interactive
+    /// line-ROI tool and the side profile plot are not wired (GPU/UI).
+    pub fn line_profile(
+        &self,
+        start: (f64, f64),
+        end: (f64, f64),
+        n_points: usize,
+    ) -> Option<ScatterLineProfile> {
+        let (x, y, values) = self.points.as_ref()?;
+        let profile =
+            crate::core::scatter_viz::scatter_line_profile(x, y, values, start, end, n_points);
+        if profile.values.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(profile)
     }
 
     /// Set the scatter visualization mode (silx `Scatter.setVisualization`).
