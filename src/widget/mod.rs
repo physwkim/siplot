@@ -30,3 +30,4 @@ pub mod roi_stats_widget;
 pub mod scatter_mask;
 pub mod stats_widget;
 pub mod sync;
+pub mod tool_buttons;
