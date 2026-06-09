@@ -16,6 +16,15 @@
 //! lacks). All selection / filtering / grouping logic lives in pure methods so
 //! it is unit-testable without an egui context; [`ItemsSelectionDialog::ui`]
 //! renders them.
+//!
+//! The fit tool reuses this dialog to pick which item to fit when more than one
+//! curve exists (silx `actions/fit.py:_initFit`): it calls
+//! [`set_available_kinds`](ItemsSelectionDialog::set_available_kinds) with
+//! `[Curve, Histogram]` and
+//! [`set_selection_mode`](ItemsSelectionDialog::set_selection_mode)`(Single)`,
+//! then reads the one chosen entry from
+//! [`selected_items`](ItemsSelectionDialog::selected_items) — see
+//! `examples/high_level_fit_widget.rs`.
 
 use crate::widget::high_level::PlotItemKind;
 
@@ -41,6 +50,19 @@ impl SelectableItem {
             selected,
         }
     }
+}
+
+/// How many rows may be selected at once (silx `setItemsSelectionMode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SelectionMode {
+    /// Any number of rows may be selected (silx `MultiSelection`). The default,
+    /// used by the items-selector panel.
+    #[default]
+    Multi,
+    /// At most one row is selected; selecting another replaces it (silx
+    /// `SingleSelection`), as the fit tool uses to pick one curve/histogram
+    /// (`actions/fit.py:237-241`).
+    Single,
 }
 
 /// All item kinds, in the order silx lists them in `PlotWidget.ITEM_KINDS`
@@ -91,21 +113,70 @@ pub struct ItemsSelectionDialog {
     /// `Vec` (deduplicated, [`KIND_ORDER`]-ordered) because [`PlotItemKind`]
     /// implements neither `Ord` nor `Hash`.
     shown_kinds: Vec<PlotItemKind>,
+    /// The kinds the filter offers (silx `KindsSelector` available kinds). When
+    /// `None` they are derived from the items present; when `Some` (set via
+    /// [`Self::set_available_kinds`]) they are exactly the caller's list — silx
+    /// `setAvailableKinds`, which the fit tool calls to offer only curve +
+    /// histogram.
+    available_override: Option<Vec<PlotItemKind>>,
+    /// How many rows may be selected at once (silx `setItemsSelectionMode`).
+    mode: SelectionMode,
+}
+
+/// Deduplicate `kinds` into [`KIND_ORDER`] order (so the offered/shown kind
+/// lists stay canonical regardless of caller order or repeats).
+fn in_kind_order(kinds: &[PlotItemKind]) -> Vec<PlotItemKind> {
+    KIND_ORDER
+        .into_iter()
+        .filter(|k| kinds.contains(k))
+        .collect()
 }
 
 impl ItemsSelectionDialog {
     /// Create a dialog over `items`, with every kind that appears in `items`
-    /// shown by default (silx `KindsSelector.selectAll()` on construction).
+    /// shown by default (silx `KindsSelector.selectAll()` on construction) and
+    /// multi-selection mode.
     pub fn new(items: Vec<SelectableItem>) -> Self {
         let shown_kinds = distinct_kinds(&items);
-        Self { items, shown_kinds }
+        Self {
+            items,
+            shown_kinds,
+            available_override: None,
+            mode: SelectionMode::Multi,
+        }
     }
 
     /// Replace the item entries, re-showing every kind present in the new list
-    /// (mirrors silx rebuilding the selector when the plot's items change).
+    /// (mirrors silx rebuilding the selector when the plot's items change). Any
+    /// [`set_available_kinds`](Self::set_available_kinds) override is cleared, as
+    /// silx repopulates the kind selector from the new plot items; the selection
+    /// mode is preserved.
     pub fn set_items(&mut self, items: Vec<SelectableItem>) {
         self.shown_kinds = distinct_kinds(&items);
+        self.available_override = None;
         self.items = items;
+        // The new entries carry their own selection flags; enforce the mode so a
+        // Single-mode dialog never holds two selected rows.
+        self.enforce_single_selection();
+    }
+
+    /// In [`SelectionMode::Single`], keep only the first selected row (clearing
+    /// the rest); a no-op in [`SelectionMode::Multi`]. The one place the "≤ 1
+    /// selected" invariant is repaired after a bulk selection change.
+    fn enforce_single_selection(&mut self) {
+        if self.mode != SelectionMode::Single {
+            return;
+        }
+        let mut kept = false;
+        for it in &mut self.items {
+            if it.selected {
+                if kept {
+                    it.selected = false;
+                } else {
+                    kept = true;
+                }
+            }
+        }
     }
 
     /// All item entries (selected or not), in insertion order.
@@ -113,10 +184,39 @@ impl ItemsSelectionDialog {
         &self.items
     }
 
-    /// The distinct kinds present in the entries, in [`KIND_ORDER`] order
-    /// (silx `KindsSelector` available kinds derived from the plot's items).
+    /// The kinds the filter offers, in [`KIND_ORDER`] order: the
+    /// [`set_available_kinds`](Self::set_available_kinds) override if set, else
+    /// the distinct kinds present in the entries (silx `KindsSelector` available
+    /// kinds — derived from the plot's items, or replaced by `setAvailableKinds`).
     pub fn available_kinds(&self) -> Vec<PlotItemKind> {
-        distinct_kinds(&self.items)
+        match &self.available_override {
+            Some(kinds) => kinds.clone(),
+            None => distinct_kinds(&self.items),
+        }
+    }
+
+    /// Restrict the offered kinds to exactly `kinds` and show them all (silx
+    /// `setAvailableKinds` + `selectAllKinds`). The fit tool calls this with
+    /// `[Curve, Histogram]` so only fittable items are listed
+    /// (`actions/fit.py:240`). Rows of any other kind are hidden.
+    pub fn set_available_kinds(&mut self, kinds: &[PlotItemKind]) {
+        let kinds = in_kind_order(kinds);
+        self.shown_kinds = kinds.clone();
+        self.available_override = Some(kinds);
+    }
+
+    /// The current selection mode (single vs multi).
+    pub fn selection_mode(&self) -> SelectionMode {
+        self.mode
+    }
+
+    /// Set the selection mode (silx `setItemsSelectionMode`). Switching to
+    /// [`SelectionMode::Single`] collapses any existing multi-selection to at
+    /// most the first selected row, so the "≤ 1 selected" invariant holds
+    /// immediately, not just after the next click.
+    pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        self.mode = mode;
+        self.enforce_single_selection();
     }
 
     /// Whether `kind` is currently shown by the kind filter.
@@ -140,18 +240,29 @@ impl ItemsSelectionDialog {
     }
 
     /// Set the selection state of the item at `index` (out-of-range is a
-    /// no-op). Mirrors silx row selection in `PlotItemsSelector`.
+    /// no-op). Mirrors silx row selection in `PlotItemsSelector`. In
+    /// [`SelectionMode::Single`], selecting a row clears every other selection
+    /// first so at most one row is ever selected — this is the single owner of
+    /// the "≤ 1 selected" invariant, so [`toggle_selected`](Self::toggle_selected)
+    /// routes through it.
     pub fn set_selected(&mut self, index: usize, selected: bool) {
-        if let Some(item) = self.items.get_mut(index) {
-            item.selected = selected;
+        if index >= self.items.len() {
+            return;
         }
+        if selected && self.mode == SelectionMode::Single {
+            for item in &mut self.items {
+                item.selected = false;
+            }
+        }
+        self.items[index].selected = selected;
     }
 
     /// Toggle the selection state of the item at `index` (out-of-range is a
-    /// no-op).
+    /// no-op). Routed through [`set_selected`](Self::set_selected) so the
+    /// single-selection invariant is enforced uniformly.
     pub fn toggle_selected(&mut self, index: usize) {
-        if let Some(item) = self.items.get_mut(index) {
-            item.selected = !item.selected;
+        if let Some(current) = self.items.get(index).map(|it| it.selected) {
+            self.set_selected(index, !current);
         }
     }
 
@@ -328,6 +439,84 @@ mod tests {
                 (PlotItemKind::Scatter, vec![3]),
             ]
         );
+    }
+
+    #[test]
+    fn single_selection_mode_keeps_at_most_one_selected() {
+        // Fit-tool config: single selection. Selecting a second row replaces the
+        // first (silx SingleSelection).
+        let mut d = sample();
+        d.set_selection_mode(SelectionMode::Single);
+        // sample() had curve A and image A selected; switching to Single keeps
+        // only the first selected row (curve A).
+        let labels: Vec<&str> = d.selected_items().map(|it| it.label.as_str()).collect();
+        assert_eq!(labels, vec!["curve A"]);
+
+        // Selecting curve B replaces curve A.
+        d.set_selected(1, true);
+        let labels: Vec<&str> = d.selected_items().map(|it| it.label.as_str()).collect();
+        assert_eq!(labels, vec!["curve B"]);
+
+        // Toggling image A (index 2) replaces curve B (routed through set_selected).
+        d.toggle_selected(2);
+        let labels: Vec<&str> = d.selected_items().map(|it| it.label.as_str()).collect();
+        assert_eq!(labels, vec!["image A"]);
+    }
+
+    #[test]
+    fn set_available_kinds_restricts_offered_and_shown_kinds() {
+        // Fit-tool config: only curve + histogram offered (silx setAvailableKinds).
+        let mut d = sample();
+        d.set_available_kinds(&[PlotItemKind::Histogram, PlotItemKind::Curve]);
+        // Offered kinds are exactly the requested set, in KIND_ORDER (Curve first).
+        assert_eq!(
+            d.available_kinds(),
+            vec![PlotItemKind::Curve, PlotItemKind::Histogram]
+        );
+        // Image is no longer shown, so image A drops out of the subset even
+        // though it stays selected internally.
+        assert!(!d.is_kind_shown(PlotItemKind::Image));
+        let labels: Vec<&str> = d.selected_items().map(|it| it.label.as_str()).collect();
+        assert_eq!(labels, vec!["curve A"]);
+    }
+
+    #[test]
+    fn fit_tool_config_picks_exactly_one_fittable_item() {
+        // Mirror silx fit.py:_initFit: restrict to curve/histogram, single-select.
+        let mut d = ItemsSelectionDialog::new(vec![
+            SelectableItem::new("curve A", PlotItemKind::Curve, false),
+            SelectableItem::new("curve B", PlotItemKind::Curve, false),
+            SelectableItem::new("image A", PlotItemKind::Image, false),
+        ]);
+        d.set_available_kinds(&[PlotItemKind::Curve, PlotItemKind::Histogram]);
+        d.set_selection_mode(SelectionMode::Single);
+
+        // User picks curve B.
+        d.set_selected(1, true);
+        let chosen: Vec<&str> = d.selected_items().map(|it| it.label.as_str()).collect();
+        assert_eq!(chosen, vec!["curve B"]);
+        // The image is not offered, so it can never be the fitted item.
+        assert!(!d.available_kinds().contains(&PlotItemKind::Image));
+    }
+
+    #[test]
+    fn set_items_clears_available_override_and_keeps_mode() {
+        let mut d = sample();
+        d.set_available_kinds(&[PlotItemKind::Curve]);
+        d.set_selection_mode(SelectionMode::Single);
+        d.set_items(vec![
+            SelectableItem::new("img", PlotItemKind::Image, true),
+            SelectableItem::new("cur", PlotItemKind::Curve, true),
+        ]);
+        // Override cleared: every new kind is offered again.
+        assert_eq!(
+            d.available_kinds(),
+            vec![PlotItemKind::Curve, PlotItemKind::Image]
+        );
+        // Mode preserved: selecting a new row still replaces the prior one.
+        d.set_selected(0, true);
+        let labels: Vec<&str> = d.selected_items().map(|it| it.label.as_str()).collect();
+        assert_eq!(labels, vec!["img"]);
     }
 
     #[test]

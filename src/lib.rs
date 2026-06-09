@@ -95,7 +95,9 @@ pub use crate::widget::interaction::{
     arc_from_two_points, cursor_for_edge, cursor_for_grab, ellipse_semi_axes, hatch_lines,
     image_index, nearest_point, roi_draw_mode, roi_from_draw, roi_grab_at,
 };
-pub use crate::widget::items_selection_dialog::{ItemsSelectionDialog, SelectableItem};
+pub use crate::widget::items_selection_dialog::{
+    ItemsSelectionDialog, SelectableItem, SelectionMode,
+};
 pub use crate::widget::limits_widget::LimitsWidget;
 pub use crate::widget::mask_tools::{MaskTool, MaskToolsWidget, ThresholdMode};
 pub use crate::widget::plot_widget::{DrawResponse, PlotInteractionMode, PlotResponse, PlotView};

@@ -257,7 +257,7 @@ as-of-sweep reference.
 | ☐ Missing | L | L | Fit non-peak theories (step/exp/atan/poly) | fittheories | Only Gaussian/Lorentzian/PseudoVoigt + linear |
 | ☐ Missing | L | L | Standalone RadarView overview widget | tools/RadarView.py:139-300 | RadarView is wired into views; no standalone full-data-thumbnail widget |
 | ☐ Missing | L | L | Print preview dialog | PrintPreviewToolButton.py | No print-preview page with movable/resizable rect |
-| ◐ Partial | L | L | ItemsSelectionDialog reuse | ItemsSelectionDialog.py | Dialog exists (Wave 6B-1) but isn't reused by fit/stats tools |
+| ✅ Done | L | L | ItemsSelectionDialog reuse | ItemsSelectionDialog.py; actions/fit.py:237-241 | Dialog gained the silx fit-tool capabilities it lacked: `set_available_kinds` (silx `setAvailableKinds`, offers only the requested kinds) + `SelectionMode::Single` (silx `setItemsSelectionMode(SingleSelection)`, ≤1 selected enforced by one owner). `examples/high_level_fit_widget.rs` now reuses it as a single-select curve+histogram picker that feeds `FitWidget::set_data` (silx `_initFit`→`_setFittedItem`). Capabilities/invariant unit-tested; example wiring GPU-unverified |
 
 ### Top candidate next waves (re-baselined 2026-06-04)
 
@@ -1299,7 +1299,7 @@ siplot implements ImageView, ScatterView, StackView, and CompareImages at a basi
 | ☐ | L | S | ComplexImageView: complex display mode toolbar | `ComplexImageView.py:157-256` | No _ComplexDataToolButton; silx provides dropdown to select amplitude/phase/real/imag/complex mode |
 | ☐ | L | S | ImageStack: waiting/loading overlay | `ImageStack.py:43` | No WaitingOverlay; silx shows progress spinner while loading frames |
 
-## Stats, Legends, Profile, Fit, Position-Info, Print, Selection Dialogs  — 16✅ 3◐ 11☐
+## Stats, Legends, Profile, Fit, Position-Info, Print, Selection Dialogs  — 17✅ 3◐ 10☐
 
 siplot implements core stats tracking (min/max/mean for X/Y and image scalars, with finite-value filtering), legend display with single-click row selection, eye-icon visibility toggles, and a right-click context menu (Wave 9), profile extraction helpers for horizontal/vertical/line/rect ROI types with automatic window placement mirroring silx, fit widget supporting linear and gaussian estimation, and limits dialog for axis control. Major gaps: no StatsWidget table UI, no profile-over-stack support, only 2 fit models vs silx's 10+, no PositionInfo readout bar, no RadarView overview, no print preview, no item selection dialog, and stats do not compute center-of-mass, coordinate min/max, integral, or delta.
 
@@ -1320,7 +1320,7 @@ siplot implements core stats tracking (min/max/mean for X/Y and image scalars, w
 | ☐ | L | M | Fit: Lorentzian fit (amplitude, center, width, background) | `silx.math.fit.fittheories: Lorentzian` | No Lorentzian fitting. |
 | ☐ | L | M | Fit: Pseudo-Voigt fit (Gaussian + Lorentzian blend) | `silx.math.fit.fittheories: PseudoVoigt` | No Pseudo-Voigt fitting. |
 | ☐ | L | M | PositionInfo readout bar (X, Y, plus custom converters) | `tools/PositionInfo.py:64-250` | No toolbar-mounted label showing current mouse coordinates in data space, with customizable converters (e.g. polar coords, distances). |
-| ☐ | L | M | ItemsSelectionDialog: multi-select table of plot items filtered by kind | `ItemsSelectionDialog.py:40-200` | No modal dialog for selecting multiple plot items from a table (used by fit tool, stats tool). Would require a dedicated dialog UI. |
+| ✅ | L | M | ItemsSelectionDialog: multi-select table of plot items filtered by kind | `ItemsSelectionDialog.py:40-200; actions/fit.py:237-241` | `ItemsSelectionDialog` (Wave 6B-1) groups items by kind with a `KindsSelector`-style filter; `set_available_kinds` (silx `setAvailableKinds`) restricts offered kinds and `SelectionMode::Single/Multi` (silx `setItemsSelectionMode`) toggles single vs multi selection. Reused by the fit tool as a single-select curve+histogram picker (`examples/high_level_fit_widget.rs`, silx `_initFit`). Pure logic unit-tested; UI GPU-unverified. |
 | ✅ | L | S | Profile: cross profile (horizontal + vertical lines from point) | `tools/profile/rois.py:663-700; _ProfileCrossROI` | `ProfileWindow::update_profile` over a `Roi::Cross` shows both the horizontal and vertical full profiles through the cross center as two simultaneous legended curves in one window (`profiles_for_roi` → `Vec<ProfileCurve>`, `curve_handles: Vec`). Faithful to `ProfileImageCrossROI`. Extraction tested; window GPU-unverified. |
 | ◐ | L | S | Fit widget UI: show fit results table (chi-squared, parameters, errors) | `silx.gui.fit.FitWidget: results table with parameter names, values, errors` | Shows parameter names and values in a grid. Missing: (1) chi-squared or goodness metric, (2) error estimates for each parameter, (3) covariance matrix display. |
 | ☐ | L | S | Stats: center-of-mass (weighted sum of positions) | `stats/stats.py:881-910` | No COM computation in siplot. |
