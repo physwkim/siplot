@@ -179,6 +179,38 @@ impl TextAnchor {
         };
         (dx, dy)
     }
+
+    /// The backend's fixed pixel padding applied with silx's alignment-dependent
+    /// sign (silx `_TextWithOffset.__get_xy`). `padding` is the unsigned
+    /// `(px, py)` the backend uses (silx `pixel_offset`, e.g. `(10, 3)` for a
+    /// symbol point, `(5, 3)` for line markers); the returned `(dx, dy)` is
+    /// added — in egui screen pixels, Y growing downward — to the marker's
+    /// anchor point before [`rect_offset`](Self::rect_offset) lays out the rect.
+    ///
+    /// Sign rule mirrors silx exactly: a left-aligned anchor pushes the text
+    /// right (`+px`), a right-aligned anchor pushes it left (`-px`), a
+    /// horizontally-centered anchor gets no X shift. A top-aligned anchor pushes
+    /// down (`+py` here, matching silx's `-pixel_offset[1]` in its Y-up display
+    /// space), a bottom-aligned anchor pushes up (`-py`), a vertically-centered
+    /// anchor gets no Y shift.
+    pub fn pixel_offset(self, padding: (f32, f32)) -> (f32, f32) {
+        let (px, py) = padding;
+        // Horizontal alignment (silx `horizontalalignment`): left -> +px,
+        // right -> -px, center -> 0.
+        let dx = match self {
+            TextAnchor::TopLeft | TextAnchor::Left | TextAnchor::BottomLeft => px,
+            TextAnchor::TopRight | TextAnchor::Right | TextAnchor::BottomRight => -px,
+            TextAnchor::Top | TextAnchor::Center | TextAnchor::Bottom => 0.0,
+        };
+        // Vertical alignment (silx `verticalalignment`): top -> +py (down in
+        // egui's Y-down space), bottom -> -py (up), center -> 0.
+        let dy = match self {
+            TextAnchor::TopLeft | TextAnchor::Top | TextAnchor::TopRight => py,
+            TextAnchor::BottomLeft | TextAnchor::Bottom | TextAnchor::BottomRight => -py,
+            TextAnchor::Left | TextAnchor::Center | TextAnchor::Right => 0.0,
+        };
+        (dx, dy)
+    }
 }
 
 /// A point / vertical-line / horizontal-line marker drawn over the data area
@@ -215,8 +247,10 @@ pub struct Marker {
     /// [`MarkerConstraint::None`].
     pub constraint: MarkerConstraint,
     /// Where the label text attaches to the marker point (silx marker text
-    /// `horizontalalignment` / `verticalalignment`). Defaults to
-    /// [`TextAnchor::TopLeft`], the silx point-marker default.
+    /// `horizontalalignment` / `verticalalignment`). Per-kind default set by
+    /// the constructors: [`TextAnchor::TopLeft`] for point and vertical-line
+    /// markers, [`TextAnchor::TopRight`] for horizontal-line markers (silx
+    /// YMarker `ha="right"`).
     pub text_anchor: TextAnchor,
 }
 
@@ -237,9 +271,15 @@ impl Marker {
         Self::with_kind(MarkerKind::VLine { x })
     }
 
-    /// A horizontal-line marker at data `y` (silx `x` `None`).
+    /// A horizontal-line marker at data `y` (silx `x` `None`). Its label
+    /// defaults to [`TextAnchor::TopRight`], the silx YMarker text default
+    /// (`horizontalalignment="right", verticalalignment="top"`); point and
+    /// vertical-line markers keep the [`TextAnchor::TopLeft`] default.
     pub fn hline(y: f64) -> Self {
-        Self::with_kind(MarkerKind::HLine { y })
+        Self {
+            text_anchor: TextAnchor::TopRight,
+            ..Self::with_kind(MarkerKind::HLine { y })
+        }
     }
 
     fn with_kind(kind: MarkerKind) -> Self {
@@ -607,6 +647,32 @@ mod tests {
         // silx point-marker default is horizontalalignment="left".
         assert_eq!(TextAnchor::default(), TextAnchor::TopLeft);
         assert_eq!(Marker::point(0.0, 0.0).text_anchor, TextAnchor::TopLeft);
+    }
+
+    #[test]
+    fn text_anchor_per_kind_defaults_match_silx() {
+        // silx addMarker: point & XMarker text ha="left" (TopLeft); YMarker
+        // text ha="right", va="top" (TopRight).
+        assert_eq!(Marker::point(1.0, 2.0).text_anchor, TextAnchor::TopLeft);
+        assert_eq!(Marker::vline(1.0).text_anchor, TextAnchor::TopLeft);
+        assert_eq!(Marker::hline(2.0).text_anchor, TextAnchor::TopRight);
+    }
+
+    #[test]
+    fn pixel_offset_applies_silx_alignment_signs() {
+        // Point padding (10, 3): TopLeft pushes right & down.
+        assert_eq!(TextAnchor::TopLeft.pixel_offset((10.0, 3.0)), (10.0, 3.0));
+        // Line padding (5, 3): TopRight pushes left & down (silx YMarker).
+        assert_eq!(TextAnchor::TopRight.pixel_offset((5.0, 3.0)), (-5.0, 3.0));
+        // Bottom-aligned pushes up; center columns/rows get no shift.
+        assert_eq!(TextAnchor::BottomLeft.pixel_offset((5.0, 3.0)), (5.0, -3.0));
+        assert_eq!(TextAnchor::Top.pixel_offset((5.0, 3.0)), (0.0, 3.0));
+        assert_eq!(TextAnchor::Left.pixel_offset((5.0, 3.0)), (5.0, 0.0));
+        assert_eq!(TextAnchor::Center.pixel_offset((5.0, 3.0)), (0.0, 0.0));
+        assert_eq!(
+            TextAnchor::BottomRight.pixel_offset((5.0, 3.0)),
+            (-5.0, -3.0)
+        );
     }
 
     #[test]

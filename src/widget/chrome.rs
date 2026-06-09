@@ -12,7 +12,7 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Visuals, pos2, 
 use crate::core::colormap::{Colormap, Normalization};
 use crate::core::dtime_ticks::{self, TimeZone};
 use crate::core::items::LineStyle;
-use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
+use crate::core::marker::{Marker, MarkerKind, MarkerSymbol, TextAnchor};
 use crate::core::plot::{GraphGrid, TickMode};
 use crate::core::roi::{HandleKind, ManagedRoi, Roi};
 use crate::core::shape::{Line, Shape, ShapeKind};
@@ -1006,8 +1006,9 @@ pub fn draw_roi(
     if let (Some(name), Some(anchor)) = (appearance.name.filter(|s| !s.is_empty()), label_anchor) {
         draw_marker_label(
             painter,
-            anchor + vec2(0.0, -3.0),
-            Align2::CENTER_BOTTOM,
+            anchor,
+            TextAnchor::Bottom,
+            (0.0, 3.0),
             name,
             color,
             Some(style.readout_bg),
@@ -1094,18 +1095,31 @@ fn draw_marker_symbol(painter: &Painter, c: Pos2, symbol: MarkerSymbol, size: f3
     }
 }
 
-/// Draw marker label `text` anchored at `pos`, optionally over a filled `bg` box.
+/// Draw marker label `text` attached to the marker point `attach`, honoring the
+/// marker's [`TextAnchor`] and the backend's fixed `pixel_padding` (silx
+/// `pixel_offset`), optionally over a filled `bg` box.
+///
+/// Placement goes through the pure, headlessly-tested core: the sign-adjusted
+/// pixel padding ([`TextAnchor::pixel_offset`]) shifts the anchor point, then the
+/// galley's rect is positioned so the named anchor ([`TextAnchor::rect_offset`])
+/// lands on that shifted point. The painter call itself is GPU/UI and so is not
+/// covered by those tests.
 fn draw_marker_label(
     painter: &Painter,
-    pos: Pos2,
-    anchor: Align2,
+    attach: Pos2,
+    anchor: TextAnchor,
+    pixel_padding: (f32, f32),
     text: &str,
     color: Color32,
     bg: Option<Color32>,
 ) {
     let font = FontId::proportional(11.0);
     let galley = painter.layout_no_wrap(text.to_owned(), font, color);
-    let rect = anchor.anchor_size(pos, galley.size());
+    let size = galley.size();
+    let (ox, oy) = anchor.pixel_offset(pixel_padding);
+    let (rx, ry) = anchor.rect_offset((size.x, size.y));
+    let top_left = attach + vec2(ox + rx, oy + ry);
+    let rect = Rect::from_min_size(top_left, size);
     if let Some(bg) = bg {
         painter.rect_filled(
             rect.expand2(vec2(3.0, 1.0)),
@@ -1140,10 +1154,13 @@ pub fn draw_markers(
                 }
                 draw_marker_symbol(painter, pos, symbol, size, m.color);
                 if let Some(text) = &m.text {
+                    // silx point pixel_offset is a fixed (10, 3); widen the X
+                    // pad by the symbol radius so the label clears larger glyphs.
                     draw_marker_label(
                         painter,
-                        pos + vec2(size * 0.5 + 3.0, 0.0),
-                        Align2::LEFT_CENTER,
+                        pos,
+                        m.text_anchor,
+                        (size * 0.5 + 3.0, 3.0),
                         text,
                         m.color,
                         m.bgcolor,
@@ -1164,10 +1181,13 @@ pub fn draw_markers(
                     None,
                 );
                 if let Some(text) = &m.text {
+                    // silx XMarker: text at the top of the line, ha="left",
+                    // va="top", pixel_offset (5, 3).
                     draw_marker_label(
                         painter,
-                        pos2(px + 3.0, area.top() + 2.0),
-                        Align2::LEFT_TOP,
+                        pos2(px, area.top()),
+                        m.text_anchor,
+                        (5.0, 3.0),
                         text,
                         m.color,
                         m.bgcolor,
@@ -1188,10 +1208,13 @@ pub fn draw_markers(
                     None,
                 );
                 if let Some(text) = &m.text {
+                    // silx YMarker: text at the right edge of the line,
+                    // ha="right", va="top", pixel_offset (5, 3).
                     draw_marker_label(
                         painter,
-                        pos2(area.left() + 3.0, py - 2.0),
-                        Align2::LEFT_BOTTOM,
+                        pos2(area.right(), py),
+                        m.text_anchor,
+                        (5.0, 3.0),
                         text,
                         m.color,
                         m.bgcolor,
