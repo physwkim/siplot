@@ -2,7 +2,9 @@
 //!
 //! [`HistogramColorBar`] pairs a vertical colormap gradient with the active
 //! image's value-distribution histogram and two draggable handles marking the
-//! colormap's `vmin`/`vmax` levels. Dragging a handle returns the new levels via
+//! colormap's `vmin`/`vmax` levels. Dragging a handle — or picking "Auto range"
+//! from the right-click context menu (pyqtgraph `autoLevel`: the data extremes)
+//! — returns the new levels via
 //! [`HistogramColorBarResponse::dragged_levels`]; the owner (e.g. `ImageView`)
 //! applies them to the colormap — the same single-owner drag pattern as
 //! [`crate::widget::radar_view::RadarView`].
@@ -135,6 +137,18 @@ pub fn hit_handle(pointer_frac: f64, vmin_frac: f64, vmax_frac: f64, tol: f64) -
     }
 }
 
+/// The level pair the context menu's "Auto range" resets to (pyqtgraph
+/// `HistogramLUTItem.imageChanged(autoLevel=True)`: the data extremes): the
+/// data range, swapped if reversed; `None` when degenerate or non-finite
+/// (there is no sensible pair to set).
+pub fn auto_range_levels(data_range: (f64, f64)) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = data_range;
+    if hi < lo {
+        std::mem::swap(&mut lo, &mut hi);
+    }
+    (lo.is_finite() && hi.is_finite() && hi > lo).then_some((lo, hi))
+}
+
 /// Apply a dragged `handle` to `value` and return the new `(vmin, vmax)` pair.
 /// The dragged handle is clamped into `[lo, hi]` and may not cross the other
 /// handle: `vmin + min_sep <= vmax` always holds, and the non-dragged level is
@@ -188,12 +202,14 @@ pub struct HistogramColorBar {
 }
 
 /// The result of [`HistogramColorBar::ui`]: the allocated [`egui::Response`] plus
-/// the new `(vmin, vmax)` levels when a handle was dragged this frame.
+/// the new `(vmin, vmax)` levels when a handle was dragged (or the context
+/// menu's "Auto range" was chosen) this frame.
 pub struct HistogramColorBarResponse {
     /// The egui response of the allocated widget area.
     pub response: egui::Response,
-    /// The new `(vmin, vmax)` when a handle moved this frame, ready to apply to
-    /// the colormap; `None` when no drag occurred.
+    /// The new `(vmin, vmax)` when the levels changed this frame — a handle
+    /// drag, or "Auto range" from the right-click menu (the data extremes) —
+    /// ready to apply to the colormap; `None` when nothing changed.
     pub dragged_levels: Option<(f64, f64)>,
 }
 
@@ -240,9 +256,10 @@ impl HistogramColorBar {
     }
 
     /// Paint the histogram + gradient + draggable handles into a `desired`-sized
-    /// region of `ui` and report any handle drag this frame.
+    /// region of `ui` and report any handle drag this frame. The column senses
+    /// clicks so a right-click opens the Auto-range context menu.
     pub fn ui(&self, ui: &mut egui::Ui, desired: Vec2) -> HistogramColorBarResponse {
-        let (rect, response) = ui.allocate_exact_size(desired, Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
         self.show_in(ui, rect, response)
     }
 
@@ -252,7 +269,7 @@ impl HistogramColorBar {
     /// [`Self::ui`]; pair with [`Self::with_bar_bounds`] when the gutter is taller
     /// than the data area it should track.
     pub fn ui_at(&self, ui: &egui::Ui, rect: Rect) -> HistogramColorBarResponse {
-        let response = ui.interact(rect, ui.id().with("histogram_colorbar"), Sense::hover());
+        let response = ui.interact(rect, ui.id().with("histogram_colorbar"), Sense::click());
         self.show_in(ui, rect, response)
     }
 
@@ -332,6 +349,19 @@ impl HistogramColorBar {
         if min_resp.hovered() || max_resp.hovered() || min_resp.dragged() || max_resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
+
+        // Right-click context menu (pyqtgraph `HistogramLUTItem` autoLevel):
+        // "Auto range" resets the levels to the data extremes. The choice flows
+        // through the same `dragged_levels` channel as a handle drag, so every
+        // level change reaches the owner through one apply path.
+        response.context_menu(|ui| {
+            if ui.button("Auto range").clicked() {
+                if let Some(levels) = auto_range_levels(self.data_range) {
+                    dragged_levels = Some(levels);
+                }
+                ui.close();
+            }
+        });
 
         // Paint at the live (post-drag) levels so there is no one-frame lag.
         let (draw_vmin, draw_vmax) = dragged_levels.unwrap_or((self.vmin, self.vmax));
@@ -603,6 +633,25 @@ mod tests {
         // Handles close together; pointer nearer the max.
         assert_eq!(hit_handle(0.52, 0.48, 0.53, 0.1), Some(Handle::Max));
         assert_eq!(hit_handle(0.49, 0.48, 0.53, 0.1), Some(Handle::Min));
+    }
+
+    // ── auto_range_levels ───────────────────────────────────────────────
+
+    #[test]
+    fn auto_range_levels_returns_data_extremes() {
+        assert_eq!(auto_range_levels((-0.45, 1.02)), Some((-0.45, 1.02)));
+    }
+
+    #[test]
+    fn auto_range_levels_swaps_reversed_range() {
+        assert_eq!(auto_range_levels((9.0, 1.0)), Some((1.0, 9.0)));
+    }
+
+    #[test]
+    fn auto_range_levels_rejects_degenerate_and_non_finite() {
+        assert_eq!(auto_range_levels((5.0, 5.0)), None);
+        assert_eq!(auto_range_levels((f64::NAN, 1.0)), None);
+        assert_eq!(auto_range_levels((0.0, f64::INFINITY)), None);
     }
 
     // ── apply_handle_drag ───────────────────────────────────────────────

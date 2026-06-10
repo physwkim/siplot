@@ -8,8 +8,9 @@
 //! [`siplot::HistogramColorBar`] (enabled via `set_interactive_colorbar(true)`):
 //! it draws the image's value-distribution histogram beside the gradient with
 //! two draggable handles. Drag a handle to adjust the colormap `vmin`/`vmax` and
-//! the image contrast updates live. (Off by default; silx adjusts levels through
-//! a separate `ColormapDialog`.)
+//! the image contrast updates live; right-click the colorbar for "Auto range"
+//! (reset the levels to the data extremes, pyqtgraph `autoLevel`). (Off by
+//! default; silx adjusts levels through a separate `ColormapDialog`.)
 //!
 //! Run with: `cargo run --example high_level_image_view`
 

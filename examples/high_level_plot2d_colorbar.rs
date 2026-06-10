@@ -6,10 +6,12 @@
 //! the plot's right gutter (the "chrome" colorbar path) instead of a separate
 //! standalone column. Enable it with [`Plot2D::set_interactive_colorbar`].
 //!
-//! Drag a handle: [`Plot2D::show`] returns the dragged levels via
-//! [`siplot::PlotResponse::colorbar_dragged_levels`]; the owner applies them with
-//! [`Plot2D::set_active_image_levels`] and the image contrast updates live.
-//! (Off by default; silx adjusts levels through a separate `ColormapDialog`.)
+//! Drag a handle — or right-click the colorbar and pick "Auto range" (reset to
+//! the data extremes, pyqtgraph `autoLevel`): [`Plot2D::show`] returns the new
+//! levels via [`siplot::PlotResponse::colorbar_dragged_levels`]; the owner
+//! applies them with [`Plot2D::set_active_image_levels`] and the image contrast
+//! updates live. (Off by default; silx adjusts levels through a separate
+//! `ColormapDialog`.)
 //!
 //! Run with: `cargo run --example high_level_plot2d_colorbar`
 
