@@ -4,8 +4,10 @@ use egui::Color32;
 
 use crate::core::backend::ItemHandle;
 use crate::widget::high_level::Plot2D;
-use crate::widget::interaction::{DrawEvent, DrawMode, DrawParams, DrawState};
-use crate::widget::plot_widget::{PlotResponse, feed_draw_state};
+use crate::widget::interaction::{
+    DrawEvent, DrawMode, DrawParams, DrawState, FillMode, SelectionStyle,
+};
+use crate::widget::plot_widget::{PlotResponse, feed_draw_state, paint_draw_preview};
 
 /// Drawing tools mirroring silx `_BaseMaskToolsWidget` draw modes
 /// (rectangle, ellipse, polygon, pencil/eraser).
@@ -796,6 +798,118 @@ impl MaskToolsWidget {
             self.shape_draw = Some(DrawState::new(mode));
         }
         event
+    }
+
+    /// Drive the active drawing tool from the plot pointer and paint its live
+    /// cursor preview — the standalone-complete entry point for wiring this
+    /// widget onto a bare [`Plot2D`], so a caller gets the full tool set without
+    /// reaching for the crate-internal shape-draw / preview pieces.
+    ///
+    /// Dispatches on the active tool: pencil / eraser brush strokes
+    /// ([`Self::handle_interaction`]), rectangle / ellipse / polygon shape draws
+    /// ([`Self::handle_shape_draw`]), each with the matching cursor preview
+    /// (silx `MaskToolsWidget._plotDrawEvent`). The caller still calls
+    /// [`Self::apply`] afterwards to upload the overlay. Put the plot in
+    /// [`crate::widget::high_level::PlotInteractionMode::MaskDraw`] so the
+    /// primary drag is reserved for drawing rather than pan / zoom / box-select.
+    pub fn handle_draw(&mut self, ui: &egui::Ui, plot_response: &PlotResponse) {
+        match self.active_tool {
+            MaskTool::Pencil | MaskTool::Eraser => {
+                // Leaving a shape tool: drop any in-progress shape so it does not
+                // resume if the user switches back.
+                self.cancel_shape_draw();
+                self.handle_interaction(plot_response);
+                self.paint_brush_preview(ui, plot_response);
+            }
+            MaskTool::Rectangle | MaskTool::Polygon | MaskTool::Ellipse => {
+                let event = self.handle_shape_draw(plot_response);
+                self.paint_shape_preview(ui, plot_response, event.as_ref());
+            }
+            MaskTool::None => {
+                // No tool: end any in-progress brush stroke (handle_interaction
+                // does this for a non-brush tool) and drop any shape draw.
+                self.cancel_shape_draw();
+                self.handle_interaction(plot_response);
+            }
+        }
+    }
+
+    /// Paint the pencil / eraser brush footprint — an unfilled dashed circle of
+    /// radius `brush_size / 2` (data coords) — at the live cursor, mirroring silx
+    /// `DrawFreeHand.updatePencilShape` (`PlotInteraction.py:1011-1017`,
+    /// `fill="none"`), shown both while hovering and while painting (silx draws
+    /// it from `Idle.onMove` and `Select.onMove`). A no-op when the active tool
+    /// is not a brush or the cursor is outside the data area. Painted on a
+    /// foreground layer clipped to the data area.
+    ///
+    /// The single owner of the brush-preview render, shared by the standalone
+    /// [`Self::handle_draw`] and [`crate::widget::high_level::ImageView`].
+    pub(crate) fn paint_brush_preview(&self, ui: &egui::Ui, plot_response: &PlotResponse) {
+        if !matches!(self.active_tool, MaskTool::Pencil | MaskTool::Eraser) {
+            return;
+        }
+        let area = plot_response.transform.area;
+        // Current pointer: hover_pos while idle, interact_pointer_pos while
+        // painting (the pointer is captured by the drag).
+        let Some(cursor) = plot_response
+            .response
+            .hover_pos()
+            .or_else(|| plot_response.response.interact_pointer_pos())
+        else {
+            return;
+        };
+        if !area.contains(cursor) {
+            return;
+        }
+        let center = plot_response.transform.pixel_to_data(cursor);
+        let radius = self.brush_size as f64 / 2.0;
+        let circle = pencil_preview_circle(center, radius, PENCIL_PREVIEW_SEGMENTS);
+        let mut outline: Vec<egui::Pos2> = circle
+            .iter()
+            .map(|&(x, y)| plot_response.transform.data_to_pixel(x, y))
+            .collect();
+        if let Some(&first) = outline.first() {
+            outline.push(first); // close the ring (silx polygon, fill="none")
+        }
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("mask-brush-preview"),
+        ));
+        painter.with_clip_rect(area).add(egui::Shape::dashed_line(
+            &outline,
+            egui::Stroke::new(1.5, self.color),
+            6.0,
+            4.0,
+        ));
+    }
+
+    /// Paint the in-progress shape-draw rubber band (rectangle / ellipse /
+    /// polygon) in the mask overlay color on a foreground layer clipped to the
+    /// data area, mirroring silx drawing the mask shape in the overlay color
+    /// (`MaskToolsWidget._plotDrawEvent`). `event` is this frame's draw event
+    /// from [`Self::handle_shape_draw`]. A no-op when no shape draw is in
+    /// progress.
+    ///
+    /// The single owner of the shape-preview render, shared by the standalone
+    /// [`Self::handle_draw`] and [`crate::widget::high_level::ImageView`].
+    pub(crate) fn paint_shape_preview(
+        &self,
+        ui: &egui::Ui,
+        plot_response: &PlotResponse,
+        event: Option<&DrawEvent>,
+    ) {
+        let Some(draw) = self.shape_draw() else {
+            return;
+        };
+        let style = SelectionStyle::new(FillMode::Hatch, self.color);
+        let painter = ui
+            .ctx()
+            .layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("mask-shape-preview"),
+            ))
+            .with_clip_rect(plot_response.transform.area);
+        paint_draw_preview(&painter, &plot_response.transform, draw, event, style);
     }
 
     /// Apply a finished draw shape to the current level, converting its

@@ -1,6 +1,14 @@
 //! Mask Tools Example.
 //!
-//! Demonstrates the `MaskToolsWidget` allowing the user to draw a boolean mask over a `Plot2D`.
+//! Demonstrates the low-level [`MaskToolsWidget`] driving an interactive mask
+//! over a bare [`Plot2D`]: pencil / eraser brushes and rectangle / polygon /
+//! ellipse shape tools, each with a live cursor preview, shown as a colored
+//! overlay (silx `MaskToolsWidget`). While a tool is active the plot is put in
+//! [`PlotInteractionMode::MaskDraw`] so the primary drag paints the mask instead
+//! of panning / zooming; with no tool selected the plot zooms normally.
+//!
+//! `MaskToolsWidget::handle_draw` drives the active tool and paints its preview;
+//! `apply` uploads the resulting overlay to the plot.
 //!
 //! Run with: `cargo run --example high_level_mask_tools`
 
@@ -32,7 +40,10 @@ impl MaskToolsApp {
             .try_add_default_image(WIDTH, HEIGHT, &pixels)
             .expect("image dimensions match");
 
-        let mask_tools = MaskToolsWidget::new(WIDTH, HEIGHT);
+        let mut mask_tools = MaskToolsWidget::new(WIDTH, HEIGHT);
+        // Start on the pencil so the demo is usable on launch (the toolbar
+        // switches to the eraser / rectangle / polygon / ellipse tools).
+        mask_tools.active_tool = MaskTool::Pencil;
 
         Self {
             image_plot,
@@ -44,26 +55,30 @@ impl MaskToolsApp {
 impl eframe::App for MaskToolsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.vertical(|ui| {
-            // Show mask toolbar
+            // Tool selector + level / color / brush / undo controls.
             self.mask_tools.show_toolbar(ui);
 
             ui.separator();
 
-            // Draw plot and handle interactions
-            let plot_resp = self.image_plot.show_with_toolbar(ui);
-
-            // If drawing mask, we don't want Pan/Zoom to interfere.
-            // In a real app, you might want a "Draw Mask" interaction mode.
-            // For now, if active tool is not None, we override interaction mode to Select
-            // so panning is disabled.
-            if self.mask_tools.active_tool != MaskTool::None
-                && self.image_plot.interaction_mode() != PlotInteractionMode::Select
-            {
-                self.image_plot
-                    .set_interaction_mode(PlotInteractionMode::Select);
+            // Reserve the primary drag for drawing while a tool is active (silx
+            // mask-draw mode); otherwise leave the plot in its normal zoom mode.
+            // Set before `show` so this frame's drag is already handled in the
+            // right mode.
+            let want = if self.mask_tools.active_tool != MaskTool::None {
+                PlotInteractionMode::MaskDraw
+            } else {
+                PlotInteractionMode::Zoom
+            };
+            if self.image_plot.interaction_mode() != want {
+                self.image_plot.set_interaction_mode(want);
             }
 
-            self.mask_tools.handle_interaction(&plot_resp.plot);
+            let plot_resp = self.image_plot.show(ui);
+
+            // Drive the active tool (pencil / eraser / rectangle / polygon /
+            // ellipse) and paint its live cursor preview, then upload the
+            // resulting overlay.
+            self.mask_tools.handle_draw(ui, &plot_resp);
             self.mask_tools.apply(&mut self.image_plot);
         });
     }
