@@ -8,14 +8,17 @@
 //! `PydmTimePlot` / `PydmWaveformPlot` / `PydmScatterPlot` / `PydmEventPlot` all
 //! build their specs from.
 //!
-//! **Deviation:** PyDM (via `MultiAxisPlot`) supports an arbitrary number of
-//! named Y axes (`yAxisName` is a free string); siplot has a fixed two-axis model
-//! (left [`YAxis::Left`] and right/y2 [`YAxis::Right`]). A curve is therefore
-//! assigned to the left or the right axis, and named axes beyond those two are not
-//! ported.
+//! PyDM (via `MultiAxisPlot`) supports an arbitrary number of named Y axes
+//! (`yAxisName` is a free string). siplot now models N stacked Y axes too
+//! ([`YAxis::Left`], [`YAxis::Right`], and [`YAxis::Extra(n)`](YAxis::Extra)),
+//! so a curve maps to any of them: create an extra axis with
+//! [`Plot1D::add_extra_y_axis`](siplot::PlotWidget::add_extra_y_axis) and bind the curve via
+//! [`CurveStyle::with_y_axis`]. PyDM's free-string axis *names* are not modelled
+//! (axes are addressed by index), and per-extra-axis interactive pan/zoom is not
+//! wired (see the siplot multi-axis deferred list).
 
 use siplot::egui::Color32;
-use siplot::{CurveSpec, LineStyle, Symbol, YAxis};
+use siplot::{CurveSpec, LineStyle, Plot1D, Symbol, YAxis};
 
 /// Default marker size in points (matches siplot `add_scatter`). Single owner;
 /// `scatter_plot` re-exports it for backwards compatibility.
@@ -39,8 +42,9 @@ pub struct CurveStyle {
     pub symbol: Option<Symbol>,
     /// Marker size in points (PyDM `symbolSize`).
     pub symbol_size: f32,
-    /// Which Y axis the curve is plotted against (PyDM `yAxisName`, reduced to
-    /// siplot's left/right model).
+    /// Which Y axis the curve is plotted against (PyDM `yAxisName`): the left
+    /// axis, the right (y2) axis, or one of the extra stacked axes
+    /// ([`YAxis::Extra`]).
     pub y_axis: YAxis,
 }
 
@@ -101,8 +105,9 @@ impl CurveStyle {
         self
     }
 
-    /// Assign the curve to a Y axis (builder style; PyDM `yAxisName`, reduced to
-    /// left/right).
+    /// Assign the curve to a Y axis (builder style; PyDM `yAxisName`). Pass
+    /// [`YAxis::Extra(n)`](YAxis::Extra) to bind to a stacked extra axis created
+    /// via [`Plot1D::add_extra_y_axis`](siplot::PlotWidget::add_extra_y_axis).
     pub fn with_y_axis(mut self, y_axis: YAxis) -> Self {
         self.y_axis = y_axis;
         self
@@ -117,6 +122,27 @@ impl CurveStyle {
         spec.symbol_size = self.symbol_size;
         spec.y_axis = self.y_axis;
         spec
+    }
+}
+
+/// Ensure the secondary Y axis a curve is bound to autoscales to fit it. This is
+/// the single owner of the "binding a curve to a non-left axis re-enables that
+/// axis' autoscale" rule shared by every plot widget's `set_curve_style`: the
+/// right (y2) and extra axes default to autoscaling, so a curve added to one
+/// gets a sensible range without the caller pinning it. The extra axis must
+/// already exist (created via [`Plot1D::add_extra_y_axis`](siplot::PlotWidget::add_extra_y_axis)); binding to an
+/// unknown index is a no-op here and the curve falls back to the left axis at
+/// render time. [`YAxis::Left`] needs nothing — it always autoscales with the
+/// primary data.
+pub(crate) fn ensure_axis_autoscale(plot: &mut Plot1D, axis: YAxis) {
+    match axis {
+        YAxis::Left => {}
+        YAxis::Right => {
+            plot.plot_mut().set_y2_autoscale(true);
+        }
+        YAxis::Extra(n) => {
+            plot.set_extra_y_autoscale(n, true);
+        }
     }
 }
 

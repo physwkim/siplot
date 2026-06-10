@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::{CurveStyle, PydmTimePlot};
-use siplot::egui;
+use sidm::widgets::{CurveStyle, PydmScatterPlot, PydmTimePlot};
+use siplot::{AxisSide, YAxis, egui};
 
 fn now_epoch_secs() -> f64 {
     SystemTime::now()
@@ -90,6 +90,87 @@ fn set_curve_style_recolors_the_curve_on_screen() {
     assert!(
         green < 60,
         "the original green colour should be gone after restyle; got {green}"
+    );
+}
+
+#[test]
+fn set_curve_style_binds_curve_to_extra_axis_and_autoscales_it() {
+    // End-to-end proof of the multi-axis wiring through the sidm widget API:
+    // a curve restyled onto an extra (stacked) Y axis via `CurveStyle::with_y_axis`
+    // + `set_curve_style` must (a) make that axis autoscale to fit *its* data
+    // (through `ensure_axis_autoscale` -> `set_extra_y_autoscale`, applied on the
+    // reset-zoom-to-data refit), and (b) render against that scale. The injected
+    // Y data (1000..1005) sits far outside the left-axis default, so the line
+    // only lands on-screen if the curve is truly bound to the extra axis that
+    // fitted it.
+    //
+    // A scatter plot (not a time plot) is used deliberately: it keeps
+    // `auto_reset_zoom` on, so each data update refits the autoscale-on axes
+    // (including extra axes via `reset_extra_axes_to`). The time plot disables
+    // `auto_reset_zoom`, so enabling a secondary axis' autoscale flag there is a
+    // no-op until an explicit reset-zoom — the same limitation the pre-existing
+    // y2 path has, faithfully generalized.
+    let rs = create_render_state(default_wgpu_setup());
+    siplot::install(&rs);
+
+    let engine = Engine::new();
+    let mut plot = PydmScatterPlot::new(&rs, 0);
+    let extra = plot.plot_mut().add_extra_y_axis(AxisSide::Right);
+    let idx = plot
+        .add_xy_channel(
+            &engine,
+            "loc://plot_style_extra_x",
+            "loc://plot_style_extra_y",
+            egui::Color32::from_rgb(255, 0, 0),
+            "xy",
+        )
+        .expect("add xy channel");
+    // A thick connecting line (a scatter curve item may carry one) gives a robust
+    // red-pixel signal across the plot; bound to the extra axis it traces the
+    // 1000..1005 span diagonally.
+    assert!(
+        plot.set_curve_style(
+            idx,
+            CurveStyle::line(egui::Color32::from_rgb(255, 0, 0))
+                .with_line_width(4.0)
+                .with_y_axis(YAxis::Extra(extra))
+        )
+    );
+    for i in 0..=5 {
+        plot.inject(idx, f64::from(i), 1000.0 + f64::from(i));
+    }
+
+    // (a) The extra axis autoscaled to fit its curve's 1000..1005 span.
+    let (lo, hi) = plot
+        .plot()
+        .get_graph_y_limits(YAxis::Extra(extra))
+        .expect("extra axis range autoscaled from its bound curve");
+    assert!(
+        lo <= 1000.0 && hi >= 1005.0,
+        "extra axis should fit its curve's 1000..1005 span; got {lo}..{hi}"
+    );
+
+    // (b) The line reaches the screen against that extra scale.
+    let app = Rc::new(RefCell::new(plot));
+    let renderer = WgpuTestRenderer::from_render_state(rs);
+    let app_ui = app.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(400.0, 300.0))
+        .with_pixels_per_point(1.0)
+        .renderer(renderer)
+        .build_ui(move |ui| {
+            app_ui.borrow_mut().show(ui);
+        });
+    harness.step();
+    harness.step();
+    let image = harness.render().expect("headless wgpu render");
+    let red = count_color(image.as_raw(), [255, 0, 0]);
+    drop(engine);
+
+    assert!(
+        red > 100,
+        "the extra-axis line at y≈1000 (axis range ~1000..1005) should render \
+         mid-plot; got {red} red px"
     );
 }
 

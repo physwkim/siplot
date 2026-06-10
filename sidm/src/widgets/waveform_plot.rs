@@ -13,11 +13,11 @@
 
 use siplot::egui::Color32;
 use siplot::egui_wgpu::RenderState;
-use siplot::{ItemHandle, Plot1D, PlotId, PlotResponse, YAxis, egui};
+use siplot::{ItemHandle, Plot1D, PlotId, PlotResponse, egui};
 
 use crate::channel::{Channel, PvValue};
 use crate::engine::{Engine, EngineError};
-use crate::widgets::plot_style::CurveStyle;
+use crate::widgets::plot_style::{CurveStyle, ensure_axis_autoscale};
 
 /// When a waveform/scatter curve redraws relative to its X/Y channels (PyDM
 /// `redraw_mode`).
@@ -231,17 +231,16 @@ impl PydmWaveformPlot {
 
     /// Restyle curve `index` (PyDM `BasePlotCurveItem` properties: colour, line
     /// style/width, symbol, Y axis) and re-draw it immediately. Assigning the
-    /// curve to [`YAxis::Right`] enables the right (y2) axis' autoscale. Returns
-    /// `false` for an out-of-range index.
+    /// curve to a secondary axis ([`YAxis::Right`](siplot::YAxis::Right) or an
+    /// [`YAxis::Extra`](siplot::YAxis::Extra) stacked axis) enables that axis'
+    /// autoscale. Returns `false` for an out-of-range index.
     pub fn set_curve_style(&mut self, index: usize, style: CurveStyle) -> bool {
         if index >= self.curves.len() {
             return false;
         }
-        let right = style.y_axis == YAxis::Right;
+        let axis = style.y_axis;
         self.curves[index].style = style;
-        if right {
-            self.plot.plot_mut().set_y2_autoscale(true);
-        }
+        ensure_axis_autoscale(&mut self.plot, axis);
         self.curves[index].restyle(&mut self.plot);
         true
     }
