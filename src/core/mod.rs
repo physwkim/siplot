@@ -8,6 +8,7 @@ pub mod colormap;
 pub mod decimate;
 pub mod dtime_ticks;
 pub mod fitting;
+pub mod histogram;
 pub mod items;
 pub mod marker;
 pub mod peaks;
