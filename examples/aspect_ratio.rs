@@ -4,8 +4,8 @@
 //! both axes. With `keep_aspect = true` the widget expands the tighter axis'
 //! display range so data units are square on screen, so the circle renders as a
 //! circle in any non-square window (silx `setKeepDataAspectRatio`,
-//! `doc/design.md` §13 A4). Set `keep_aspect = false` to see it squash to an
-//! ellipse when the window is not square.
+//! `doc/design.md` §13 A4). Toggle the checkbox to drop the aspect lock and
+//! watch the circle squash to an ellipse when the window is not square.
 //!
 //! Run with: `cargo run --example aspect_ratio`
 
@@ -50,6 +50,10 @@ impl AspectApp {
 impl eframe::App for AspectApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.checkbox(
+                &mut self.plot.keep_aspect,
+                "Keep data aspect ratio (square pixels)",
+            );
             PlotView::new().show(ui, &mut self.plot);
         });
     }
