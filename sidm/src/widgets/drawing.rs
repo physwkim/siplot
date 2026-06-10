@@ -81,7 +81,17 @@ fn rotate(dx: f64, dy: f64, angle_rad: f64) -> (f64, f64) {
 
 /// The shape's vertices (screen points), centred on `center`, fitting a `w × h`
 /// box and rotated by `rotation_deg`. A `Line` returns its two endpoints.
-fn shape_points(shape: DrawingShape, center: Pos2, w: f64, h: f64, rotation_deg: f64) -> Vec<Pos2> {
+///
+/// Shared with [`crate::widgets::symbol`]: it is the one owner of the shape
+/// geometry, so `PydmSymbol` fills its bounds with these points rather than
+/// re-deriving the ellipse sampling.
+pub(crate) fn shape_points(
+    shape: DrawingShape,
+    center: Pos2,
+    w: f64,
+    h: f64,
+    rotation_deg: f64,
+) -> Vec<Pos2> {
     let (hw, hh) = (w * 0.5, h * 0.5);
     let local: Vec<(f64, f64)> = match shape {
         DrawingShape::Rectangle => vec![(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)],

@@ -27,6 +27,7 @@ pub mod scale_indicator;
 pub mod scatter_plot;
 pub mod slider;
 pub mod spinbox;
+pub mod symbol;
 pub mod time_plot;
 pub mod waveform_plot;
 
@@ -51,6 +52,7 @@ pub use scale_indicator::{
 pub use scatter_plot::{DEFAULT_SYMBOL_SIZE, PydmScatterPlot};
 pub use slider::{DEFAULT_NUM_STEPS, PydmSlider};
 pub use spinbox::PydmSpinbox;
+pub use symbol::{PydmSymbol, SymbolState, symbol_index_for_value, value_as_state_key};
 pub use time_plot::{
     DEFAULT_TIME_SPAN, DEFAULT_UPDATE_RATE_HZ, PydmTimePlot, UpdateMode, is_rate_due,
     update_interval,
