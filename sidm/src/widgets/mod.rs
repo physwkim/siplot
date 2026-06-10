@@ -17,9 +17,11 @@ pub mod label;
 pub mod line_edit;
 pub mod push_button;
 pub mod ring_buffer;
+pub mod scatter_plot;
 pub mod slider;
 pub mod spinbox;
 pub mod time_plot;
+pub mod waveform_plot;
 
 pub use base::{BorderStyle, ChannelBase, alarm_border, control_range, severity_color};
 pub use byte::{Orientation, PydmByteIndicator, extract_bits};
@@ -30,9 +32,11 @@ pub use label::PydmLabel;
 pub use line_edit::{PydmLineEdit, parse_input};
 pub use push_button::{DEFAULT_CONFIRM_MESSAGE, PydmPushButton, compute_send_value};
 pub use ring_buffer::{DEFAULT_BUFFER_SIZE, MINIMUM_BUFFER_SIZE, TimeSeriesBuffer};
+pub use scatter_plot::{DEFAULT_SYMBOL_SIZE, PydmScatterPlot};
 pub use slider::{DEFAULT_NUM_STEPS, PydmSlider};
 pub use spinbox::PydmSpinbox;
 pub use time_plot::{
     DEFAULT_TIME_SPAN, DEFAULT_UPDATE_RATE_HZ, PydmTimePlot, UpdateMode, is_rate_due,
     update_interval,
 };
+pub use waveform_plot::{PydmWaveformPlot, RedrawMode, mode_allows, value_to_waveform};
