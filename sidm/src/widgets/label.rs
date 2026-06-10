@@ -1,0 +1,192 @@
+//! `PydmLabel` — a read-only value display.
+//!
+//! Ports `pydm/widgets/label.py`: a label that shows its channel's value,
+//! formatted via [`format_value`], with alarm-severity border/text styling from
+//! [`ChannelBase`]. While the channel is disconnected it shows the channel
+//! address instead of a stale value (PyDM `check_enable_state`).
+
+use siplot::egui;
+
+use crate::channel::{Channel, ChannelState};
+use crate::engine::{Engine, EngineError};
+use crate::widgets::base::ChannelBase;
+use crate::widgets::display_format::{DisplayFormat, FormatSpec, format_value};
+
+/// A read-only channel value display (PyDM `PyDMLabel`).
+pub struct PydmLabel {
+    base: ChannelBase,
+    /// How the value is rendered (PyDM `displayFormat`).
+    pub format: DisplayFormat,
+    /// Precision override; `None` uses the PV's `PREC` (PyDM `precisionFromPV`).
+    pub precision: Option<i32>,
+    /// Append the engineering units (PyDM `showUnits`).
+    pub show_units: bool,
+}
+
+impl PydmLabel {
+    /// Connect `address` through `engine` and wrap it in a label with PyDM's
+    /// defaults (native format, PV precision, no units, alarm border on).
+    pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
+        Ok(Self {
+            base: ChannelBase::new(engine.connect(address)?),
+            format: DisplayFormat::Default,
+            precision: None,
+            show_units: false,
+        })
+    }
+
+    /// Set the display format (builder style).
+    pub fn with_format(mut self, format: DisplayFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    /// Set a precision override (builder style).
+    pub fn with_precision(mut self, precision: i32) -> Self {
+        self.precision = Some(precision);
+        self
+    }
+
+    /// Show engineering units (builder style).
+    pub fn with_show_units(mut self, show_units: bool) -> Self {
+        self.show_units = show_units;
+        self
+    }
+
+    /// Recolour the text by alarm severity (PyDM `alarmSensitiveContent`,
+    /// builder style).
+    pub fn with_alarm_sensitive_content(mut self, on: bool) -> Self {
+        self.base.alarm_sensitive_content = on;
+        self
+    }
+
+    /// Draw or suppress the alarm-severity border (PyDM `alarmSensitiveBorder`,
+    /// builder style).
+    pub fn with_alarm_sensitive_border(mut self, on: bool) -> Self {
+        self.base.alarm_sensitive_border = on;
+        self
+    }
+
+    /// The underlying channel.
+    pub fn channel(&self) -> &Channel {
+        self.base.channel()
+    }
+
+    fn format_spec(&self) -> FormatSpec {
+        FormatSpec {
+            format: self.format,
+            precision: self.precision,
+            show_units: self.show_units,
+        }
+    }
+
+    /// The text the label would show for `state`: the formatted value while
+    /// connected, the channel address while disconnected (PyDM shows the address
+    /// rather than a stale value when the connection drops).
+    pub fn display_text(&self, state: &ChannelState) -> String {
+        if state.connected {
+            format_value(state.value.as_ref(), state, self.format_spec())
+        } else {
+            self.base.channel().address().raw().to_owned()
+        }
+    }
+
+    /// Render the label this frame, returning the widget response (carrying the
+    /// hover tooltip).
+    pub fn show(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let state = self.base.channel().state();
+        let text = self.display_text(&state);
+        let color = self.base.content_color(&state);
+        self.base
+            .framed(ui, &state, false, |ui| {
+                let mut rich = egui::RichText::new(text);
+                if let Some(color) = color {
+                    rich = rich.color(color);
+                }
+                ui.label(rich);
+            })
+            .response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::channel::PvValue;
+
+    fn wait_for(mut cond: impl FnMut() -> bool, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cond()
+    }
+
+    fn connected_state(value: PvValue) -> ChannelState {
+        ChannelState {
+            connected: true,
+            value: Some(value),
+            ..ChannelState::default()
+        }
+    }
+
+    #[test]
+    fn formats_value_with_precision_and_units() {
+        let engine = Engine::new();
+        let label = PydmLabel::new(&engine, "loc://label_fmt")
+            .expect("connect")
+            .with_precision(2)
+            .with_show_units(true);
+        let mut state = connected_state(PvValue::Float(1.5));
+        state.units = Some(Arc::from("V"));
+        assert_eq!(label.display_text(&state), "1.50 V");
+    }
+
+    #[test]
+    fn disconnected_shows_channel_address() {
+        let engine = Engine::new();
+        let label = PydmLabel::new(&engine, "loc://label_disc").expect("connect");
+        let state = ChannelState {
+            connected: false,
+            value: Some(PvValue::Float(9.0)),
+            ..ChannelState::default()
+        };
+        // Even with a stale value present, a disconnected label shows the address.
+        assert_eq!(label.display_text(&state), "loc://label_disc");
+    }
+
+    #[test]
+    fn enum_value_renders_label() {
+        let engine = Engine::new();
+        let label = PydmLabel::new(&engine, "loc://label_enum").expect("connect");
+        let mut state = connected_state(PvValue::Int(1));
+        state.enum_strings = Some(["Off".to_owned(), "On".to_owned()].into());
+        assert_eq!(label.display_text(&state), "On");
+    }
+
+    #[test]
+    fn live_value_flows_from_a_write() {
+        let engine = Engine::new();
+        let label = PydmLabel::new(&engine, "loc://label_live").expect("connect");
+        let writer = engine.connect("loc://label_live").expect("second handle");
+        assert!(
+            wait_for(|| label.channel().is_connected(), Duration::from_secs(2)),
+            "loc label channel never connected"
+        );
+        writer.put(PvValue::Float(7.0));
+        assert!(
+            wait_for(
+                || label.display_text(&label.channel().state()) == "7",
+                Duration::from_secs(2)
+            ),
+            "label did not observe the written value (got {:?})",
+            label.display_text(&label.channel().state())
+        );
+    }
+}
