@@ -1,7 +1,11 @@
 //! High-level context-menu example.
 //!
 //! Mirrors silx `plotContextMenu.py`: right-click the plot area for custom
-//! plot actions wired to a retained high-level widget.
+//! plot actions wired to a retained high-level widget. Custom entries are
+//! appended to the plot's built-in menu (Zoom Back / Reset Zoom) through
+//! `PlotWidget::show_with_context_menu` — the plot owns the single context
+//! menu on its response, exactly like silx adds actions to the plot's default
+//! menu instead of installing a second one.
 //!
 //! Run with: `cargo run --example high_level_context_menu`
 
@@ -60,28 +64,29 @@ impl eframe::App for ContextMenuApp {
             self.plot.show_toolbar_with(ui, |ui, _plot| {
                 ui.label(status);
             });
-            let response = self.plot.show(ui);
-            response.response.context_menu(|ui| {
-                if ui.button("Reset zoom").clicked() {
-                    self.plot.reset_zoom();
-                    ui.close();
-                }
-
-                let mut cursor = self.plot.graph_cursor();
-                if ui.checkbox(&mut cursor, "Cursor").changed() {
-                    self.plot.set_graph_cursor(cursor);
-                }
-
-                let mut grid = self.plot.graph_grid();
-                if ui.checkbox(&mut grid, "Grid").changed() {
-                    self.plot.set_graph_grid(grid);
-                }
-
+            // The closure only renders entries and signals the choices; the
+            // owner applies them after `show` returns (it cannot borrow
+            // `self.plot` while the plot is shown).
+            let mut cursor = self.plot.graph_cursor();
+            let mut grid = self.plot.graph_grid();
+            let (mut cursor_changed, mut grid_changed, mut save_clicked) = (false, false, false);
+            self.plot.show_with_context_menu(ui, |ui| {
+                cursor_changed |= ui.checkbox(&mut cursor, "Cursor").changed();
+                grid_changed |= ui.checkbox(&mut grid, "Grid").changed();
                 if ui.button("Save PNG").clicked() {
-                    self.save_graph();
+                    save_clicked = true;
                     ui.close();
                 }
             });
+            if cursor_changed {
+                self.plot.set_graph_cursor(cursor);
+            }
+            if grid_changed {
+                self.plot.set_graph_grid(grid);
+            }
+            if save_clicked {
+                self.save_graph();
+            }
         });
     }
 }

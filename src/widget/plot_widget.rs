@@ -239,12 +239,32 @@ pub struct DrawResponse {
 
 /// Stateless view that renders a [`Plot`] into an egui `Ui`.
 #[derive(Default)]
-pub struct PlotView;
+pub struct PlotView<'a> {
+    /// Custom entries appended to the plot's built-in right-click menu. The
+    /// plot response carries exactly ONE `Response::context_menu` registration
+    /// (the built-in one in `apply_interaction`); registering a second menu on
+    /// the same response makes egui close the popup the first registration
+    /// just opened (the second `Popup::show` sees the menu's `Area` already
+    /// shown this frame, so the opening click counts as a close-click) — no
+    /// menu ever appears. Callers therefore extend the single menu through
+    /// this hook instead (silx `plotContextMenu.py` likewise adds actions to
+    /// the plot's default menu rather than installing a second one).
+    menu_ext: Option<&'a mut dyn FnMut(&mut Ui)>,
+}
 
-impl PlotView {
+impl<'a> PlotView<'a> {
     /// Create a new plot view.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Append custom entries to the plot's built-in right-click context menu,
+    /// after the Zoom Back / Reset Zoom items. See [`Self::menu_ext`] for why
+    /// this hook (and not a second `Response::context_menu`) is the way to add
+    /// custom menu entries.
+    pub fn with_context_menu(mut self, ext: &'a mut dyn FnMut(&mut Ui)) -> Self {
+        self.menu_ext = Some(ext);
+        self
     }
 
     /// Render the plot with the default zoom interaction mode, filling the
@@ -269,6 +289,7 @@ impl PlotView {
         plot: &mut Plot,
         interaction_mode: PlotInteractionMode,
     ) -> PlotResponse {
+        let menu_ext = self.menu_ext;
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 
         // Capture the initial view once; the Reset Zoom context-menu item
@@ -310,7 +331,7 @@ impl PlotView {
             marker_drag_finished,
             draw_event,
             pointer_event,
-        } = apply_interaction(ui, &response, plot, area, &view, interaction_mode);
+        } = apply_interaction(ui, &response, plot, area, &view, interaction_mode, menu_ext);
 
         // Final transforms for this frame (after any interaction). The left
         // (main) transform drives the image, the left axes, and left-bound
@@ -835,6 +856,7 @@ fn apply_interaction(
     area: Rect,
     view: &crate::core::transform::Transform,
     mode: PlotInteractionMode,
+    menu_ext: Option<&mut dyn FnMut(&mut Ui)>,
 ) -> Interaction {
     // Interaction operates on the displayed view's limits (which fold in any
     // aspect-ratio expansion), so pan/zoom act on exactly what is on screen.
@@ -1276,6 +1298,15 @@ fn apply_interaction(
             plot.clear_limits_history();
             ui.close();
         }
+        // Caller-supplied custom entries (silx `plotContextMenu.py` adding
+        // actions to the plot's default menu). Appended inside the single
+        // built-in menu: a second `Response::context_menu` registration on the
+        // same response would make egui close the menu the first registration
+        // opened, so this hook is the only way to extend it.
+        if let Some(ext) = menu_ext {
+            ui.separator();
+            ext(ui);
+        }
     });
 
     // Low-level pointer event over the data area (silx prepareMouseSignal). A
@@ -1503,6 +1534,74 @@ mod tests {
         assert!(
             area.right() < sarea.right(),
             "interactive {area:?} vs static {sarea:?}"
+        );
+    }
+
+    #[test]
+    fn context_menu_extension_renders_inside_the_single_builtin_menu() {
+        // The plot response carries exactly ONE context-menu registration (the
+        // built-in zoom menu); `with_context_menu` entries render inside it. A
+        // second `Response::context_menu` on the same response makes egui close
+        // the menu in the frame it opens — the high_level_context_menu example
+        // regression where right-click showed no menu at all.
+        fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+                _ => {}
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        let screen = egui::vec2(400.0, 300.0);
+        let pos = egui::pos2(200.0, 150.0);
+
+        let mut frame = |events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                events,
+                ..screen_input(screen)
+            };
+            ctx.run_ui(raw, |ui| {
+                let mut ext = |ui: &mut Ui| {
+                    let _ = ui.button("Custom entry");
+                };
+                let _ = PlotView::new()
+                    .with_context_menu(&mut ext)
+                    .show(ui, &mut plot);
+            })
+        };
+
+        let _ = frame(vec![egui::Event::PointerMoved(pos)]);
+        let _ = frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        }]);
+        // The menu opens on the release (secondary_clicked) frame; its Area
+        // does an invisible sizing pass that frame, so assert on the next
+        // frame, where the open menu paints normally.
+        let _ = frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        }]);
+        let output = frame(Vec::new());
+
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect_texts(&clipped.shape, &mut texts);
+        }
+        assert!(
+            texts.iter().any(|t| t == "Custom entry"),
+            "custom menu entry not rendered; menu texts: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "Reset Zoom"),
+            "built-in menu item missing; menu texts: {texts:?}"
         );
     }
 

@@ -3120,13 +3120,42 @@ impl PlotWidget {
 
     /// Render the widget in `ui`, handling interaction and plot item selection.
     pub fn show(&mut self, ui: &mut egui::Ui) -> PlotResponse {
+        self.show_inner(ui, None)
+    }
+
+    /// Render the widget like [`Self::show`], appending custom entries to the
+    /// plot's built-in right-click context menu (after the Zoom Back / Reset
+    /// Zoom items), mirroring silx `plotContextMenu.py` adding actions to the
+    /// plot's default menu.
+    ///
+    /// This is the ONLY way to add custom menu entries: calling
+    /// `Response::context_menu` on the returned response would register a
+    /// second menu on a response that already carries the built-in one, and
+    /// egui then closes the menu in the same frame it opens — no menu appears
+    /// at all. The closure only renders entries and signals choices (e.g. via
+    /// captured flags applied after `show` returns); it cannot borrow the
+    /// widget itself while the plot is being shown.
+    pub fn show_with_context_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        mut menu_ext: impl FnMut(&mut egui::Ui),
+    ) -> PlotResponse {
+        self.show_inner(ui, Some(&mut menu_ext))
+    }
+
+    fn show_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        menu_ext: Option<&mut dyn FnMut(&mut egui::Ui)>,
+    ) -> PlotResponse {
         let before = self.limits_snapshot();
         self.sync_active_axis_labels();
-        let response = PlotView::new().show_with_interaction(
-            ui,
-            self.backend.plot_mut(),
-            self.interaction_mode,
-        );
+        let mut view = PlotView::new();
+        if let Some(ext) = menu_ext {
+            view = view.with_context_menu(ext);
+        }
+        let response =
+            view.show_with_interaction(ui, self.backend.plot_mut(), self.interaction_mode);
         self.backend
             .set_plot_bounds_in_pixels(response.transform.area);
         self.select_item_from_plot_response(&response);
