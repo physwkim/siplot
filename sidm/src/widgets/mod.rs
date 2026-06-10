@@ -12,6 +12,8 @@ pub mod base;
 pub mod byte;
 pub mod checkbox;
 pub mod display_format;
+pub mod enum_button;
+pub mod enum_choice;
 pub mod enum_combo_box;
 pub mod frame;
 pub mod image_view;
@@ -29,6 +31,8 @@ pub use base::{BorderStyle, ChannelBase, alarm_border, control_range, severity_c
 pub use byte::{Orientation, PydmByteIndicator, extract_bits};
 pub use checkbox::PydmCheckbox;
 pub use display_format::{DisplayFormat, FormatSpec, format_value};
+pub use enum_button::{EnumButtonType, PydmEnumButton, order_indices};
+pub use enum_choice::{enum_current_index, enum_index_value, enum_options};
 pub use enum_combo_box::PydmEnumComboBox;
 pub use frame::PydmFrame;
 pub use image_view::{PydmImageView, ReadingOrder, color_range, reshape_image, value_to_image};

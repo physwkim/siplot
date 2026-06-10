@@ -16,6 +16,7 @@ use siplot::egui;
 use crate::channel::{Channel, ChannelState, PvValue};
 use crate::engine::{Engine, EngineError};
 use crate::widgets::base::ChannelBase;
+use crate::widgets::enum_choice::{enum_current_index, enum_index_value, enum_options};
 
 /// A drop-down bound to a PV's enum strings (PyDM `PyDMEnumComboBox`).
 pub struct PydmEnumComboBox {
@@ -36,36 +37,22 @@ impl PydmEnumComboBox {
     }
 
     /// The drop-down items: the channel's enum strings, or empty when none are
-    /// known yet (PyDM `enum_strings_changed`).
+    /// known yet (PyDM `enum_strings_changed`). Delegates to the shared
+    /// [`enum_options`].
     pub fn options(state: &ChannelState) -> Vec<String> {
-        state
-            .enum_strings
-            .as_deref()
-            .map(<[String]>::to_vec)
-            .unwrap_or_default()
+        enum_options(state)
     }
 
-    /// The index currently selected for `state` (PyDM `value_changed`): an
-    /// integer/enum/bool value is the index directly; a string is matched against
-    /// the enum strings (`findText`). Any other value (or no value) selects
-    /// nothing.
+    /// The index currently selected for `state` (PyDM `value_changed`).
+    /// Delegates to the shared [`enum_current_index`].
     pub fn current_index(state: &ChannelState) -> Option<usize> {
-        match &state.value {
-            Some(PvValue::Int(n)) => usize::try_from(*n).ok(),
-            Some(PvValue::Enum { index, .. }) => Some(*index as usize),
-            Some(PvValue::Bool(b)) => Some(usize::from(*b)),
-            Some(PvValue::Str(s)) => state
-                .enum_strings
-                .as_deref()
-                .and_then(|items| items.iter().position(|item| item == s.as_ref())),
-            _ => None,
-        }
+        enum_current_index(state)
     }
 
     /// Write `index` as the selected value (PyDM emits the integer index) and
     /// return the value written.
     pub fn select(&self, index: usize) -> PvValue {
-        let value = PvValue::Int(index as i64);
+        let value = enum_index_value(index);
         self.base.channel().put(value.clone());
         value
     }

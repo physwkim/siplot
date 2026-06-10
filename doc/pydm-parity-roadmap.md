@@ -76,7 +76,7 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | T1 | PydmFrame | ✅ | `widgets/frame.rs`; channel-connected grouping container (PyDM `PyDMFrame`). Pure `frame_enabled` (always enabled unless `disable_on_disconnect` set and disconnected — PyDM `check_enable_state`); alarm border default *off* (PyDM frame default, unlike value widgets). `show(ui, add)` wraps a content closure via the new `ChannelBase::framed_with_enabled` (factored out of `framed` so the frame's enable rule differs without touching the value-widget call sites). 2 unit tests |
-| T2 | PydmEnumButton | ☐ | |
+| T2 | PydmEnumButton | ✅ | `widgets/enum_button.rs`; an exclusive button group bound to the PV's enum strings (PyDM `PyDMEnumButton`). Push or radio buttons (`widgetType`), vertical/horizontal (`orientation`, reuses `byte::Orientation`); clicking writes the integer index. Pure `order_indices` (natural / `customOrder` with out-of-range dropped / `invertOrder`) unit-tested + live-write `select` test. The choices / current index / written value are the new shared `widgets/enum_choice.rs` owner (`enum_options`/`enum_current_index`/`enum_index_value`), which `PydmEnumComboBox` now also delegates to (one owner for the enum→index mapping, no drift). 4 tests |
 | T3 | PydmSymbol | ☐ | |
 | T4 | drawing shapes (PyDMDrawing*) | ☐ | |
 | T5 | PydmDateTimeLabel | ☐ | |
