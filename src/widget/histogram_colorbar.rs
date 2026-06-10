@@ -38,8 +38,10 @@ pub enum Handle {
 const AXIS_PAD_FRAC: f64 = 0.05;
 /// Gradient-strip thickness in points (matches silx `_ColorScale`, 25 px).
 const BAR_THICKNESS: f32 = 25.0;
-/// Cross-axis room reserved on the right for value labels, in points.
-const LABEL_WIDTH: f32 = 48.0;
+/// Minimum cross-axis room reserved on the right for value labels, in points.
+/// The actual reserve is measured from the formatted labels each frame (so they
+/// never clip); this is only the floor when the labels are empty/tiny.
+const MIN_LABEL_WIDTH: f32 = 32.0;
 /// Gap between widget sub-areas / label gap, in points.
 const GAP: f32 = 4.0;
 /// Half-size of the triangle handle marker, in points.
@@ -178,6 +180,11 @@ pub struct HistogramColorBar {
     pub vmin: f64,
     /// Current high level (drawn as the top handle).
     pub vmax: f64,
+    /// Absolute screen `(top, bottom)` the gradient strip + histogram + handles
+    /// should span, so the bar aligns with an external reference (the owning
+    /// image's data-area guides). `None` falls back to the allocated box inset by
+    /// [`V_INSET`]. Set by the owner from the image plot's data-area rect.
+    pub bar_bounds: Option<(f32, f32)>,
 }
 
 /// The result of [`HistogramColorBar::ui`]: the allocated [`egui::Response`] plus
@@ -201,6 +208,7 @@ impl HistogramColorBar {
             histogram: None,
             vmin,
             vmax,
+            bar_bounds: None,
         }
     }
 
@@ -223,6 +231,14 @@ impl HistogramColorBar {
         self
     }
 
+    /// Pin the gradient strip (and histogram/handles) to absolute screen
+    /// `(top, bottom)`, so the bar lines up with the owning image's data-area
+    /// guides instead of filling its allocated box (builder form).
+    pub fn with_bar_bounds(mut self, top: f32, bottom: f32) -> Self {
+        self.bar_bounds = Some((top, bottom));
+        self
+    }
+
     /// Paint the histogram + gradient + draggable handles into a `desired`-sized
     /// region of `ui` and report any handle drag this frame.
     pub fn ui(&self, ui: &mut egui::Ui, desired: Vec2) -> HistogramColorBarResponse {
@@ -230,11 +246,29 @@ impl HistogramColorBar {
         let norm = self.colormap.normalization;
         let (lo, hi) = axis_range(self.data_range, norm);
 
-        // Layout: [ histogram | gradient strip | value labels ].
-        let bar_left = (rect.right() - LABEL_WIDTH - GAP - BAR_THICKNESS).max(rect.left());
+        // Reserve the label gutter from the *measured* label widths so values
+        // like "9.50e-01" never clip at the rect's right edge (rather than a
+        // fixed guess). The padding keeps the label clear of the strip border.
+        let font = FontId::proportional(FONT_SIZE);
+        let label_w = |v: f64| {
+            ui.painter()
+                .layout_no_wrap(format_end_label(v), font.clone(), Color32::WHITE)
+                .size()
+                .x
+        };
+        let label_reserve = (label_w(self.vmin).max(label_w(self.vmax)) + GAP).max(MIN_LABEL_WIDTH);
+
+        // Layout: [ histogram | gradient strip | value labels ]. The strip spans
+        // the caller-pinned bounds (the image's data-area guides) when given, else
+        // the allocated box inset by V_INSET.
+        let bar_left = (rect.right() - label_reserve - GAP - BAR_THICKNESS).max(rect.left());
+        let (bar_top, bar_bottom) = match self.bar_bounds {
+            Some((t, b)) => (t.max(rect.top()), b.min(rect.bottom())),
+            None => (rect.top() + V_INSET, rect.bottom() - V_INSET),
+        };
         let bar_rect = Rect::from_min_max(
-            pos2(bar_left, rect.top() + V_INSET),
-            pos2(bar_left + BAR_THICKNESS, rect.bottom() - V_INSET),
+            pos2(bar_left, bar_top),
+            pos2(bar_left + BAR_THICKNESS, bar_bottom),
         );
         let hist_rect = Rect::from_min_max(
             pos2(rect.left(), bar_rect.top()),
@@ -585,6 +619,13 @@ mod tests {
         assert_eq!(w.vmin, 0.5);
         assert_eq!(w.vmax, 4.0);
         assert!(w.histogram.is_some());
+        assert!(w.bar_bounds.is_none());
+    }
+
+    #[test]
+    fn with_bar_bounds_sets_strip_span() {
+        let w = HistogramColorBar::new(Colormap::viridis(0.0, 1.0)).with_bar_bounds(120.0, 480.0);
+        assert_eq!(w.bar_bounds, Some((120.0, 480.0)));
     }
 
     // ── headless paint path (egui painter only, no GPU) ─────────────────
@@ -601,6 +642,22 @@ mod tests {
                 .with_levels(0.2, 0.8);
             let resp = bar.ui(ui, egui::vec2(150.0, 300.0));
             assert!(resp.dragged_levels.is_none());
+        });
+    }
+
+    #[test]
+    fn ui_with_pinned_bounds_paints_within_box() {
+        // Pinned bounds inset well inside the allocated box: the strip aligns to
+        // the bounds (image data-area guides) and nothing panics / clips.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let origin = ui.max_rect().top();
+            let bar = HistogramColorBar::new(Colormap::viridis(0.0, 1.0))
+                .with_data_range((0.0, 1.0))
+                .with_histogram(Some((vec![3, 7, 2], vec![0.0, 0.33, 0.66, 1.0])))
+                .with_levels(0.2, 0.8)
+                .with_bar_bounds(origin + 40.0, origin + 260.0);
+            let _ = bar.ui(ui, egui::vec2(170.0, 300.0));
         });
     }
 

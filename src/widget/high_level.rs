@@ -8005,7 +8005,7 @@ const COLORBAR_WIDTH: f32 = 70.0;
 /// [`HistogramColorBar`](crate::widget::histogram_colorbar::HistogramColorBar) is
 /// enabled: wider than [`COLORBAR_WIDTH`] to fit the value histogram beside the
 /// gradient, handles, and level labels.
-const INTERACTIVE_COLORBAR_WIDTH: f32 = 150.0;
+const INTERACTIVE_COLORBAR_WIDTH: f32 = 175.0;
 
 /// Build the side [`ColorBarWidget`](crate::widget::colorbar::ColorBarWidget)
 /// for an [`ImageView`], synced to `colormap`'s value limits (silx
@@ -9068,12 +9068,17 @@ impl ImageView {
             if colorbar_w > 0.0 {
                 if self.interactive_colorbar {
                     // pyqtgraph-style histogram colorbar with draggable levels.
+                    // Pin the strip to the image's data-area guides (top/bottom of
+                    // `transform.area`) so it lines up with the image rather than
+                    // overshooting into the image's title / axis-label gutters.
+                    let guides = response.transform.area;
                     let bar = crate::widget::histogram_colorbar::HistogramColorBar::new(
                         self.colormap.clone(),
                     )
                     .with_data_range(self.value_range)
                     .with_histogram(self.value_histogram.clone())
-                    .with_levels(self.colormap.vmin, self.colormap.vmax);
+                    .with_levels(self.colormap.vmin, self.colormap.vmax)
+                    .with_bar_bounds(guides.top(), guides.bottom());
                     dragged_levels = bar.ui(ui, egui::vec2(colorbar_w, img_h)).dragged_levels;
                 } else {
                     self.colorbar().ui(ui, egui::vec2(colorbar_w, img_h));
