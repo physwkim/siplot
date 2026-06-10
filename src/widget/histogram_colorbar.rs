@@ -337,11 +337,13 @@ impl HistogramColorBar {
         let (draw_vmin, draw_vmax) = dragged_levels.unwrap_or((self.vmin, self.vmax));
 
         // Reserve the label gutter from the *measured* width of the labels that
-        // will actually be drawn (the post-drag values), not the pre-drag ones —
-        // otherwise the frame a handle crosses into scientific form ("0" ->
-        // "6.20e-2") the gutter still fits the old narrow label and the new one
-        // clips at the rect's right edge. A representative scientific label is a
-        // floor so the gutter is stable (no horizontal jiggle) across drags.
+        // will actually be drawn (the post-drag values). This only places the
+        // gradient strip so the labels normally sit clear of it — the no-clip
+        // guarantee does NOT depend on it: labels are right-anchored at the
+        // column's right edge (see `paint_handle`), so an unexpectedly wide
+        // label overlaps leftward instead of clipping. A representative
+        // scientific label is a floor so the strip is stable (no horizontal
+        // jiggle) across drags.
         let font = FontId::proportional(FONT_SIZE);
         let measure = |s: String| {
             ui.painter()
@@ -439,23 +441,14 @@ impl HistogramColorBar {
             egui::StrokeKind::Inside,
         );
 
-        // 3) Handles + value labels.
-        self.paint_handle(
-            &painter,
+        // 3) Handles + value labels. Labels anchor to the column's right edge.
+        let columns = HandleColumns {
             bar_rect,
-            hist_rect,
-            y_of(draw_vmax),
-            draw_vmax,
-            fg,
-        );
-        self.paint_handle(
-            &painter,
-            bar_rect,
-            hist_rect,
-            y_of(draw_vmin),
-            draw_vmin,
-            fg,
-        );
+            hist_left: hist_rect.left(),
+            label_right: rect.right() - GAP,
+        };
+        self.paint_handle(&painter, &columns, y_of(draw_vmax), draw_vmax, fg);
+        self.paint_handle(&painter, &columns, y_of(draw_vmin), draw_vmin, fg);
     }
 
     /// Draw one level handle: a line across the histogram + strip, a right-
@@ -463,17 +456,17 @@ impl HistogramColorBar {
     fn paint_handle(
         &self,
         painter: &egui::Painter,
-        bar_rect: Rect,
-        hist_rect: Rect,
+        columns: &HandleColumns,
         y: f32,
         value: f64,
         fg: Color32,
     ) {
+        let bar_rect = columns.bar_rect;
         // High-contrast accent visible over any gradient color.
         let accent = Color32::from_rgb(20, 130, 240);
         let outline = Color32::WHITE;
         painter.line_segment(
-            [pos2(hist_rect.left(), y), pos2(bar_rect.right(), y)],
+            [pos2(columns.hist_left, y), pos2(bar_rect.right(), y)],
             Stroke::new(1.5, accent),
         );
         let tri = vec![
@@ -487,14 +480,31 @@ impl HistogramColorBar {
             Stroke::new(1.0, outline),
         ));
 
-        // Value label to the right of the strip, clamped inside the bar span.
+        // Value label right of the strip, clamped inside the bar span. RIGHT-
+        // anchored at the column's right edge: the text grows leftward, so no
+        // formatted width can ever pass the edge (left-anchored growth was the
+        // structural cause of drag-time clipping — e.g. "0" widening to
+        // "5.74e-2" mid-drag).
         let font = FontId::proportional(FONT_SIZE);
         let galley = painter.layout_no_wrap(format_end_label(value), font, fg);
         let half_h = galley.size().y * 0.5;
         let cy =
             crate::widget::chrome::clamp_label_center(y, bar_rect.top(), bar_rect.bottom(), half_h);
-        painter.galley(pos2(bar_rect.right() + GAP, cy - half_h), galley, fg);
+        painter.galley(
+            pos2(columns.label_right - galley.size().x, cy - half_h),
+            galley,
+            fg,
+        );
     }
+}
+
+/// Horizontal geometry shared by both handle draws: the gradient strip, the
+/// histogram's left edge (where the level line starts), and the right edge the
+/// value labels anchor to.
+struct HandleColumns {
+    bar_rect: Rect,
+    hist_left: f32,
+    label_right: f32,
 }
 
 #[cfg(test)]
@@ -722,6 +732,56 @@ mod tests {
                 .with_levels(0.062, 1.0);
             let _ = bar.ui(ui, egui::vec2(175.0, 320.0));
         });
+    }
+
+    #[test]
+    fn labels_never_pass_the_column_right_edge() {
+        // Structural invariant: value labels are RIGHT-anchored at the column's
+        // right edge, so no formatted width can clip there — the drag-time
+        // regression where "0" widening to "5.74e-2" overran the rect. Render a
+        // wide scientific level and assert every painted text shape ends at or
+        // before the column edge. The column is made NARROWER than the floor
+        // label reserve, so the old left-anchored placement (bar right + GAP)
+        // would overrun the edge — the test discriminates, not just documents.
+        fn text_right_edges(shape: &egui::Shape, out: &mut Vec<f32>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.pos.x + t.galley.size().x),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| text_right_edges(s, out)),
+                _ => {}
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let mut gutter = Rect::NOTHING;
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let origin = ui.max_rect().left_top();
+            gutter = Rect::from_min_max(
+                pos2(origin.x + 10.0, origin.y + 10.0),
+                pos2(origin.x + 70.0, origin.y + 310.0),
+            );
+            let bar = HistogramColorBar::new(Colormap::viridis(0.0574, 1.0))
+                .with_data_range((0.0, 1.0))
+                .with_histogram(Some((vec![9, 4, 1], vec![0.0, 0.33, 0.66, 1.0])))
+                .with_levels(0.0574, 1.0);
+            let _ = bar.ui_at(ui, gutter);
+        });
+
+        let mut rights = Vec::new();
+        for clipped in &output.shapes {
+            text_right_edges(&clipped.shape, &mut rights);
+        }
+        assert!(
+            rights.len() >= 2,
+            "expected at least the two level labels, got {}",
+            rights.len()
+        );
+        for r in rights {
+            assert!(
+                r <= gutter.right() + 0.5,
+                "label right edge {r} passes the column edge {}",
+                gutter.right()
+            );
+        }
     }
 
     #[test]
