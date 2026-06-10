@@ -128,11 +128,13 @@ impl eframe::App for ScatterMaskApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let mut dirty = false;
 
-        ui.horizontal(|ui| {
-            // Controls panel.
-            ui.vertical(|ui| {
-                ui.set_min_width(180.0);
-
+        // Controls panel — a `SidePanel` bounds its own width so the full-width
+        // `ui.separator()`s can't expand the column to the whole window (which
+        // would collapse the plot to zero width).
+        egui::Panel::left("scatter_mask_controls")
+            .resizable(false)
+            .default_size(180.0)
+            .show_inside(ui, |ui| {
                 ui.label("Point opacity (alpha)");
                 let mut alpha_f = self.alpha as f32 / 255.0;
                 if ui
@@ -175,11 +177,10 @@ impl eframe::App for ScatterMaskApp {
                 ));
             });
 
-            // Plot.
-            ui.vertical(|ui| {
-                self.plot.show_toolbar(ui);
-                self.plot.show(ui);
-            });
+        // Plot fills the remaining central area.
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            self.plot.show_toolbar(ui);
+            self.plot.show(ui);
         });
 
         if dirty {

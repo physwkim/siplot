@@ -83,11 +83,14 @@ impl eframe::App for ColormapApp {
             self.dirty = false;
         }
 
-        ui.horizontal(|ui| {
-            // Left: settings panel.
-            ui.vertical(|ui| {
-                ui.set_min_width(160.0);
-
+        // Left: fixed-width settings panel. A `SidePanel` bounds its own width,
+        // so the full-width `ui.separator()`s inside can't expand the column to
+        // the whole window — the failure mode of nesting it in a `ui.horizontal`
+        // next to the plot, which collapsed the image to zero width.
+        egui::Panel::left("colormap_controls")
+            .resizable(false)
+            .default_size(160.0)
+            .show_inside(ui, |ui| {
                 ui.label("Colormap");
                 for (i, &(_, name)) in COLORMAPS.iter().enumerate() {
                     if ui.radio_value(&mut self.selected_cm, i, name).changed() {
@@ -131,10 +134,9 @@ impl eframe::App for ColormapApp {
                 }
             });
 
-            // Right: image.
-            ui.vertical(|ui| {
-                self.plot.show(ui);
-            });
+        // Right: image fills the remaining central area.
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            self.plot.show(ui);
         });
     }
 }
