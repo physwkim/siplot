@@ -251,14 +251,14 @@ impl HistogramColorBar {
     /// [`crate::widget::plot_widget::PlotView`]. Same interaction and paint as
     /// [`Self::ui`]; pair with [`Self::with_bar_bounds`] when the gutter is taller
     /// than the data area it should track.
-    pub fn ui_at(&self, ui: &mut egui::Ui, rect: Rect) -> HistogramColorBarResponse {
+    pub fn ui_at(&self, ui: &egui::Ui, rect: Rect) -> HistogramColorBarResponse {
         let response = ui.interact(rect, ui.id().with("histogram_colorbar"), Sense::hover());
         self.show_in(ui, rect, response)
     }
 
     fn show_in(
         &self,
-        ui: &mut egui::Ui,
+        ui: &egui::Ui,
         rect: Rect,
         response: egui::Response,
     ) -> HistogramColorBarResponse {

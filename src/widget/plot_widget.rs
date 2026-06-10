@@ -283,9 +283,7 @@ impl PlotView {
         let axes_displayed = plot.axes_displayed();
         let chrome_request = chrome::ChromeRequest {
             colorbar: with_colorbar,
-            // Wired to the interactive-colorbar flag in a later step; a static
-            // strip until then.
-            colorbar_interactive: false,
+            colorbar_interactive: plot.colorbar_interactive,
             y2: with_y2,
             title: plot.title.is_some(),
             x_label: plot.x_label.is_some(),
@@ -403,8 +401,24 @@ impl PlotView {
                 chrome::draw_y2_ticks(painter, t_right, &style);
             }
         }
+        // Colorbar: the interactive histogram colorbar (drag-to-set levels) when
+        // the plot opts in, else the static strip. The interactive bar is the
+        // shared `HistogramColorBar` widget rendered into the gutter rect, pinned
+        // to the data-area guides so it aligns with the frame (`with_bar_bounds`).
+        // The drag is surfaced for the caller to apply (single-owner).
+        let mut colorbar_dragged_levels = None;
         if let (Some(cbar), Some(cmap)) = (chrome_layout.colorbar, plot.colormap.as_ref()) {
-            chrome::draw_colorbar(painter, cbar, cmap, &style);
+            if plot.colorbar_interactive {
+                let range = plot.colorbar_value_range.unwrap_or((cmap.vmin, cmap.vmax));
+                let bar = crate::widget::histogram_colorbar::HistogramColorBar::new(cmap.clone())
+                    .with_data_range(range)
+                    .with_histogram(plot.colorbar_histogram.clone())
+                    .with_levels(cmap.vmin, cmap.vmax)
+                    .with_bar_bounds(cbar.top(), cbar.bottom());
+                colorbar_dragged_levels = bar.ui_at(ui, cbar).dragged_levels;
+            } else {
+                chrome::draw_colorbar(painter, cbar, cmap, &style);
+            }
         }
 
         // Title + axis labels in the reserved gutters (hidden with the axes).
@@ -528,8 +542,7 @@ impl PlotView {
             // `show_with_draw` overwrites it with its own draw-state event.
             draw_event,
             interaction_mode,
-            // Computed when the interactive colorbar is wired in; static until then.
-            colorbar_dragged_levels: None,
+            colorbar_dragged_levels,
         }
     }
 
@@ -1460,6 +1473,37 @@ mod tests {
         ] {
             assert_eq!(mode.roi_creation_message(2), None, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn interactive_colorbar_renders_and_reserves_wider_gutter() {
+        let ctx = egui::Context::default();
+        let screen = egui::vec2(400.0, 300.0);
+
+        // Static colorbar baseline.
+        let mut static_plot = Plot::new(0);
+        static_plot.limits = (0.0, 10.0, 0.0, 10.0);
+        static_plot.colormap = Some(crate::core::colormap::Colormap::viridis(0.0, 1.0));
+        let (sresp, sarea) = run_frame(&ctx, &mut static_plot, screen_input(screen));
+        assert!(sresp.colorbar_dragged_levels.is_none());
+
+        // Interactive colorbar: the same plot but opted in, with a histogram.
+        let mut plot = Plot::new(1);
+        plot.limits = (0.0, 10.0, 0.0, 10.0);
+        plot.colormap = Some(crate::core::colormap::Colormap::viridis(0.0, 1.0));
+        plot.colorbar_interactive = true;
+        plot.colorbar_value_range = Some((0.0, 1.0));
+        plot.colorbar_histogram = Some((vec![3, 7, 2], vec![0.0, 0.33, 0.66, 1.0]));
+        let (resp, area) = run_frame(&ctx, &mut plot, screen_input(screen));
+        // No pointer input this frame -> no drag.
+        assert!(resp.colorbar_dragged_levels.is_none());
+        // The interactive colorbar claims a wider gutter than the static strip, so
+        // the data area is narrower (renders without panicking through the wgpu-
+        // less headless path).
+        assert!(
+            area.right() < sarea.right(),
+            "interactive {area:?} vs static {sarea:?}"
+        );
     }
 
     /// Run a headless frame with `show_with_draw`, returning the [`DrawResponse`]
