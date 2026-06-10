@@ -586,4 +586,50 @@ mod tests {
         assert_eq!(w.vmax, 4.0);
         assert!(w.histogram.is_some());
     }
+
+    // ── headless paint path (egui painter only, no GPU) ─────────────────
+
+    #[test]
+    fn ui_paints_without_panicking() {
+        // Exercises the full ui() render path (gradient loop, histogram bars,
+        // handles, labels, per-handle interact) headlessly; no input, so no drag.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let bar = HistogramColorBar::new(Colormap::viridis(0.0, 1.0))
+                .with_data_range((0.0, 1.0))
+                .with_histogram(Some((vec![3, 7, 2], vec![0.0, 0.33, 0.66, 1.0])))
+                .with_levels(0.2, 0.8);
+            let resp = bar.ui(ui, egui::vec2(150.0, 300.0));
+            assert!(resp.dragged_levels.is_none());
+        });
+    }
+
+    #[test]
+    fn ui_handles_degenerate_inputs_without_panic() {
+        // All-equal data + vmin==vmax + no histogram + tiny rect: the degenerate
+        // axis and clamp paths must not panic.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let bar = HistogramColorBar::new(Colormap::viridis(5.0, 5.0))
+                .with_data_range((5.0, 5.0))
+                .with_histogram(None)
+                .with_levels(5.0, 5.0);
+            let _ = bar.ui(ui, egui::vec2(80.0, 50.0));
+        });
+    }
+
+    #[test]
+    fn ui_log_normalization_paints_without_panic() {
+        // Log colormap with a non-positive-inclusive data range exercises the
+        // log positivity guards in axis_range / value_to_frac during paint.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let cmap = Colormap::viridis(1.0, 1000.0).with_normalization(Normalization::Log);
+            let bar = HistogramColorBar::new(cmap)
+                .with_data_range((-2.0, 1000.0))
+                .with_histogram(Some((vec![1, 5, 9], vec![1.0, 10.0, 100.0, 1000.0])))
+                .with_levels(10.0, 500.0);
+            let _ = bar.ui(ui, egui::vec2(150.0, 300.0));
+        });
+    }
 }

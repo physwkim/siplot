@@ -4,6 +4,13 @@
 //! column-sum (horizontal) and row-sum (vertical) profile histograms.
 //! The histogram axes track the image limits via SyncAxes.
 //!
+//! The side colorbar is the interactive pyqtgraph-`HistogramLUTItem`-style
+//! [`siplot::HistogramColorBar`] (enabled via `set_interactive_colorbar(true)`):
+//! it draws the image's value-distribution histogram beside the gradient with
+//! two draggable handles. Drag a handle to adjust the colormap `vmin`/`vmax` and
+//! the image contrast updates live. (Off by default; silx adjusts levels through
+//! a separate `ColormapDialog`.)
+//!
 //! Run with: `cargo run --example high_level_image_view`
 
 use eframe::egui;
@@ -28,6 +35,8 @@ impl ImageViewApp {
         view.set_image(WIDTH, HEIGHT, &pixels, Colormap::viridis(0.0, 1.0))
             .expect("image dimensions match");
         view.image_plot_mut().set_graph_title("ImageView");
+        // Interactive histogram colorbar: drag the handles to set vmin/vmax.
+        view.set_interactive_colorbar(true);
 
         Self { view }
     }

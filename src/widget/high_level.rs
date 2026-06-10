@@ -18,7 +18,7 @@ use crate::core::backend::{
     ShapeSpec, TriangleSpec,
 };
 use crate::core::calibration::Calibration;
-use crate::core::colormap::{AutoscaleMode, Colormap};
+use crate::core::colormap::{AutoscaleMode, Colormap, Normalization};
 use crate::core::items::{Baseline, LineStyle, ScalarMask, Symbol};
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
 use crate::core::plot::{DataMargins, DataRange, GraphGrid, Plot, PlotId};
@@ -8001,6 +8001,12 @@ fn split_composite(
 /// the 25 pt gradient strip (silx `_ColorScale`) plus ticks and end labels.
 const COLORBAR_WIDTH: f32 = 70.0;
 
+/// Width in points for the side colorbar column when the interactive
+/// [`HistogramColorBar`](crate::widget::histogram_colorbar::HistogramColorBar) is
+/// enabled: wider than [`COLORBAR_WIDTH`] to fit the value histogram beside the
+/// gradient, handles, and level labels.
+const INTERACTIVE_COLORBAR_WIDTH: f32 = 150.0;
+
 /// Build the side [`ColorBarWidget`](crate::widget::colorbar::ColorBarWidget)
 /// for an [`ImageView`], synced to `colormap`'s value limits (silx
 /// `ImageView.getColorBarWidget`, ImageView.py:501). Split out from
@@ -8250,6 +8256,25 @@ pub struct ImageView {
     /// `true`; when `false` the top/right strips and the radar are not drawn and
     /// the image reclaims that space.
     show_side_histograms: bool,
+    /// Whether the side colorbar is the interactive pyqtgraph-style
+    /// [`HistogramColorBar`](crate::widget::histogram_colorbar::HistogramColorBar)
+    /// (value histogram + draggable `vmin`/`vmax` handles) instead of the static
+    /// [`ColorBarWidget`](crate::widget::colorbar::ColorBarWidget). Defaults to
+    /// `false` (silx-faithful: silx adjusts levels through a separate
+    /// `ColormapDialog`). When `true`, dragging a handle re-renders the image with
+    /// the new colormap levels.
+    interactive_colorbar: bool,
+    /// Cached value-distribution histogram `(counts, edges)` for the interactive
+    /// colorbar, recomputed only when the image data or normalization changes —
+    /// not per frame, nor on a level drag (drags do not change the histogram).
+    value_histogram: Option<(Vec<u64>, Vec<f64>)>,
+    /// The active image's finite value range `(min, max)`, the axis basis for the
+    /// interactive colorbar; recomputed alongside [`value_histogram`].
+    value_range: (f64, f64),
+    /// Normalization the cached [`value_histogram`] was binned under; a change
+    /// triggers a recompute (log vs linear binning differ). `None` invalidates
+    /// the cache (set when the image data changes).
+    histogram_norm: Option<Normalization>,
     /// Per-pixel mask editor for the active image (silx `ImageView`'s mask
     /// `MaskToolsWidget`). Resized to the active image on [`Self::set_image`].
     /// Painting is gated strictly on [`PlotInteractionMode::MaskDraw`]
@@ -8270,6 +8295,20 @@ fn colorbar_column_width(show: bool, has_colorbar: bool) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Finite `(min, max)` of a slice, or `None` when no value is finite. Used to
+/// derive the interactive colorbar's axis from the active image's pixels.
+fn finite_minmax(data: &[f64]) -> Option<(f64, f64)> {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &v in data {
+        if v.is_finite() {
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
 }
 
 /// Extent (points) to reserve for a side-histogram strip given the show flag
@@ -8425,6 +8464,10 @@ impl ImageView {
             profile_drag_start: None,
             show_colorbar: true,
             show_side_histograms: true,
+            interactive_colorbar: false,
+            value_histogram: None,
+            value_range: (0.0, 1.0),
+            histogram_norm: None,
             mask: crate::widget::mask_tools::MaskToolsWidget::new(0, 0),
         }
     }
@@ -8439,6 +8482,22 @@ impl ImageView {
     /// fills the freed width.
     pub fn set_show_colorbar(&mut self, show: bool) {
         self.show_colorbar = show;
+    }
+
+    /// Whether the side colorbar is the interactive pyqtgraph-style histogram
+    /// colorbar (value histogram + draggable `vmin`/`vmax` handles).
+    pub fn interactive_colorbar(&self) -> bool {
+        self.interactive_colorbar
+    }
+
+    /// Enable or disable the interactive pyqtgraph-style histogram colorbar. When
+    /// enabled the side colorbar column shows the active image's value-distribution
+    /// histogram with two draggable handles; dragging a handle adjusts the
+    /// colormap's `vmin`/`vmax` and re-renders the image live. Off by default
+    /// (the static silx [`ColorBarWidget`](crate::widget::colorbar::ColorBarWidget);
+    /// silx itself adjusts levels through a separate `ColormapDialog`).
+    pub fn set_interactive_colorbar(&mut self, interactive: bool) {
+        self.interactive_colorbar = interactive;
     }
 
     /// Whether the side histograms (and the radar overview) are displayed (silx
@@ -8473,6 +8532,10 @@ impl ImageView {
         self.width = width;
         self.height = height;
         self.pixels = pixels.to_vec();
+        // Invalidate the interactive-colorbar histogram cache; it is recomputed
+        // lazily in `show` from the new pixels.
+        self.histogram_norm = None;
+        self.value_histogram = None;
         self.colormap = colormap.clone();
         self.image_plot.set_default_colormap(colormap);
 
@@ -8534,6 +8597,23 @@ impl ImageView {
             let h = self.image_plot.add_image_spec(spec);
             self.image_handle = Some(h);
         }
+    }
+
+    /// Recompute the cached value-distribution histogram and data range used by
+    /// the interactive colorbar, but only when stale: the image data changed
+    /// (cache invalidated in [`Self::set_image`]) or the normalization changed
+    /// (log vs linear binning differ). Keyed on the normalization, so a `vmin`/
+    /// `vmax` drag does not trigger a recompute.
+    fn ensure_value_histogram(&mut self) {
+        let norm = self.colormap.normalization;
+        if self.histogram_norm == Some(norm) {
+            return;
+        }
+        let data: Vec<f64> = self.pixels.iter().map(|&p| p as f64).collect();
+        let log = norm == Normalization::Log;
+        self.value_histogram = crate::core::histogram::compute_histogram(&data, None, log);
+        self.value_range = finite_minmax(&data).unwrap_or((self.colormap.vmin, self.colormap.vmax));
+        self.histogram_norm = Some(norm);
     }
 
     /// The current active-image opacity in `[0.0, 1.0]` (silx
@@ -8919,8 +8999,17 @@ impl ImageView {
 
         // Reserve the far-right colorbar column (silx grid column 2,
         // ImageView.py:501), unless the colorbar is hidden (silx
-        // `ColorBarAction`).
+        // `ColorBarAction`). The interactive histogram colorbar needs a wider
+        // column for the value histogram beside the gradient.
         let colorbar_w = colorbar_column_width(self.show_colorbar, true);
+        let colorbar_w = if self.interactive_colorbar && colorbar_w > 0.0 {
+            INTERACTIVE_COLORBAR_WIDTH
+        } else {
+            colorbar_w
+        };
+        if self.interactive_colorbar && colorbar_w > 0.0 {
+            self.ensure_value_histogram();
+        }
 
         // Top row: horizontal histogram on the left, radar overview filling the
         // top-right corner (the histoV + colorbar column band above the image).
@@ -8960,6 +9049,10 @@ impl ImageView {
 
         // Bottom row: image + vertical histogram + colorbar side by side.
         let img_h = avail.y - histo_h_h;
+        // New colormap levels from an interactive-colorbar handle drag this frame,
+        // applied to the image after the row is laid out (single-owner pattern,
+        // mirroring the radar drag above).
+        let mut dragged_levels: Option<(f64, f64)> = None;
         let response = ui.horizontal(|ui| {
             let img_w = avail.x - histo_v_w - colorbar_w;
             let response = ui
@@ -8973,10 +9066,31 @@ impl ImageView {
             }
             // Colorbar column, synced to the active image's colormap limits.
             if colorbar_w > 0.0 {
-                self.colorbar().ui(ui, egui::vec2(colorbar_w, img_h));
+                if self.interactive_colorbar {
+                    // pyqtgraph-style histogram colorbar with draggable levels.
+                    let bar = crate::widget::histogram_colorbar::HistogramColorBar::new(
+                        self.colormap.clone(),
+                    )
+                    .with_data_range(self.value_range)
+                    .with_histogram(self.value_histogram.clone())
+                    .with_levels(self.colormap.vmin, self.colormap.vmax);
+                    dragged_levels = bar.ui(ui, egui::vec2(colorbar_w, img_h)).dragged_levels;
+                } else {
+                    self.colorbar().ui(ui, egui::vec2(colorbar_w, img_h));
+                }
             }
             response
         });
+
+        // Apply a level drag: update the colormap and re-render the image (silx
+        // `Colormap.setVRange`). vmin/vmax are GPU uniforms, so this is a colormap
+        // re-upload, not a recompute of the pixel data.
+        if let Some((vmin, vmax)) = dragged_levels {
+            self.colormap.vmin = vmin;
+            self.colormap.vmax = vmax;
+            self.image_plot.set_default_colormap(self.colormap.clone());
+            self.upload_image();
+        }
 
         let plot_response = response.inner;
 
