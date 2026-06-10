@@ -1,17 +1,22 @@
 //! Fit Widget Example.
 //!
-//! Demonstrates the `FitWidget` together with `ItemsSelectionDialog` reuse: when
-//! several curves are present the dialog (configured single-select, curve and
-//! histogram only) picks which one to fit. This mirrors silx `actions/fit.py`'s
-//! `_initFit`, which builds an `ItemsSelectionDialog`, calls
+//! Demonstrates the `FitWidget` together with `ItemsSelectionDialog` reuse: the
+//! main window plots the candidate curves (the selected one drawn as the active
+//! curve), and the dialog (configured single-select, curve and histogram only)
+//! picks which one to fit. This mirrors silx `actions/fit.py`'s `_initFit`,
+//! which fits a curve FROM a plot: it builds an `ItemsSelectionDialog`, calls
 //! `setItemsSelectionMode(SingleSelection)` and
 //! `setAvailableKinds(["curve", "histogram"])`, then runs `setData` on the
-//! chosen item.
+//! chosen item. The fit result (data + fitted curve) shows in the detached
+//! Fit Widget window.
 //!
 //! Run with: `cargo run --example high_level_fit_widget`
 
 use eframe::egui;
-use siplot::{FitWidget, ItemsSelectionDialog, PlotItemKind, SelectableItem, SelectionMode};
+use siplot::{
+    FitWidget, ItemHandle, ItemsSelectionDialog, Plot1D, PlotItemKind, SelectableItem,
+    SelectionMode,
+};
 
 /// One fittable dataset shown in the picker.
 struct Dataset {
@@ -38,6 +43,11 @@ fn gaussian(mu: f64, sigma: f64, a: f64, bg: f64) -> Dataset {
 struct FitApp {
     fit_widget: FitWidget,
     datasets: Vec<Dataset>,
+    /// Main-window plot of the candidate curves (silx fits a curve FROM a
+    /// plot); the selected dataset is drawn as the active curve.
+    plot: Plot1D,
+    /// Plot handle of each dataset's curve, indexed like `datasets`.
+    curve_handles: Vec<ItemHandle>,
     /// Curve picker (silx `ItemsSelectionDialog`), single-select over curves.
     picker: ItemsSelectionDialog,
     /// Index of the dataset currently feeding the fit widget.
@@ -69,6 +79,19 @@ impl FitApp {
             },
         ];
 
+        let mut plot = Plot1D::new(rs, 1);
+        plot.set_graph_title("Curves to fit (pick one on the left)");
+        let colors = [
+            egui::Color32::LIGHT_BLUE,
+            egui::Color32::LIGHT_GREEN,
+            egui::Color32::ORANGE,
+        ];
+        let curve_handles: Vec<ItemHandle> = datasets
+            .iter()
+            .zip(colors.iter().cycle())
+            .map(|(d, &color)| plot.add_curve_with_legend(&d.x, &d.y, color, d.label))
+            .collect();
+
         // Configure the dialog exactly as silx's fit tool does: only fittable
         // kinds offered, single selection, the first curve picked initially.
         let mut picker = ItemsSelectionDialog::new(
@@ -84,6 +107,8 @@ impl FitApp {
         let mut app = Self {
             fit_widget,
             datasets,
+            plot,
+            curve_handles,
             picker,
             fitted: None,
         };
@@ -92,7 +117,8 @@ impl FitApp {
     }
 
     /// Feed the picker's currently selected dataset to the fit widget, if it
-    /// changed (silx `_setFittedItem` → `FitWidget.setData`).
+    /// changed (silx `_setFittedItem` → `FitWidget.setData`), and highlight it
+    /// as the main plot's active curve.
     fn sync_fitted_item(&mut self) {
         // The picker is single-select, so at most one label comes back.
         let chosen = self
@@ -104,6 +130,8 @@ impl FitApp {
             chosen.and_then(|label| self.datasets.iter().position(|d| d.label == label));
         if chosen_idx != self.fitted {
             self.fitted = chosen_idx;
+            self.plot
+                .set_active_curve(chosen_idx.map(|i| self.curve_handles[i]));
             if let Some(i) = chosen_idx {
                 let d = &self.datasets[i];
                 self.fit_widget.set_data(&d.x, &d.y);
@@ -125,11 +153,13 @@ impl eframe::App for FitApp {
         self.sync_fitted_item();
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            if self.fit_widget.is_open() {
-                self.fit_widget.show(ui.ctx());
-            } else if ui.button("Open Fit Widget").clicked() {
+            if !self.fit_widget.is_open() && ui.button("Open Fit Widget").clicked() {
                 self.fit_widget.set_open(true);
             }
+            // Main plot of the candidate curves; the fit widget renders into
+            // its own detached window beside this one.
+            self.plot.show(ui);
+            self.fit_widget.show(ui.ctx());
         });
     }
 }
