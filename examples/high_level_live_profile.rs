@@ -1,9 +1,11 @@
 //! Live profile toolbar example.
 //!
-//! Mirrors `silx/examples/plotProfile.py`: a 2D image plot with a compact
-//! None / Horizontal / Vertical toolbar.  While the mode is active and the
-//! cursor hovers over the image, the corresponding row or column profile is
-//! extracted from the pixel data and drawn live in a companion Plot1D below.
+//! Mirrors `silx/examples/plotProfile.py`: a 2D image plot with the compact
+//! profile-mode toolbar (None / Horizontal / Vertical / Line / Rectangle).
+//! While Horizontal or Vertical is active and the cursor hovers over the image,
+//! the corresponding row or column profile is extracted from the pixel data and
+//! drawn live in a companion Plot1D below.  (The shared toolbar also shows Line
+//! and Rectangle, but only the row/column modes are wired in this example.)
 //!
 //! Run with: `cargo run --example high_level_live_profile`
 
