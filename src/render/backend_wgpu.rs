@@ -174,6 +174,8 @@ impl WgpuResources {
         axis_log_left: [f32; 2],
         ortho_right: [[f32; 4]; 4],
         axis_log_right: [f32; 2],
+        ortho_extra: &[[[f32; 4]; 4]],
+        axis_log_extra: &[[f32; 2]],
     ) -> Result<Vec<u8>, crate::render::save::SaveError> {
         use crate::core::transform::YAxis;
         use crate::render::save::{padded_bytes_per_row, rows_to_rgba8};
@@ -209,6 +211,12 @@ impl WgpuResources {
             let (ortho, axis_log) = match curve.y_axis {
                 YAxis::Left => (ortho_left, axis_log_left),
                 YAxis::Right => (ortho_right, axis_log_right),
+                // An extra axis with no built matrix (unknown index / no range)
+                // falls back to the left axis, matching the on-screen path.
+                YAxis::Extra(n) => match (ortho_extra.get(n), axis_log_extra.get(n)) {
+                    (Some(&o), Some(&l)) => (o, l),
+                    _ => (ortho_left, axis_log_left),
+                },
             };
             curve.write_uniforms(queue, ortho, axis_log, viewport_px);
         }
@@ -527,6 +535,7 @@ impl WgpuBackend {
         match axis {
             YAxis::Left => Some(self.plot.transform(area)),
             YAxis::Right => self.plot.transform_y2(area),
+            YAxis::Extra(n) => self.plot.transform_extra(n, area),
         }
     }
 
@@ -695,6 +704,7 @@ impl Backend for WgpuBackend {
         match axis {
             YAxis::Left => Some((self.plot.limits.2, self.plot.limits.3)),
             YAxis::Right => self.plot.y2,
+            YAxis::Extra(n) => self.plot.extra.get(n).and_then(|a| a.range),
         }
     }
 
@@ -746,6 +756,11 @@ impl Backend for WgpuBackend {
         match axis {
             YAxis::Left => self.plot.y_label = label.map(ToOwned::to_owned),
             YAxis::Right => self.plot.y2_label = label.map(ToOwned::to_owned),
+            YAxis::Extra(n) => {
+                if let Some(a) = self.plot.extra.get_mut(n) {
+                    a.label = label.map(ToOwned::to_owned);
+                }
+            }
         }
     }
 
@@ -1376,6 +1391,12 @@ pub(crate) struct CurveCallback {
     pub ortho_right: [[f32; 4]; 4],
     /// Per-axis log flag `[x, y]` for the right axis.
     pub axis_log_right: [f32; 2],
+    /// Per-extra-axis data→NDC matrices, indexed by `YAxis::Extra(n)`. A curve
+    /// bound to an index past the end (or to an axis with no range) falls back
+    /// to the left axis.
+    pub ortho_extra: Vec<[[f32; 4]; 4]>,
+    /// Per-extra-axis log flag `[x, y]`, parallel to [`Self::ortho_extra`].
+    pub axis_log_extra: Vec<[f32; 2]>,
     /// Data-area size in physical pixels, for the pixel-space line expansion.
     pub viewport_px: [f32; 2],
     /// Visible data-x window `(x_min, x_max)`, shared by both axes, used to
@@ -1392,9 +1413,16 @@ pub(crate) struct CurveCallback {
 impl CurveCallback {
     /// Pick the (ortho, axis_log) pair matching a curve's bound axis.
     fn matrices_for(&self, y_axis: crate::core::transform::YAxis) -> ([[f32; 4]; 4], [f32; 2]) {
+        use crate::core::transform::YAxis;
         match y_axis {
-            crate::core::transform::YAxis::Left => (self.ortho_left, self.axis_log_left),
-            crate::core::transform::YAxis::Right => (self.ortho_right, self.axis_log_right),
+            YAxis::Left => (self.ortho_left, self.axis_log_left),
+            YAxis::Right => (self.ortho_right, self.axis_log_right),
+            // Past-the-end / no-range extra axes fall back to the left matrix,
+            // mirroring the right axis' y2-absent fallback.
+            YAxis::Extra(n) => match (self.ortho_extra.get(n), self.axis_log_extra.get(n)) {
+                (Some(&o), Some(&l)) => (o, l),
+                _ => (self.ortho_left, self.axis_log_left),
+            },
         }
     }
 }

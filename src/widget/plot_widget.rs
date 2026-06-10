@@ -312,6 +312,14 @@ impl<'a> PlotView<'a> {
             y2_label: plot.y2_label.is_some(),
             // Hidden axes zero the axis gutters (silx setAxesDisplayed(False)).
             axes_hidden: !axes_displayed,
+            extra: plot
+                .extra
+                .iter()
+                .map(|a| chrome::ExtraAxisChrome {
+                    side: a.side,
+                    label: a.label.is_some(),
+                })
+                .collect(),
         };
         let chrome_layout = chrome::layout(rect, &chrome_request);
         let area = plot.margins.data_area(chrome_layout.data_area);
@@ -347,6 +355,27 @@ impl<'a> PlotView<'a> {
             Some(t) => (t.ortho_matrix(), axis_log_flags(t)),
             None => (ortho_left, axis_log_left),
         };
+        // Per-extra-axis transforms (parallel to plot.extra), reused below for
+        // both the curve matrices and the stacked tick chrome. An axis with no
+        // range yields `None`; bound curves then fall back to the left matrix.
+        let extra_transforms: Vec<Option<crate::core::transform::Transform>> =
+            (0..plot.extra.len())
+                .map(|i| plot.transform_extra(i, area))
+                .collect();
+        let mut ortho_extra = Vec::with_capacity(extra_transforms.len());
+        let mut axis_log_extra = Vec::with_capacity(extra_transforms.len());
+        for t in &extra_transforms {
+            match t {
+                Some(t) => {
+                    ortho_extra.push(t.ortho_matrix());
+                    axis_log_extra.push(axis_log_flags(t));
+                }
+                None => {
+                    ortho_extra.push(ortho_left);
+                    axis_log_extra.push(axis_log_left);
+                }
+            }
+        }
 
         // Data-area size in physical pixels, for the curve's pixel-space line
         // expansion (`area` is in logical points).
@@ -390,6 +419,8 @@ impl<'a> PlotView<'a> {
                 axis_log_left,
                 ortho_right,
                 axis_log_right,
+                ortho_extra,
+                axis_log_extra,
                 viewport_px,
                 x_window: (transform.x.min, transform.x.max),
                 decimate_columns,
@@ -420,6 +451,22 @@ impl<'a> PlotView<'a> {
             );
             if let Some(t_right) = &transform_right {
                 chrome::draw_y2_ticks(painter, t_right, &style);
+            }
+            // Extra stacked axes: each draws against its own transform at the
+            // slot the layout reserved. An axis with no range (no transform) is
+            // skipped (nothing to scale).
+            for (i, slot) in chrome_layout.extra.iter().enumerate() {
+                if let Some(Some(t)) = extra_transforms.get(i) {
+                    chrome::draw_extra_y_ticks(
+                        painter,
+                        t,
+                        slot.side,
+                        slot.baseline_x,
+                        slot.label_x,
+                        plot.extra[i].label.as_deref(),
+                        &style,
+                    );
+                }
             }
         }
         // Colorbar: the interactive histogram colorbar (drag-to-set levels) when

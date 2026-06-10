@@ -13,7 +13,7 @@ use crate::core::dtime_ticks::TimeZone;
 use crate::core::marker::Marker;
 use crate::core::roi::{DEFAULT_ROI_COLOR, ManagedRoi};
 use crate::core::shape::{Line, Shape};
-use crate::core::transform::{Axis, Margins, Scale, Transform, keep_aspect_limits};
+use crate::core::transform::{Axis, AxisSide, Margins, Scale, Transform, keep_aspect_limits};
 use crate::core::triangles::Triangles;
 
 /// Per-axis pan/zoom range constraints mirroring silx
@@ -224,6 +224,43 @@ pub struct DataRange {
     pub y2: Option<(f64, f64)>,
 }
 
+/// One of the additional stacked Y axes beyond the built-in left axis
+/// (`Plot::limits`) and right axis (`Plot::y2`), backing [`crate::YAxis::Extra`]
+/// (`Plot::extra`). Each carries its own data range, scale, on-screen side,
+/// autoscale flag, and label — the per-axis state the left/right axes spread
+/// across dedicated `Plot` fields, generalized to N axes for silx-style
+/// multi-axis plots. Curves bound to an axis with no `range` fall back to the
+/// left transform (so they still draw), mirroring the right axis' `y2 == None`
+/// fallback.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtraAxis {
+    /// Data range `(min, max)`, or `None` until set explicitly or autoscaled.
+    pub range: Option<(f64, f64)>,
+    /// Linear or log10 scale, independent of the left/right axes.
+    pub scale: Scale,
+    /// Which gutter the ticks and label are drawn in; same-side extra axes stack
+    /// outward in creation order.
+    pub side: AxisSide,
+    /// Whether this axis refits to its curves' data on reset-zoom (silx
+    /// per-axis `setAutoScale`). Defaults to `true`.
+    pub autoscale: bool,
+    /// Axis label drawn rotated in the gutter outside the ticks, or `None`.
+    pub label: Option<String>,
+}
+
+impl ExtraAxis {
+    /// A linear, autoscaling extra axis on `side` with no range or label yet.
+    pub fn new(side: AxisSide) -> Self {
+        Self {
+            range: None,
+            scale: Scale::Linear,
+            side,
+            autoscale: true,
+            label: None,
+        }
+    }
+}
+
 /// Per-side data-margin ratios added around the visible data on reset-zoom
 /// (silx `PlotWidget.setDataMargins` / `_utils.addMarginsToLimits`).
 ///
@@ -339,6 +376,11 @@ pub struct Plot {
     /// axis. Curves bound to [`crate::YAxis::Right`] are plotted against it and
     /// its ticks are drawn in the right gutter (linear, `doc/design.md` §13 A5).
     pub y2: Option<(f64, f64)>,
+    /// Additional stacked Y axes beyond the built-in left/right pair (silx-style
+    /// multi-axis). `extra[i]` backs [`crate::YAxis::Extra(i)`](crate::YAxis::Extra);
+    /// curves bound there plot against its range/scale and its ticks/label are
+    /// drawn stacked outward in its [`AxisSide`] gutter. Empty by default.
+    pub extra: Vec<ExtraAxis>,
     /// Draw a crosshair + coordinate readout following the pointer when it is
     /// over the data area (silx `setGraphCursor`, `doc/design.md` §13 C1).
     pub crosshair: bool,
@@ -519,6 +561,7 @@ impl Plot {
             y_inverted: false,
             keep_aspect: false,
             y2: None,
+            extra: Vec::new(),
             crosshair: false,
             rois: Vec::new(),
             roi_color: DEFAULT_ROI_COLOR,
@@ -1043,6 +1086,67 @@ impl Plot {
         let left = self.transform(area);
         let y2 = Axis::linear(y2_min, y2_max);
         Some(Transform::with_axes(left.x, y2, area))
+    }
+
+    /// Append an extra Y axis on `side` (range/label unset, linear, autoscaling)
+    /// and return its index, usable as [`crate::YAxis::Extra(index)`](crate::YAxis::Extra).
+    pub fn add_extra_axis(&mut self, side: AxisSide) -> usize {
+        self.extra.push(ExtraAxis::new(side));
+        self.extra.len() - 1
+    }
+
+    /// The extra axes in creation order (silx-style multi-axis).
+    pub fn extra_axes(&self) -> &[ExtraAxis] {
+        &self.extra
+    }
+
+    /// Shared read access to extra axis `index`, or `None` when unknown.
+    pub fn extra_axis(&self, index: usize) -> Option<&ExtraAxis> {
+        self.extra.get(index)
+    }
+
+    /// Mutable access to extra axis `index`, or `None` when unknown.
+    pub fn extra_axis_mut(&mut self, index: usize) -> Option<&mut ExtraAxis> {
+        self.extra.get_mut(index)
+    }
+
+    /// Build the transform for extra axis `index`, sharing the left transform's
+    /// X axis exactly (including any aspect expansion) so curves on every axis
+    /// stay aligned in X, and using the extra axis' own range and scale as Y.
+    /// `None` when the index is unknown or the axis has no range yet (the caller
+    /// then falls back to the left transform, matching [`Self::transform_y2`]).
+    pub fn transform_extra(&self, index: usize, area: Rect) -> Option<Transform> {
+        let ax = self.extra.get(index)?;
+        let (min, max) = ax.range?;
+        let left = self.transform(area);
+        let y = Axis {
+            min,
+            max,
+            scale: ax.scale,
+            inverted: false,
+        };
+        Some(Transform::with_axes(left.x, y, area))
+    }
+
+    /// Refit each autoscale-on extra axis to its data bounds, the multi-axis
+    /// sibling of the left/right refit in [`Self::reset_zoom_to_data_range`].
+    /// `data[i]` is extra axis `i`'s data bounds; a missing or `None` entry
+    /// leaves that axis' range unchanged. Refit axes are expanded by the Y data
+    /// margins (reusing the y2 margin/log rules), and a log axis whose lower
+    /// bound is non-positive is force-refit so toggling it to log re-fits to
+    /// positive data (matching the y2 branch of `reset_zoom_to_data_range`).
+    pub fn reset_extra_axes_to(&mut self, data: &[Option<(f64, f64)>]) {
+        let m = self.data_margins;
+        for (i, ax) in self.extra.iter_mut().enumerate() {
+            let is_log = ax.scale == Scale::Log10;
+            let log_force = is_log && ax.range.map(|(lo, _)| lo <= 0.0).unwrap_or(true);
+            if !(ax.autoscale || log_force) {
+                continue;
+            }
+            if let Some(Some((lo, hi))) = data.get(i).copied() {
+                ax.range = Some(DataMargins::expand_axis(lo, hi, m.y_min, m.y_max, is_log));
+            }
+        }
     }
 }
 
@@ -1749,6 +1853,102 @@ mod tests {
         assert_eq!(left.x, right.x);
         // Sanity: the lock actually widened X beyond the raw [0, 10].
         assert!(left.x.min < 0.0 && left.x.max > 10.0, "{:?}", left.x);
+    }
+
+    // --- extra (stacked) Y axes ---
+
+    #[test]
+    fn add_extra_axis_returns_sequential_indices_and_keeps_side() {
+        let mut plot = Plot::new(0);
+        assert_eq!(plot.add_extra_axis(AxisSide::Right), 0);
+        assert_eq!(plot.add_extra_axis(AxisSide::Left), 1);
+        assert_eq!(plot.extra_axes().len(), 2);
+        assert_eq!(plot.extra_axis(0).unwrap().side, AxisSide::Right);
+        assert_eq!(plot.extra_axis(1).unwrap().side, AxisSide::Left);
+        // A fresh extra axis has no range, is linear, and autoscales.
+        let ax = plot.extra_axis(0).unwrap();
+        assert_eq!(ax.range, None);
+        assert_eq!(ax.scale, Scale::Linear);
+        assert!(ax.autoscale);
+        assert!(plot.extra_axis(2).is_none());
+    }
+
+    #[test]
+    fn transform_extra_shares_left_x_and_maps_its_own_y() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 1.0);
+        let i = plot.add_extra_axis(AxisSide::Right);
+        // No range yet -> no transform (caller falls back to the left axis).
+        assert!(plot.transform_extra(i, area()).is_none());
+        plot.extra_axis_mut(i).unwrap().range = Some((-1.0, 1.0));
+        let left = plot.transform(area());
+        let extra = plot.transform_extra(i, area()).expect("extra transform");
+        // Shares the left X axis exactly; maps its own Y range with the low value
+        // at the bottom edge and the high value at the top edge.
+        assert_eq!(left.x, extra.x);
+        let bottom = extra.data_to_pixel(0.0, -1.0);
+        let top = extra.data_to_pixel(0.0, 1.0);
+        assert!((bottom.y - area().bottom()).abs() < 1e-3, "{bottom:?}");
+        assert!((top.y - area().top()).abs() < 1e-3, "{top:?}");
+        // An unknown index yields no transform.
+        assert!(plot.transform_extra(99, area()).is_none());
+    }
+
+    #[test]
+    fn transform_extra_honors_its_own_log_scale() {
+        let mut plot = Plot::new(0);
+        plot.limits = (0.0, 10.0, 0.0, 1.0);
+        let i = plot.add_extra_axis(AxisSide::Right);
+        {
+            let ax = plot.extra_axis_mut(i).unwrap();
+            ax.range = Some((1.0, 1000.0));
+            ax.scale = Scale::Log10;
+        }
+        let t = plot.transform_extra(i, area()).expect("extra transform");
+        // Three decades: 10 lands one-third up from the bottom edge.
+        let mid = t.data_to_pixel(0.0, 10.0).y;
+        let expected = area().bottom() + (area().top() - area().bottom()) / 3.0;
+        assert!((mid - expected).abs() < 1e-2, "{mid} vs {expected}");
+    }
+
+    #[test]
+    fn reset_extra_axes_to_refits_only_autoscale_on_axes() {
+        let mut plot = Plot::new(0);
+        let a = plot.add_extra_axis(AxisSide::Right); // autoscale on (default)
+        let b = plot.add_extra_axis(AxisSide::Left);
+        plot.extra_axis_mut(a).unwrap().range = Some((0.0, 1.0));
+        plot.extra_axis_mut(b).unwrap().range = Some((0.0, 1.0));
+        plot.extra_axis_mut(b).unwrap().autoscale = false;
+        plot.reset_extra_axes_to(&[Some((100.0, 200.0)), Some((-9.0, 9.0))]);
+        // a refit to its data; b pinned (autoscale off).
+        assert_eq!(plot.extra_axis(a).unwrap().range, Some((100.0, 200.0)));
+        assert_eq!(plot.extra_axis(b).unwrap().range, Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn reset_extra_axes_to_leaves_axis_with_no_data_unchanged() {
+        let mut plot = Plot::new(0);
+        let a = plot.add_extra_axis(AxisSide::Right);
+        plot.extra_axis_mut(a).unwrap().range = Some((0.0, 1.0));
+        // No data for this axis (empty slice / None entry) -> unchanged.
+        plot.reset_extra_axes_to(&[None]);
+        assert_eq!(plot.extra_axis(a).unwrap().range, Some((0.0, 1.0)));
+        plot.reset_extra_axes_to(&[]);
+        assert_eq!(plot.extra_axis(a).unwrap().range, Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn reset_extra_axes_to_force_refits_nonpositive_log_axis() {
+        let mut plot = Plot::new(0);
+        let a = plot.add_extra_axis(AxisSide::Right);
+        {
+            let ax = plot.extra_axis_mut(a).unwrap();
+            ax.scale = Scale::Log10;
+            ax.autoscale = false; // even pinned, a log axis with lo<=0 refits
+            ax.range = Some((-5.0, 5.0));
+        }
+        plot.reset_extra_axes_to(&[Some((1.0, 1000.0))]);
+        assert_eq!(plot.extra_axis(a).unwrap().range, Some((1.0, 1000.0)));
     }
 
     // --- current-ROI selection invariant (Plot is the single owner) ---

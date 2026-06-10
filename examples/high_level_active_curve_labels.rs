@@ -191,6 +191,9 @@ impl eframe::App for ActiveLabelApp {
                                 ui.label("Y (left): (graph default) left signal");
                                 ui.label(format!("Y2 (right): {}", info.y_label));
                             }
+                            YAxis::Extra(n) => {
+                                ui.label(format!("Y (extra {n}): {}", info.y_label));
+                            }
                         }
                     }
                     None => {

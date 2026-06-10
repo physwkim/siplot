@@ -28,14 +28,35 @@ pub enum Scale {
     Log10,
 }
 
-/// Which Y axis a curve is plotted against (silx `YAxis`): the main left axis
-/// or the secondary right axis (`doc/design.md` §13 A5).
+/// Which Y axis a curve is plotted against (silx `YAxis`): the main left axis,
+/// the secondary right axis, or one of the additional stacked axes
+/// (`doc/design.md` §13 A5 + multi-axis extension).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum YAxis {
     /// The main left Y axis (`Plot::limits`).
     #[default]
     Left,
     /// The secondary right Y axis (`Plot::y2`).
+    Right,
+    /// One of the additional Y axes beyond the built-in left/right pair, indexed
+    /// into `Plot::extra`. Each carries its own range, scale, side, and label;
+    /// curves bound here plot against `Plot::extra[index]` and its ticks/label
+    /// are drawn stacked outward in the configured [`AxisSide`] gutter. A curve
+    /// bound to an unknown index (or an axis with no range yet) falls back to the
+    /// left transform, mirroring the right axis' `y2 == None` fallback.
+    Extra(usize),
+}
+
+/// Which gutter a Y axis' ticks and label are drawn in. The built-in axes are
+/// fixed (`Left` for [`YAxis::Left`], the right gutter for [`YAxis::Right`]);
+/// each [`YAxis::Extra`] axis chooses its side, and same-side extra axes stack
+/// outward in creation order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AxisSide {
+    /// Ticks and label in the left gutter.
+    Left,
+    /// Ticks and label in the right gutter (the default secondary placement).
+    #[default]
     Right,
 }
 

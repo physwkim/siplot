@@ -16,7 +16,7 @@ use crate::core::marker::{Marker, MarkerKind, MarkerSymbol, TextAnchor};
 use crate::core::plot::{GraphGrid, TickMode};
 use crate::core::roi::{HandleKind, ManagedRoi, Roi};
 use crate::core::shape::{Line, Shape, ShapeKind};
-use crate::core::transform::{Axis, Scale, Transform, YAxis};
+use crate::core::transform::{Axis, AxisSide, Scale, Transform, YAxis};
 use crate::core::triangles::Triangles;
 
 /// Colors used to draw the chrome, derived from the active egui visuals so the
@@ -70,6 +70,32 @@ pub struct ChromeLayout {
     pub data_area: Rect,
     /// Colorbar strip rect, or `None` when the plot has no colormap.
     pub colorbar: Option<Rect>,
+    /// Tick/label placement for each extra Y axis, aligned by index to the
+    /// requested [`ChromeRequest::extra`] (and thus to `Plot::extra`). Empty when
+    /// no extra axes are requested or the axes are hidden.
+    pub extra: Vec<ExtraAxisSlot>,
+}
+
+/// One extra Y axis to reserve gutter space for, in [`ChromeRequest::extra`].
+#[derive(Clone, Copy, Debug)]
+pub struct ExtraAxisChrome {
+    /// Which gutter the axis stacks into.
+    pub side: AxisSide,
+    /// Whether the axis has a label (reserves extra outer space for it).
+    pub label: bool,
+}
+
+/// Where an extra Y axis' spine, ticks, and label are drawn, computed by
+/// [`layout`]. `baseline_x` is the x of the vertical spine (ticks extend outward
+/// from it); `label_x` is the x of the rotated axis-label center.
+#[derive(Clone, Copy, Debug)]
+pub struct ExtraAxisSlot {
+    /// Which gutter the axis is drawn in.
+    pub side: AxisSide,
+    /// X of the axis spine (data-area-facing edge of the slot).
+    pub baseline_x: f32,
+    /// X of the rotated axis-label center (outer edge of the slot).
+    pub label_x: f32,
 }
 
 // Fixed-pixel gutters. Left holds Y tick labels; bottom holds X tick labels;
@@ -93,7 +119,7 @@ const LABEL_H: f32 = 16.0;
 
 /// What chrome the plot needs space reserved for. Drives [`layout`]'s gutter
 /// sizes so titles/labels, a colorbar, and a y2 axis all get room.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct ChromeRequest {
     /// A vertical colorbar in the right gutter.
     pub colorbar: bool,
@@ -119,6 +145,10 @@ pub struct ChromeRequest {
     /// reserves the usual gutters. The widget sets it from
     /// `!Plot::axes_displayed()`.
     pub axes_hidden: bool,
+    /// Extra Y axes to reserve stacked gutter space for, in `Plot::extra` order.
+    /// Each reserves a slot on its side outside the built-in gutters; honored
+    /// only when the axes are shown (`axes_hidden == false`).
+    pub extra: Vec<ExtraAxisChrome>,
 }
 
 /// Reserve gutters for axis labels (a colorbar and/or a right y2 axis, if
@@ -159,6 +189,7 @@ pub fn layout(full: Rect, req: &ChromeRequest) -> ChromeLayout {
         return ChromeLayout {
             data_area,
             colorbar,
+            extra: Vec::new(),
         };
     }
 
@@ -170,10 +201,24 @@ pub fn layout(full: Rect, req: &ChromeRequest) -> ChromeLayout {
         GUTTER_RIGHT
     };
     // A y2 label adds rotated text outside the y2 ticks.
-    let right = right_axis + if req.y2 && req.y2_label { LABEL_H } else { 0.0 };
-    let left = GUTTER_LEFT + if req.y_label { LABEL_H } else { 0.0 };
+    let base_right = right_axis + if req.y2 && req.y2_label { LABEL_H } else { 0.0 };
+    let base_left = GUTTER_LEFT + if req.y_label { LABEL_H } else { 0.0 };
     let top = GUTTER_TOP + if req.title { TITLE_H } else { 0.0 };
     let bottom = GUTTER_BOTTOM + if req.x_label { LABEL_H } else { 0.0 };
+
+    // Extra axes stack outward beyond the base gutters: each reserves a tick
+    // slot (`GUTTER_Y2`) on its side plus room for its rotated label.
+    let extra_slot = |label: bool| GUTTER_Y2 + if label { LABEL_H } else { 0.0 };
+    let mut extra_left_reserve = 0.0;
+    let mut extra_right_reserve = 0.0;
+    for ax in &req.extra {
+        match ax.side {
+            AxisSide::Left => extra_left_reserve += extra_slot(ax.label),
+            AxisSide::Right => extra_right_reserve += extra_slot(ax.label),
+        }
+    }
+    let left = base_left + extra_left_reserve;
+    let right = base_right + extra_right_reserve;
 
     let data_area = Rect::from_min_max(
         pos2(full.left() + left, full.top() + top),
@@ -186,9 +231,43 @@ pub fn layout(full: Rect, req: &ChromeRequest) -> ChromeLayout {
             pos2(x0 + cbar_width, data_area.bottom()),
         )
     });
+
+    // Position each extra axis just outside the base gutter on its side, then
+    // step the per-side cursor outward (toward the widget edge) for the next.
+    let mut right_cursor = data_area.right() + base_right;
+    let mut left_cursor = data_area.left() - base_left;
+    let mut extra = Vec::with_capacity(req.extra.len());
+    for ax in &req.extra {
+        let slot = extra_slot(ax.label);
+        let entry = match ax.side {
+            AxisSide::Right => {
+                let baseline_x = right_cursor;
+                let label_x = baseline_x + GUTTER_Y2 + LABEL_H * 0.5;
+                right_cursor += slot;
+                ExtraAxisSlot {
+                    side: ax.side,
+                    baseline_x,
+                    label_x,
+                }
+            }
+            AxisSide::Left => {
+                let baseline_x = left_cursor;
+                let label_x = baseline_x - GUTTER_Y2 - LABEL_H * 0.5;
+                left_cursor -= slot;
+                ExtraAxisSlot {
+                    side: ax.side,
+                    baseline_x,
+                    label_x,
+                }
+            }
+        };
+        extra.push(entry);
+    }
+
     ChromeLayout {
         data_area,
         colorbar,
+        extra,
     }
 }
 
@@ -525,6 +604,81 @@ pub fn draw_y2_ticks(painter: &Painter, t: &Transform, style: &Style) {
             Align2::LEFT_CENTER,
             label,
             font.clone(),
+            style.text,
+        );
+    }
+}
+
+/// Draw one extra (stacked) Y axis: a vertical spine at `baseline_x`, tick marks
+/// and value labels extending outward on `side`, and the optional rotated axis
+/// label centered at `label_x`. `t` is the axis' transform (shared X, the extra
+/// axis as Y) and `baseline_x` / `label_x` come from the matching
+/// [`ExtraAxisSlot`]. Like [`draw_y2_ticks`], no grid lines are drawn. The
+/// multi-axis sibling of [`draw_y2_ticks`] (`doc/design.md` §13 A5 extension).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_extra_y_ticks(
+    painter: &Painter,
+    t: &Transform,
+    side: AxisSide,
+    baseline_x: f32,
+    label_x: f32,
+    label: Option<&str>,
+    style: &Style,
+) {
+    let area = t.area;
+    let axis = Stroke::new(1.0, style.axis);
+    let font = FontId::proportional(11.0);
+    let tick_len = 4.0;
+
+    // Spine: the offset stacked axis has no plot-frame edge to sit on (unlike
+    // y2, whose spine is the data-area frame), so draw one.
+    painter.vline(baseline_x, area.y_range(), axis);
+
+    for (yv, label) in axis_ticks(&t.y, 6) {
+        let py = t.data_to_pixel(t.x.min, yv).y;
+        match side {
+            AxisSide::Right => {
+                painter.line_segment(
+                    [pos2(baseline_x, py), pos2(baseline_x + tick_len, py)],
+                    axis,
+                );
+                painter.text(
+                    pos2(baseline_x + tick_len + 3.0, py),
+                    Align2::LEFT_CENTER,
+                    label,
+                    font.clone(),
+                    style.text,
+                );
+            }
+            AxisSide::Left => {
+                painter.line_segment(
+                    [pos2(baseline_x - tick_len, py), pos2(baseline_x, py)],
+                    axis,
+                );
+                painter.text(
+                    pos2(baseline_x - tick_len - 3.0, py),
+                    Align2::RIGHT_CENTER,
+                    label,
+                    font.clone(),
+                    style.text,
+                );
+            }
+        }
+    }
+
+    if let Some(text) = label {
+        // Left axes read bottom→top (−90°), right axes top→bottom (+90°),
+        // matching the built-in left / y2 labels in `draw_labels`.
+        let angle = match side {
+            AxisSide::Left => -std::f32::consts::FRAC_PI_2,
+            AxisSide::Right => std::f32::consts::FRAC_PI_2,
+        };
+        draw_rotated_label(
+            painter,
+            pos2(label_x, area.center().y),
+            angle,
+            text,
+            FontId::proportional(12.0),
             style.text,
         );
     }
@@ -1863,6 +2017,62 @@ mod tests {
         // adds no colorbar rect.
         assert!(with_y2.colorbar.is_none());
         assert!(with_y2.data_area.right() < plain.data_area.right());
+    }
+
+    #[test]
+    fn layout_stacks_extra_axes_outward_per_side() {
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 300.0));
+        let plain = layout(full, &ChromeRequest::default());
+        let req = ChromeRequest {
+            extra: vec![
+                ExtraAxisChrome {
+                    side: AxisSide::Right,
+                    label: false,
+                },
+                ExtraAxisChrome {
+                    side: AxisSide::Right,
+                    label: false,
+                },
+                ExtraAxisChrome {
+                    side: AxisSide::Left,
+                    label: false,
+                },
+            ],
+            ..Default::default()
+        };
+        let l = layout(full, &req);
+        // Extra right axes narrow the data area on the right, the left one on the
+        // left, beyond the plain gutters.
+        assert!(l.data_area.right() < plain.data_area.right());
+        assert!(l.data_area.left() > plain.data_area.left());
+        assert_eq!(l.extra.len(), 3);
+        // Two right axes stack outward (second baseline is further right), and the
+        // left axis sits left of the data area.
+        assert_eq!(l.extra[0].side, AxisSide::Right);
+        assert_eq!(l.extra[1].side, AxisSide::Right);
+        assert!(l.extra[1].baseline_x > l.extra[0].baseline_x);
+        assert!(l.extra[0].baseline_x >= l.data_area.right());
+        assert_eq!(l.extra[2].side, AxisSide::Left);
+        assert!(l.extra[2].baseline_x <= l.data_area.left());
+    }
+
+    #[test]
+    fn layout_hidden_axes_drop_extra_slots() {
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 300.0));
+        let l = layout(
+            full,
+            &ChromeRequest {
+                axes_hidden: true,
+                extra: vec![ExtraAxisChrome {
+                    side: AxisSide::Right,
+                    label: true,
+                }],
+                ..Default::default()
+            },
+        );
+        // Hidden axes zero the gutters and draw no extra-axis chrome.
+        assert!(l.extra.is_empty());
+        assert_eq!(l.data_area, full);
     }
 
     #[test]

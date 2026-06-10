@@ -1670,11 +1670,16 @@ impl Bounds1D {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+// Holds a per-extra-axis `Vec`, so it is `Clone` but not `Copy`; callers that
+// merge bounds pass it by reference.
+#[derive(Clone, Debug, Default)]
 struct DataBounds {
     x: Option<Bounds1D>,
     y_left: Option<Bounds1D>,
     y_right: Option<Bounds1D>,
+    /// Per-extra-axis bounds, indexed by `YAxis::Extra(n)` (parallel to
+    /// `Plot::extra`). Grows on demand as curves bound to higher indices arrive.
+    extra: Vec<Option<Bounds1D>>,
 }
 
 impl DataBounds {
@@ -1683,10 +1688,16 @@ impl DataBounds {
         match axis {
             YAxis::Left => include_axis(&mut self.y_left, y),
             YAxis::Right => include_axis(&mut self.y_right, y),
+            YAxis::Extra(n) => {
+                if self.extra.len() <= n {
+                    self.extra.resize(n + 1, None);
+                }
+                include_axis(&mut self.extra[n], y);
+            }
         }
     }
 
-    fn include_bounds(&mut self, other: Self) {
+    fn include_bounds(&mut self, other: &Self) {
         if let Some(x) = other.x {
             include_axis(&mut self.x, x);
         }
@@ -1695,6 +1706,14 @@ impl DataBounds {
         }
         if let Some(y) = other.y_right {
             include_axis(&mut self.y_right, y);
+        }
+        for (n, slot) in other.extra.iter().enumerate() {
+            if let Some(y) = slot {
+                if self.extra.len() <= n {
+                    self.extra.resize(n + 1, None);
+                }
+                include_axis(&mut self.extra[n], *y);
+            }
         }
     }
 }
@@ -1712,12 +1731,24 @@ fn include_axis(slot: &mut Option<Bounds1D>, bounds: Bounds1D) {
 /// span. An axis with no data maps to `None`, leaving it pinned by the model's
 /// per-axis autoscale logic (silx `PlotWidget.resetZoom` restores axes without
 /// data). Pure (no `RenderState`/GPU) so the reset path is unit-testable.
-fn data_range_from_bounds(bounds: DataBounds) -> DataRange {
+fn data_range_from_bounds(bounds: &DataBounds) -> DataRange {
     DataRange {
         x: bounds.x.map(Bounds1D::as_non_degenerate),
         y: bounds.y_left.map(Bounds1D::as_non_degenerate),
         y2: bounds.y_right.map(Bounds1D::as_non_degenerate),
     }
+}
+
+/// Per-extra-axis data bounds (non-degenerate-padded) for
+/// [`Plot::reset_extra_axes_to`], parallel to `Plot::extra`. The model side
+/// holds extra-axis ranges in their own `Vec`, so they ride alongside the
+/// left/right [`DataRange`] rather than inside it.
+fn extra_data_ranges(bounds: &DataBounds) -> Vec<Option<(f64, f64)>> {
+    bounds
+        .extra
+        .iter()
+        .map(|b| b.map(Bounds1D::as_non_degenerate))
+        .collect()
 }
 
 /// Map accumulated widget [`DataBounds`] to the model [`DataRange`] *cache*
@@ -1727,7 +1758,7 @@ fn data_range_from_bounds(bounds: DataBounds) -> DataRange {
 /// refit-time concern applied by [`data_range_from_bounds`], not stored in the
 /// cache). An axis with no data maps to `None`. Pure (no GPU) so it is
 /// unit-testable.
-fn raw_data_range_from_bounds(bounds: DataBounds) -> DataRange {
+fn raw_data_range_from_bounds(bounds: &DataBounds) -> DataRange {
     DataRange {
         x: bounds.x.map(|b| (b.min, b.max)),
         y: bounds.y_left.map(|b| (b.min, b.max)),
@@ -2194,6 +2225,10 @@ fn active_axis_label_overrides(
     match y_axis {
         YAxis::Left => (x, y, None),
         YAxis::Right => (x, None, y),
+        // Extra axes have no active-label override slot on `Plot`; their label is
+        // set explicitly via `set_graph_extra_y_label`, so an extra-bound active
+        // curve contributes no left/right override.
+        YAxis::Extra(_) => (x, None, None),
     }
 }
 
@@ -3546,7 +3581,7 @@ impl PlotWidget {
     fn recompute_data_bounds(&mut self) {
         let mut bounds = DataBounds::default();
         for record in &self.item_records {
-            bounds.include_bounds(record.bounds);
+            bounds.include_bounds(&record.bounds);
         }
         self.data_bounds = bounds;
         // Keep the model's data-range cache live (silx invalidates `_dataRange`
@@ -3558,7 +3593,7 @@ impl PlotWidget {
         // range; only the cache content changes here.
         self.backend
             .plot_mut()
-            .set_data_range(raw_data_range_from_bounds(self.data_bounds));
+            .set_data_range(raw_data_range_from_bounds(&self.data_bounds));
     }
 
     fn remove_records_by_kinds(&mut self, predicate: impl Fn(PlotItemKind) -> bool) {
@@ -5948,6 +5983,11 @@ impl PlotWidget {
                 self.backend.plot_mut().y2 = Some((ymin, ymax));
                 self.push_limits_changed_if(before);
             }
+            YAxis::Extra(n) => {
+                if let Some(ax) = self.backend.plot_mut().extra_axis_mut(n) {
+                    ax.range = Some((ymin, ymax));
+                }
+            }
         }
     }
 
@@ -6141,6 +6181,11 @@ impl PlotWidget {
         match axis {
             YAxis::Left => self.backend.plot().y_label.as_deref(),
             YAxis::Right => self.backend.plot().y2_label.as_deref(),
+            YAxis::Extra(n) => self
+                .backend
+                .plot()
+                .extra_axis(n)
+                .and_then(|a| a.label.as_deref()),
         }
     }
 
@@ -6861,6 +6906,15 @@ impl PlotWidget {
     }
 
     fn apply_limits_from_data_bounds(&mut self) {
+        // Refit the extra axes first, independent of the left/right guard below:
+        // each autoscale-on extra axis fits its own curves (the multi-axis
+        // sibling of the left/right refit). Extra axes are not part of the
+        // limits-history snapshot (interactive pan/zoom of them is not
+        // supported), so this needs no `LimitsChanged` bookkeeping.
+        let extra = extra_data_ranges(&self.data_bounds);
+        if !extra.is_empty() {
+            self.backend.plot_mut().reset_extra_axes_to(&extra);
+        }
         // Preserve the original guard: a reset-to-data needs both X and left-Y
         // data accumulated before it does anything.
         if self.data_bounds.x.is_none() || self.data_bounds.y_left.is_none() {
@@ -6873,7 +6927,7 @@ impl PlotWidget {
         // path) only assigned `plot.limits`/`plot.y2` — the same two fields the
         // model owner writes — so delegating regresses no widget-side
         // bookkeeping; the `LimitsChanged` event is still raised here.
-        let range = data_range_from_bounds(self.data_bounds);
+        let range = data_range_from_bounds(&self.data_bounds);
         let before = self.limits_snapshot();
         self.backend.plot_mut().reset_zoom_to_data_range(range);
         self.push_limits_changed_if(before);
@@ -12132,6 +12186,7 @@ mod tests {
             x: Some(Bounds1D::new(x.0, x.1).unwrap()),
             y_left: Some(Bounds1D::new(y_left.0, y_left.1).unwrap()),
             y_right: y_right.map(|(lo, hi)| Bounds1D::new(lo, hi).unwrap()),
+            extra: Vec::new(),
         }
     }
 
@@ -12141,7 +12196,7 @@ mod tests {
     /// a GPU `RenderState`, so this asserts the flag-aware behavior via the
     /// model owner the widget routes through.
     fn apply_widget_reset(plot: &mut Plot, bounds: DataBounds) {
-        plot.reset_zoom_to_data_range(data_range_from_bounds(bounds));
+        plot.reset_zoom_to_data_range(data_range_from_bounds(&bounds));
     }
 
     #[test]
@@ -12190,8 +12245,9 @@ mod tests {
             x: Some(Bounds1D::new(4.0, 4.0).unwrap()),
             y_left: Some(Bounds1D::new(-1.0, 1.0).unwrap()),
             y_right: None,
+            extra: Vec::new(),
         };
-        let range = data_range_from_bounds(bounds);
+        let range = data_range_from_bounds(&bounds);
         let (xmin, xmax) = range.x.unwrap();
         assert!(xmax > xmin, "degenerate X must be padded: {xmin}..{xmax}");
         assert_eq!(range.y, Some((-1.0, 1.0)));
@@ -12207,8 +12263,9 @@ mod tests {
             x: Some(Bounds1D::new(4.0, 4.0).unwrap()),
             y_left: Some(Bounds1D::new(-5.0, 5.0).unwrap()),
             y_right: None,
+            extra: Vec::new(),
         };
-        let range = raw_data_range_from_bounds(bounds);
+        let range = raw_data_range_from_bounds(&bounds);
         assert_eq!(range.x, Some((4.0, 4.0)), "single point must stay (v, v)");
         assert_eq!(range.y, Some((-5.0, 5.0)));
         assert_eq!(range.y2, None);
@@ -12227,7 +12284,7 @@ mod tests {
             "empty before any data"
         );
         let bounds = data_bounds((10.0, 20.0), (-5.0, 5.0), Some((-1.0, 1.0)));
-        plot.set_data_range(raw_data_range_from_bounds(bounds));
+        plot.set_data_range(raw_data_range_from_bounds(&bounds));
         let range = plot.data_range();
         assert_eq!(range.x, Some((10.0, 20.0)));
         assert_eq!(range.y, Some((-5.0, 5.0)));

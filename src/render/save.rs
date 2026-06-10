@@ -786,6 +786,23 @@ fn render_plot_rgba(
         Some(t) => (t.ortho_matrix(), axis_log_flags(t)),
         None => (ortho_left, axis_log_left),
     };
+    // Per-extra-axis matrices (parallel to plot.extra); curves on extra axes
+    // render in saves even though their tick chrome is not drawn here. An axis
+    // with no range falls back to the left matrix.
+    let mut ortho_extra = Vec::with_capacity(plot.extra.len());
+    let mut axis_log_extra = Vec::with_capacity(plot.extra.len());
+    for i in 0..plot.extra.len() {
+        match plot.transform_extra(i, area) {
+            Some(t) => {
+                ortho_extra.push(t.ortho_matrix());
+                axis_log_extra.push(axis_log_flags(&t));
+            }
+            None => {
+                ortho_extra.push(ortho_left);
+                axis_log_extra.push(axis_log_left);
+            }
+        }
+    }
     let bg = egui::Rgba::from(plot.data_background).to_array();
 
     let renderer = render_state.renderer.read();
@@ -804,6 +821,8 @@ fn render_plot_rgba(
         axis_log_left,
         ortho_right,
         axis_log_right,
+        &ortho_extra,
+        &axis_log_extra,
     )
 }
 

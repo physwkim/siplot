@@ -53,8 +53,8 @@ pub use crate::core::peaks::{
     DEFAULT_PEAK_SENSITIVITY, Peak, guess_fwhm, peak_search, peak_search_range,
 };
 pub use crate::core::plot::{
-    AxisConstraints, DataMargins, DataRange, DirtyState, GraphGrid, Plot, PlotId, TickMode,
-    resolved_axis_label,
+    AxisConstraints, DataMargins, DataRange, DirtyState, ExtraAxis, GraphGrid, Plot, PlotId,
+    TickMode, resolved_axis_label,
 };
 pub use crate::core::roi::{BandLines, ManagedRoi, Roi, RoiEdge, RoiLineStyle};
 pub use crate::core::roi_io::{RoiIoError, decode_rois, encode_rois, load_rois, save_rois};
@@ -66,7 +66,7 @@ pub use crate::core::scatter_viz::{
 };
 pub use crate::core::shape::{Line, Shape, ShapeKind};
 pub use crate::core::stats::{ComCoord, StatScope, Stats};
-pub use crate::core::transform::{Axis, Margins, Scale, Transform, YAxis};
+pub use crate::core::transform::{Axis, AxisSide, Margins, Scale, Transform, YAxis};
 pub use crate::core::triangles::Triangles;
 pub use crate::render::backend_wgpu::{
     WgpuBackend, install, set_curve, set_curves, set_image, set_images, update_curve,
