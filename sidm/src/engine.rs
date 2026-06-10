@@ -107,6 +107,13 @@ impl Engine {
         // Always-on, dependency-free plugins.
         engine.register_plugin(Arc::new(LocalPlugin));
         engine.register_plugin(Arc::new(FakePlugin));
+        // EPICS Channel Access backend (feature `ca`). Replaceable via
+        // `register_plugin` (e.g. a test pointing the CA client at a loopback
+        // IOC through `EPICS_CA_ADDR_LIST`).
+        #[cfg(feature = "ca")]
+        engine.register_plugin(Arc::new(
+            crate::data_plugins::epics_plugins::ca_plugin::CaPlugin::new(),
+        ));
         engine
     }
 

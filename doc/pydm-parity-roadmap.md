@@ -41,7 +41,7 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
 | E3 | `PvValue` / `AlarmSeverity` / `ChannelState` core | ✅ | `channel.rs` |
 | E4 | `Engine` + `DataPlugin` registry + `loc://` | ✅ | `engine.rs`, `channel.rs` live types, `local_plugin.rs` |
 | E5 | `fake://` generators | ✅ | `fake_plugin.rs`, `tests/engine_fake.rs` |
-| E6 | `ca://` plugin + in-process IOC test | ☐ | commit 5 |
+| E6 | `ca://` plugin + in-process IOC test | ✅ | `epics_plugins/ca_plugin.rs`, `tests/ca_ioc.rs`; feature `ca` (default-on), crates.io epics-ca-rs/epics-base-rs 0.18 |
 | E7 | Write path (`PvValue`→`EpicsValue`, string→enum) | ☐ | commit 6 |
 | E8 | `pva://` plugin (`ntscalar_to_state`) | ☐ | commit 7 |
 | E9 | `calc://` (evalexpr) | ☐ | commit 8 |

@@ -12,6 +12,7 @@ use crate::channel::{PvValue, StateWriter};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+pub mod epics_plugins;
 pub mod fake_plugin;
 pub mod local_plugin;
 

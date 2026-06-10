@@ -13,6 +13,18 @@ repository = "https://github.com/physwkim/siplot"
 # examples do. The EPICS backends (epics-ca-rs / epics-pva-rs) and the calc
 # evaluator are feature-gated and wired in later waves so the headless engine
 # core compiles with no network/runtime dependencies.
+
+[features]
+# `ca` is on by default (Channel Access is the common EPICS transport, and the
+# in-process `CaServer` round-trip test lives behind it). `pva`/`calc` join the
+# default set as they are wired in later commits. `loc://`/`fake://` are always
+# compiled, so `--no-default-features` gives the headless, dependency-light core.
+default = ["ca"]
+# Channel Access backend (`ca://`). Pulls epics-ca-rs (client + in-process
+# CaServer for tests) and epics-base-rs (the `Snapshot`/`DbrClass`/`EpicsValue`
+# types the client returns, which epics-ca-rs does not re-export).
+ca = ["dep:epics-ca-rs", "dep:epics-base-rs"]
+
 [dependencies]
 siplot = { path = ".." }
 # Async runtime for the data engine. The connection tasks live on a tokio
@@ -28,3 +40,13 @@ tokio = { version = "1", features = [
 # CancellationToken — fired when the last Channel for a connection drops, to
 # stop that connection's task deterministically.
 tokio-util = "0.7"
+
+# EPICS Channel Access backend (feature `ca`). crates.io 0.18.x — an explicit
+# deviation from siplot's no-new-dependency rule, scoped to this crate. The API
+# is verified against the 0.18.6 source at ~/codes/epics-rs (same version).
+epics-ca-rs = { version = "0.18", optional = true }
+# `Snapshot`/`AlarmInfo`/`DisplayInfo`/`ControlInfo`/`EnumInfo`/`DbrClass`/
+# `EpicsValue` returned by the CA client live here and are not re-exported by
+# epics-ca-rs, so this is a direct dependency. Unified to the same 0.18.6 that
+# epics-ca-rs pins, so there is one copy in the tree.
+epics-base-rs = { version = "0.18", optional = true }

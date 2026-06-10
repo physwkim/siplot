@@ -37,5 +37,7 @@ pub mod utilities;
 
 pub use address::PvAddress;
 pub use channel::{AlarmSeverity, Channel, ChannelState, PvValue, RepaintHook, StateWriter};
+#[cfg(feature = "ca")]
+pub use data_plugins::epics_plugins::ca_plugin::CaPlugin;
 pub use data_plugins::{ConnectionCtx, DataPlugin};
 pub use engine::{Engine, EngineError};
