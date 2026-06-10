@@ -52,7 +52,7 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| W0 | `display_format` formatter (pure) | ☐ | commit 9 |
+| W0 | `display_format` formatter (pure) | ✅ | `widgets/display_format.rs`; `DisplayFormat` + `FormatSpec` + `format_value` porting `display_format.py` `parse_value_for_display` + `base.py` precision/unit + `label.py` enum→label. Deviations documented: no-value → `""` (no stray unit suffix), negative/out-of-range enum index → `**INVALID**`. 38 unit tests |
 | W1 | `ChannelBase` + alarm styling | ☐ | commit 10 |
 | W2 | PydmLabel | ☐ | commit 11 |
 | W3 | PydmLineEdit | ☐ | commit 12 |

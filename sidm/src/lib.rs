@@ -34,6 +34,7 @@ pub mod channel;
 pub mod data_plugins;
 pub mod engine;
 pub mod utilities;
+pub mod widgets;
 
 pub use address::PvAddress;
 pub use channel::{AlarmSeverity, Channel, ChannelState, PvValue, RepaintHook, StateWriter};

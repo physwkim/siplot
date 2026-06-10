@@ -1,0 +1,13 @@
+//! PyDM-style channel-driven widgets layered on `siplot`.
+//!
+//! Each widget reads its [`Channel`]'s [`ChannelState`] snapshot every frame and
+//! draws with alarm-severity styling, connection gating, and precision/unit
+//! formatting (PyDM's `widgets/` package). The pure, headlessly-testable cores
+//! land first; the egui-drawing widget structs build on them in later commits.
+//!
+//! [`Channel`]: crate::Channel
+//! [`ChannelState`]: crate::ChannelState
+
+pub mod display_format;
+
+pub use display_format::{DisplayFormat, FormatSpec, format_value};
