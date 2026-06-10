@@ -77,3 +77,18 @@ evalexpr = { version = "13", optional = true }
 # tests read pixels back and assert colours, the same empirical-verification
 # pattern as siplot's `tests/mask_pointer_offset.rs` (no golden images).
 egui_kittest = { version = "0.34.3", features = ["wgpu"] }
+# Windowing for the runnable example panels (a wgpu `RenderState` + an event
+# loop), pinned to the same 0.34 the siplot examples use. The library never
+# depends on eframe — only the examples need a window.
+eframe = "0.34"
+
+# A panel of PyDM-style widgets driven entirely by `loc://`/`fake://` channels,
+# so it runs with no IOC.
+[[example]]
+name = "pydm_local_panel"
+required-features = []
+
+# The same panel against live `ca://` PVs supplied on the command line.
+[[example]]
+name = "pydm_ca_panel"
+required-features = ["ca"]

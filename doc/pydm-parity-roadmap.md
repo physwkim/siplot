@@ -68,8 +68,8 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| X1 | `pydm_local_panel` (`loc://`, no IOC) | ☐ | commit 20 |
-| X2 | `pydm_ca_panel` (`ca://`) | ☐ | commit 20 |
+| X1 | `pydm_local_panel` (`loc://`, no IOC) | ✅ | `examples/pydm_local_panel.rs`; eframe/wgpu window. A `fake://` sine drives a `PydmLabel` + scrolling `PydmTimePlot` (one pooled connection); a shared `loc://` float setpoint is edited from `PydmLineEdit` + `PydmSlider` and read back by a `PydmLabel` (single-owner value, no local echo); a `loc://` int is entered as hex and shown on a `PydmByteIndicator`. `required-features = []` (runs on the headless core). `eframe = "0.34"` added to dev-deps |
+| X2 | `pydm_ca_panel` (`ca://`) | ✅ | `examples/pydm_ca_panel.rs`; same widgets over live `ca://` PVs named on the command line (`-- <scalar_pv> [<flags_pv>]`). Disconnected PVs render the disconnected state (address in the label, dashed border); `required-features = ["ca"]`. IOC-unverified (no PVs running) |
 
 ## Tier 2 (follow-on, one commit each)
 
