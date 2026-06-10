@@ -6270,6 +6270,45 @@ impl PlotWidget {
         Some(limits)
     }
 
+    /// Set the active image's colormap value limits to an explicit `(vmin, vmax)`,
+    /// re-uploading the image with those levels (preserving the LUT /
+    /// normalization / gamma / geometry, like [`Self::autoscale_active_image`]).
+    ///
+    /// This is the apply path for the interactive colorbar drag: feed the
+    /// `(vmin, vmax)` from [`PlotResponse::colorbar_dragged_levels`] back here so a
+    /// bare `Plot2D`/`Plot1D` updates its contrast live. Returns `true` when a
+    /// scalar image with retained data was updated, `false` otherwise.
+    pub fn set_active_image_levels(&mut self, vmin: f64, vmax: f64) -> bool {
+        let Some(handle) = self.active_item else {
+            return false;
+        };
+        let (data, width, height, origin, scale, mut cm) = match self.retained_data(handle) {
+            Some(RetainedItemData::Image {
+                data,
+                width,
+                height,
+                origin,
+                scale,
+                colormap,
+            }) => (
+                data.clone(),
+                *width,
+                *height,
+                *origin,
+                *scale,
+                (**colormap).clone(),
+            ),
+            _ => return false,
+        };
+        cm.vmin = vmin;
+        cm.vmax = vmax;
+        let pixels: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+        let mut spec = ImageSpec::scalar(width as u32, height as u32, &pixels, cm);
+        spec.origin = origin;
+        spec.scale = scale;
+        self.update_image_spec(handle, spec)
+    }
+
     /// Apply a median filter to the active image and replace it in place (silx
     /// `MedianFilterAction` / `MedianFilter2DAction` re-adding the filtered image
     /// with `addImage(replace=True)`).
