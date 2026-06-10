@@ -243,6 +243,25 @@ impl HistogramColorBar {
     /// region of `ui` and report any handle drag this frame.
     pub fn ui(&self, ui: &mut egui::Ui, desired: Vec2) -> HistogramColorBarResponse {
         let (rect, response) = ui.allocate_exact_size(desired, Sense::hover());
+        self.show_in(ui, rect, response)
+    }
+
+    /// Render at an explicit `rect` instead of allocating from the layout cursor,
+    /// for embedding in a fixed gutter — e.g. a plot's colorbar region in
+    /// [`crate::widget::plot_widget::PlotView`]. Same interaction and paint as
+    /// [`Self::ui`]; pair with [`Self::with_bar_bounds`] when the gutter is taller
+    /// than the data area it should track.
+    pub fn ui_at(&self, ui: &mut egui::Ui, rect: Rect) -> HistogramColorBarResponse {
+        let response = ui.interact(rect, ui.id().with("histogram_colorbar"), Sense::hover());
+        self.show_in(ui, rect, response)
+    }
+
+    fn show_in(
+        &self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        response: egui::Response,
+    ) -> HistogramColorBarResponse {
         let norm = self.colormap.normalization;
         let (lo, hi) = axis_range(self.data_range, norm);
 
@@ -667,6 +686,26 @@ mod tests {
                 .with_levels(0.2, 0.8)
                 .with_bar_bounds(origin + 40.0, origin + 260.0);
             let _ = bar.ui(ui, egui::vec2(170.0, 300.0));
+        });
+    }
+
+    #[test]
+    fn ui_at_renders_at_explicit_rect_without_panic() {
+        // Embedded form: render into a fixed gutter rect (as PlotView does for a
+        // chrome colorbar) rather than allocating from the layout cursor.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let origin = ui.max_rect().left_top();
+            let gutter = Rect::from_min_max(
+                pos2(origin.x + 300.0, origin.y + 20.0),
+                pos2(origin.x + 470.0, origin.y + 320.0),
+            );
+            let bar = HistogramColorBar::new(Colormap::viridis(0.0, 1.0))
+                .with_data_range((0.0, 1.0))
+                .with_histogram(Some((vec![3, 7, 2], vec![0.0, 0.33, 0.66, 1.0])))
+                .with_levels(0.2, 0.8)
+                .with_bar_bounds(gutter.top(), gutter.bottom());
+            let _ = bar.ui_at(ui, gutter);
         });
     }
 
