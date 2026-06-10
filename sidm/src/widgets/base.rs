@@ -153,8 +153,21 @@ impl ChannelBase {
         writable: bool,
         add: impl FnOnce(&mut egui::Ui) -> R,
     ) -> egui::InnerResponse<R> {
+        self.framed_with_enabled(ui, state, self.enabled(state, writable), add)
+    }
+
+    /// Like [`Self::framed`] but with an explicit `enabled` gate instead of the
+    /// connection/write-access rule. Used by container widgets whose enabled
+    /// state follows a different rule (e.g. `PyDMFrame`'s `disableOnDisconnect`,
+    /// which leaves the frame enabled while disconnected unless opted in).
+    pub fn framed_with_enabled<R>(
+        &self,
+        ui: &mut egui::Ui,
+        state: &ChannelState,
+        enabled: bool,
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<R> {
         let border = self.border(state);
-        let enabled = self.enabled(state, writable);
 
         let egui::InnerResponse {
             inner: value,
