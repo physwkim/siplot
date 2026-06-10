@@ -6156,6 +6156,37 @@ impl PlotWidget {
         self.backend.plot_mut().show_colorbar = show;
     }
 
+    /// Whether the colorbar is the interactive pyqtgraph-style histogram colorbar
+    /// (drag the handles to set the colormap `vmin`/`vmax`) rather than a static
+    /// strip. See [`Self::set_interactive_colorbar`].
+    pub fn interactive_colorbar(&self) -> bool {
+        self.backend.plot().colorbar_interactive
+    }
+
+    /// Make the colorbar an interactive histogram colorbar (drag-to-set-levels).
+    /// The drag is surfaced via [`PlotResponse::colorbar_dragged_levels`] for the
+    /// caller to apply to the colormap (and re-upload the image); supply the
+    /// value-distribution histogram with [`Self::set_colorbar_histogram`] and the
+    /// axis range with [`Self::set_colorbar_value_range`].
+    pub fn set_interactive_colorbar(&mut self, interactive: bool) {
+        self.backend.plot_mut().colorbar_interactive = interactive;
+    }
+
+    /// Set the value-distribution histogram drawn beside the interactive
+    /// colorbar's gradient (`(counts, edges)` from
+    /// [`crate::core::histogram::compute_histogram`]); `None` draws gradient +
+    /// handles only.
+    pub fn set_colorbar_histogram(&mut self, histogram: Option<(Vec<u64>, Vec<f64>)>) {
+        self.backend.plot_mut().colorbar_histogram = histogram;
+    }
+
+    /// Set the value range `(min, max)` the interactive colorbar's axis spans
+    /// (handles move within it); `None` falls back to the colormap's
+    /// `vmin`/`vmax`.
+    pub fn set_colorbar_value_range(&mut self, range: Option<(f64, f64)>) {
+        self.backend.plot_mut().colorbar_value_range = range;
+    }
+
     pub fn set_graph_minor_grid(&mut self, on: bool) {
         self.backend.plot_mut().grid = if on {
             GraphGrid::MajorAndMinor

@@ -218,6 +218,12 @@ pub struct PlotResponse {
     /// The active primary-pointer interaction mode this frame (silx's current
     /// `Interaction.StateMachine` mode), surfaced read-only for status-bar UIs.
     pub interaction_mode: PlotInteractionMode,
+    /// New colormap `(vmin, vmax)` when an interactive colorbar handle was dragged
+    /// this frame (only when [`Plot::colorbar_interactive`] is set), else `None`.
+    /// The caller applies it to the colormap and re-uploads the image — the same
+    /// single-owner pattern as [`Self::marker_moved`]. The colorbar handles
+    /// already paint at the dragged level, so there is no visual lag.
+    pub colorbar_dragged_levels: Option<(f64, f64)>,
 }
 
 /// What [`PlotView::show_with_draw`] returns: the [`PlotResponse`] plus the
@@ -522,6 +528,8 @@ impl PlotView {
             // `show_with_draw` overwrites it with its own draw-state event.
             draw_event,
             interaction_mode,
+            // Computed when the interactive colorbar is wired in; static until then.
+            colorbar_dragged_levels: None,
         }
     }
 

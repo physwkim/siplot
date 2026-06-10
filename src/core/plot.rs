@@ -292,6 +292,22 @@ pub struct Plot {
     /// carries the active image's colormap) set this `false` so the colorbar is
     /// not drawn twice.
     pub show_colorbar: bool,
+    /// When `true` (and a [`colormap`](Self::colormap) is shown), the colorbar is
+    /// the interactive pyqtgraph-style histogram colorbar (drag the handles to set
+    /// the colormap's `vmin`/`vmax`) instead of a static strip. Defaults to
+    /// `false`. The drag is surfaced via `PlotResponse::colorbar_dragged_levels`
+    /// for the caller to apply (the colormap and any GPU image re-upload are the
+    /// caller's, mirroring the marker/ROI single-owner pattern).
+    pub colorbar_interactive: bool,
+    /// `(counts, edges)` value-distribution histogram drawn beside the gradient
+    /// when the colorbar is interactive (see
+    /// [`crate::core::histogram::compute_histogram`]); `None` draws just the
+    /// gradient + handles.
+    pub colorbar_histogram: Option<(Vec<u64>, Vec<f64>)>,
+    /// The image value range `(min, max)` the interactive colorbar's axis spans
+    /// (handles move within it). `None` falls back to the colormap's
+    /// `vmin`/`vmax`.
+    pub colorbar_value_range: Option<(f64, f64)>,
     /// Limits to restore via the Reset Zoom context-menu item. The widget
     /// captures the first observed `limits` here so the home view survives
     /// pan/zoom (`doc/design.md` §8·§11.6). `None` until the first frame.
@@ -479,6 +495,9 @@ impl Plot {
             margins: Margins::ZERO,
             colormap: None,
             show_colorbar: true,
+            colorbar_interactive: false,
+            colorbar_histogram: None,
+            colorbar_value_range: None,
             home_limits: None,
             x_scale: Scale::Linear,
             y_scale: Scale::Linear,
