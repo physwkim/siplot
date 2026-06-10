@@ -12,6 +12,7 @@ use crate::channel::{PvValue, StateWriter};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+pub mod fake_plugin;
 pub mod local_plugin;
 
 /// Everything a plugin needs to service one connection.

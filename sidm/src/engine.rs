@@ -21,6 +21,7 @@ use siplot::egui;
 
 use crate::address::PvAddress;
 use crate::channel::{Channel, Connection, RepaintHook};
+use crate::data_plugins::fake_plugin::FakePlugin;
 use crate::data_plugins::local_plugin::LocalPlugin;
 use crate::data_plugins::{ConnectionCtx, DataPlugin};
 
@@ -103,7 +104,9 @@ impl Engine {
             inner,
             _runtime: None,
         };
+        // Always-on, dependency-free plugins.
         engine.register_plugin(Arc::new(LocalPlugin));
+        engine.register_plugin(Arc::new(FakePlugin));
         engine
     }
 
