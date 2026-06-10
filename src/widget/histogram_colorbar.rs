@@ -246,45 +246,27 @@ impl HistogramColorBar {
         let norm = self.colormap.normalization;
         let (lo, hi) = axis_range(self.data_range, norm);
 
-        // Reserve the label gutter from the *measured* label widths so values
-        // like "9.50e-01" never clip at the rect's right edge (rather than a
-        // fixed guess). The padding keeps the label clear of the strip border.
-        let font = FontId::proportional(FONT_SIZE);
-        let label_w = |v: f64| {
-            ui.painter()
-                .layout_no_wrap(format_end_label(v), font.clone(), Color32::WHITE)
-                .size()
-                .x
-        };
-        let label_reserve = (label_w(self.vmin).max(label_w(self.vmax)) + GAP).max(MIN_LABEL_WIDTH);
-
-        // Layout: [ histogram | gradient strip | value labels ]. The strip spans
-        // the caller-pinned bounds (the image's data-area guides) when given, else
-        // the allocated box inset by V_INSET.
-        let bar_left = (rect.right() - label_reserve - GAP - BAR_THICKNESS).max(rect.left());
+        // Vertical span of the strip: the caller-pinned bounds (the image's
+        // data-area guides) when given, else the allocated box inset by V_INSET.
+        // Independent of the (horizontal) label gutter, so resolved first.
         let (bar_top, bar_bottom) = match self.bar_bounds {
             Some((t, b)) => (t.max(rect.top()), b.min(rect.bottom())),
             None => (rect.top() + V_INSET, rect.bottom() - V_INSET),
         };
-        let bar_rect = Rect::from_min_max(
-            pos2(bar_left, bar_top),
-            pos2(bar_left + BAR_THICKNESS, bar_bottom),
-        );
-        let hist_rect = Rect::from_min_max(
-            pos2(rect.left(), bar_rect.top()),
-            pos2(bar_left, bar_rect.bottom()),
-        );
+        let bar_height = (bar_bottom - bar_top).max(1.0);
 
         let vmin_frac = value_to_frac(self.vmin, lo, hi, norm);
         let vmax_frac = value_to_frac(self.vmax, lo, hi, norm);
-        let y_of_frac = |f: f64| bar_rect.bottom() - (f as f32) * bar_rect.height();
+        let y_of_frac = |f: f64| bar_bottom - (f as f32) * bar_height;
 
         // Per-handle drag (stable ids let egui track the grabbed handle across
-        // frames; the widget itself stays stateless, like ColorBarWidget).
+        // frames; the widget itself stays stateless, like ColorBarWidget). The
+        // grab band spans the full column width at the handle's y; this is also
+        // why the drag is resolved before the (horizontal) label gutter below.
         let grab = |y: f32| {
             Rect::from_min_max(
-                pos2(hist_rect.left(), y - HANDLE_GRAB_HALF),
-                pos2(bar_rect.right(), y + HANDLE_GRAB_HALF),
+                pos2(rect.left(), y - HANDLE_GRAB_HALF),
+                pos2(rect.right(), y + HANDLE_GRAB_HALF),
             )
         };
         let min_resp = ui.interact(
@@ -300,7 +282,7 @@ impl HistogramColorBar {
 
         let min_sep = ((hi - lo).abs() * 0.005).max(f64::MIN_POSITIVE);
         let mut dragged_levels = None;
-        let frac_at = |y: f32| ((bar_rect.bottom() - y) / bar_rect.height()).clamp(0.0, 1.0) as f64;
+        let frac_at = |y: f32| ((bar_bottom - y) / bar_height).clamp(0.0, 1.0) as f64;
         if min_resp.dragged()
             && let Some(p) = min_resp.interact_pointer_pos()
         {
@@ -332,10 +314,37 @@ impl HistogramColorBar {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
 
+        // Paint at the live (post-drag) levels so there is no one-frame lag.
+        let (draw_vmin, draw_vmax) = dragged_levels.unwrap_or((self.vmin, self.vmax));
+
+        // Reserve the label gutter from the *measured* width of the labels that
+        // will actually be drawn (the post-drag values), not the pre-drag ones —
+        // otherwise the frame a handle crosses into scientific form ("0" ->
+        // "6.20e-2") the gutter still fits the old narrow label and the new one
+        // clips at the rect's right edge. A representative scientific label is a
+        // floor so the gutter is stable (no horizontal jiggle) across drags.
+        let font = FontId::proportional(FONT_SIZE);
+        let measure = |s: String| {
+            ui.painter()
+                .layout_no_wrap(s, font.clone(), Color32::WHITE)
+                .size()
+                .x
+        };
+        let label_reserve = measure("-8.88e-88".to_owned())
+            .max(measure(format_end_label(draw_vmin)))
+            .max(measure(format_end_label(draw_vmax)))
+            .max(MIN_LABEL_WIDTH)
+            + GAP;
+
+        // Layout: [ histogram | gradient strip | value labels ].
+        let bar_left = (rect.right() - label_reserve - GAP - BAR_THICKNESS).max(rect.left());
+        let bar_rect = Rect::from_min_max(
+            pos2(bar_left, bar_top),
+            pos2(bar_left + BAR_THICKNESS, bar_bottom),
+        );
+        let hist_rect = Rect::from_min_max(pos2(rect.left(), bar_top), pos2(bar_left, bar_bottom));
+
         if ui.is_rect_visible(rect) {
-            // Paint the handles at the live (post-drag) levels so there is no
-            // one-frame lag while dragging.
-            let (draw_vmin, draw_vmax) = dragged_levels.unwrap_or((self.vmin, self.vmax));
             self.paint(ui, rect, bar_rect, hist_rect, lo, hi, draw_vmin, draw_vmax);
         }
 
@@ -658,6 +667,21 @@ mod tests {
                 .with_levels(0.2, 0.8)
                 .with_bar_bounds(origin + 40.0, origin + 260.0);
             let _ = bar.ui(ui, egui::vec2(170.0, 300.0));
+        });
+    }
+
+    #[test]
+    fn ui_scientific_notation_levels_paint_within_box() {
+        // The reported case: a level small enough to format as "6.20e-2" (silx
+        // %.2e). The label gutter is measured from the drawn value, so the wide
+        // scientific label must lay out inside the column without panicking.
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let bar = HistogramColorBar::new(Colormap::viridis(0.062, 1.0))
+                .with_data_range((0.0, 1.0))
+                .with_histogram(Some((vec![9, 4, 1], vec![0.0, 0.33, 0.66, 1.0])))
+                .with_levels(0.062, 1.0);
+            let _ = bar.ui(ui, egui::vec2(175.0, 320.0));
         });
     }
 
