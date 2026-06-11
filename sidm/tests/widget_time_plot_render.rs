@@ -21,7 +21,7 @@ use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
 use sidm::widgets::SidmTimePlot;
-use siplot::egui;
+use siplot::{YAxis, egui};
 
 struct App {
     plot: SidmTimePlot,
@@ -96,6 +96,63 @@ fn injected_samples_render_a_curve() {
     assert!(
         green > 100,
         "the injected curve should render many green pixels; got {green}"
+    );
+}
+
+/// Build a time plot, run `setup` (e.g. inject samples), render two frames, and
+/// return its left-Y limits — to prove the live autoscale fitted the data.
+fn y_limits_after(setup: impl FnOnce(&mut SidmTimePlot, usize)) -> (f64, f64) {
+    let rs = create_render_state(default_wgpu_setup());
+    siplot::install(&rs);
+
+    let engine = Engine::new();
+    let mut plot = SidmTimePlot::new(&rs, 0).with_time_span(6.0);
+    let idx = plot
+        .add_channel(
+            &engine,
+            "loc://time_plot_yfit",
+            egui::Color32::from_rgb(0, 255, 0),
+            "v",
+        )
+        .expect("add channel");
+    setup(&mut plot, idx);
+
+    let app = Rc::new(RefCell::new(App { plot }));
+    let renderer = WgpuTestRenderer::from_render_state(rs);
+    let app_ui = app.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(400.0, 300.0))
+        .with_pixels_per_point(1.0)
+        .renderer(renderer)
+        .build_ui(move |ui| app_ui.borrow_mut().ui(ui));
+
+    harness.step();
+    harness.step();
+    let ylim = app
+        .borrow()
+        .plot
+        .plot()
+        .get_graph_y_limits(YAxis::Left)
+        .expect("left-Y limits");
+    drop(engine);
+    ylim
+}
+
+#[test]
+fn time_plot_autoscales_y_to_injected_data_by_default() {
+    // A ramp at 100..104 — far outside any default Y range. With live autoscale
+    // on by default the Y axis must refit to bracket it (lo <= 100, hi >= 104);
+    // before the fix the time plot left Y pinned at its default and the data
+    // rendered off-screen until a manual reset-zoom.
+    let (lo, hi) = y_limits_after(|plot, idx| {
+        let now = now_epoch_secs();
+        for i in 0..=4 {
+            plot.inject(idx, now - f64::from(4 - i), 100.0 + f64::from(i));
+        }
+    });
+    assert!(
+        lo <= 100.0 && hi >= 104.0,
+        "Y should autoscale to bracket the injected 100..104 data; got ({lo}, {hi})"
     );
 }
 

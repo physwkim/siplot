@@ -104,12 +104,12 @@ fn set_curve_style_binds_curve_to_extra_axis_and_autoscales_it() {
     // only lands on-screen if the curve is truly bound to the extra axis that
     // fitted it.
     //
-    // A scatter plot (not a time plot) is used deliberately: it keeps
-    // `auto_reset_zoom` on, so each data update refits the autoscale-on axes
-    // (including extra axes via `reset_extra_axes_to`). The time plot disables
-    // `auto_reset_zoom`, so enabling a secondary axis' autoscale flag there is a
-    // no-op until an explicit reset-zoom — the same limitation the pre-existing
-    // y2 path has, faithfully generalized.
+    // A scatter plot (not a time plot) is used deliberately: it has no scrolling
+    // X window, so each data update refits the autoscale-on axes (including extra
+    // axes via `reset_extra_axes_to`) into the default view and the binding is
+    // observed directly. `SidmTimePlot` now also keeps `auto_reset_zoom` on (its
+    // Y / y2 / extra axes refit live), but its per-frame X scroll would only add
+    // noise to this end-to-end axis-binding check.
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
 

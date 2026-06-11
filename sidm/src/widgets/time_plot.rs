@@ -181,9 +181,16 @@ impl SidmTimePlot {
     /// window.
     pub fn new(render_state: &RenderState, id: PlotId) -> Self {
         let mut plot = Plot1D::new(render_state, id);
+        // Live Y autoscale over a manually scrolled X window. `x_autoscale` stays
+        // off so `reset_zoom_to_data_range` preserves the X limits the scroll sets
+        // each frame; `y_autoscale` on + `auto_reset_zoom` on makes every data
+        // update refit Y (and any y2/Extra axis) to the data, so a streaming curve
+        // is visible without a manual reset-zoom. Pinning a fixed Y range is done
+        // by turning `y_autoscale` off (the context-menu "Set range" path), after
+        // which `apply_auto_limits` leaves that Y untouched while X keeps scrolling.
         plot.plot_mut().set_x_autoscale(false);
         plot.plot_mut().set_y_autoscale(true);
-        plot.set_auto_reset_zoom(false);
+        plot.set_auto_reset_zoom(true);
         plot.set_graph_x_label("Time since start (s)");
         Self {
             plot,
