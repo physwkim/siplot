@@ -245,3 +245,23 @@ fn time_axis_mode_switches_between_relative_and_wall_clock() {
     assert_eq!(plot.plot().plot().x_tick_mode(), TickMode::Numeric);
     assert_eq!(plot.plot().graph_x_label(), Some("Time since start (s)"));
 }
+
+#[test]
+fn crosshair_toggle_drives_the_plot_flag() {
+    // The hover crosshair + (x, y) readout is off by default and the builder /
+    // runtime setter flip the underlying siplot crosshair flag.
+    let rs = create_render_state(default_wgpu_setup());
+    siplot::install(&rs);
+
+    let plot = SidmTimePlot::new(&rs, 0);
+    assert!(!plot.crosshair());
+    assert!(!plot.plot().plot().crosshair);
+
+    let mut plot = SidmTimePlot::new(&rs, 0).with_crosshair(true);
+    assert!(plot.crosshair());
+    assert!(plot.plot().plot().crosshair);
+
+    plot.set_crosshair(false);
+    assert!(!plot.crosshair());
+    assert!(!plot.plot().plot().crosshair);
+}

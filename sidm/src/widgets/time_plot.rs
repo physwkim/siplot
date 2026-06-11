@@ -355,6 +355,27 @@ impl SidmTimePlot {
         self
     }
 
+    /// Show a hover crosshair with an `(x, y)` coordinate readout over the data
+    /// area (builder style; silx crosshair cursor). The X readout follows the
+    /// current [`TimeAxisMode`]: relative seconds under [`TimeAxisMode::SinceStart`],
+    /// or the absolute wall-clock time under [`TimeAxisMode::WallClock`] (it reads
+    /// the same as the X tick labels).
+    pub fn with_crosshair(mut self, enabled: bool) -> Self {
+        self.plot.plot_mut().crosshair = enabled;
+        self
+    }
+
+    /// Toggle the hover crosshair + `(x, y)` readout at runtime. See
+    /// [`Self::with_crosshair`].
+    pub fn set_crosshair(&mut self, enabled: bool) {
+        self.plot.plot_mut().crosshair = enabled;
+    }
+
+    /// Whether the hover crosshair + `(x, y)` readout is enabled.
+    pub fn crosshair(&self) -> bool {
+        self.plot.plot().crosshair
+    }
+
     /// The underlying plot, for styling (title, Y label, grid, legend).
     pub fn plot(&self) -> &Plot1D {
         &self.plot

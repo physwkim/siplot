@@ -125,7 +125,10 @@ impl MiniBeamline {
             .with_show_units(true);
         let mut beam_plot = SidmTimePlot::new(rs, 0)
             .with_time_span(30.0)
-            .with_data_margins(STRIP_MARGINS);
+            .with_data_margins(STRIP_MARGINS)
+            // Hover shows the (time, current) under the cursor; the X readout
+            // tracks the X-axis toggle (relative seconds or wall-clock time).
+            .with_crosshair(true);
         beam_plot
             .add_channel(
                 &engine,
