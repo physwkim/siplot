@@ -69,8 +69,8 @@ Category drives the z-layer: `static` = decoration (back), `monitor` = read-only
 | indicator | monitor | `SidmScaleIndicator` | ✅ |
 | meter | monitor | `SidmScaleIndicator` | ✅ |
 | composite | container | `SidmFrame` (children re-layered inside) | ⬜ |
-| rectangle | static | `SidmDrawing(Rectangle)` | ⬜ |
-| oval | static | `SidmDrawing(Ellipse)` | ⬜ |
+| rectangle | static | `SidmDrawing(Rectangle)` | ✅ |
+| oval | static | `SidmDrawing(Ellipse)` | ✅ |
 | strip chart | monitor | `SidmTimePlot` | ⬜ |
 | cartesian plot | monitor | `SidmWaveformPlot` / `SidmScatterPlot` | ⬜ |
 | image | monitor | `SidmImageView` | ⬜ |
@@ -139,9 +139,16 @@ not silently dropped (SiDM has no rules engine yet).
     for both the scale indicators and `byte` (byte was re-pointed at it, fixing a
     latent mismatch where an unknown direction warned "using right" but left the
     widget vertical). 4 new codegen tests; smoke-checked clean against real sidm.
-  - ⬜ B6b — shapes (`rectangle`/`oval` → `SidmDrawing`): `loc://` placeholder
-    channel when channel-less, dynamic-attribute `chan` when present, fill/border
-    from the `basic attribute` block.
+  - ✅ B6b — shapes (`rectangle` → `SidmDrawing(Rectangle)`, `oval` →
+    `SidmDrawing(Ellipse)`). Channel-less decorations use a unique `loc://`
+    placeholder (`dynamic_channel`); a `dynamic attribute` `chan` overrides it.
+    The `basic attribute` block sets the brush/pen: `fill="solid"` →
+    `with_fill(colour)`, `fill="outline"` (MEDM `NoBrush`) →
+    `with_fill(Color32::TRANSPARENT)` + a border forced to width >= 1 (as
+    adl2pydm does); `width>0` adds `with_border`. `style="dash"` has no
+    `SidmDrawing` pen-style builder, so it warns rather than dropping silently.
+    A shared `apply_protocol` now backs both `channel_address` and
+    `dynamic_channel`. 4 new codegen tests; smoke-checked clean against real sidm.
   - ⬜ B6c — `composite` → `SidmFrame` with children re-layered (back-to-front)
     and coordinate-translated to the frame interior.
 - ⬜ B7 — emitter batch: plots + image (strip chart, cartesian plot, image).

@@ -126,6 +126,8 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         // `meter` has no dedicated PyDM/SiDM widget; adl2pydm draws it as an
         // indicator (a pointer scale), so it shares the indicator emitter.
         "indicator" | "meter" => emit_scale_indicator(b, widget, options, z, false),
+        "rectangle" => emit_drawing(b, widget, options, z, "Rectangle"),
+        "oval" => emit_drawing(b, widget, options, z, "Ellipse"),
         _ => b.warnings.push(format!(
             "line {}: {:?} -> {} not emitted yet (skipped)",
             widget.line, widget.symbol, map.sidm_widget
@@ -452,6 +454,74 @@ fn emit_scale_indicator(
     );
 }
 
+/// `rectangle` / `oval` — a `SidmDrawing` of the given `shape` (`Rectangle` /
+/// `Ellipse`). Decorations carry no primary channel, so a `loc://` placeholder
+/// is used unless a `dynamic attribute` supplies one. The `basic attribute`
+/// block's `fill`/`style`/`width` set the brush and pen: `solid` fills with the
+/// widget colour; `outline` (MEDM `NoBrush`) draws only a border, forced to
+/// width >= 1 so it shows, as adl2pydm's `write_basic_attribute` does.
+fn emit_drawing(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer, shape: &str) {
+    let Some(geom) = widget.geometry else {
+        skip_no_geometry(b, widget);
+        return;
+    };
+    let addr = dynamic_channel(widget, options, "shape");
+    let ba = widget.attributes.get("basic attribute");
+    let fill_mode = ba
+        .and_then(|a| a.get("fill"))
+        .map(String::as_str)
+        .unwrap_or("solid");
+    let style = ba
+        .and_then(|a| a.get("style"))
+        .map(String::as_str)
+        .unwrap_or("solid");
+    let width = ba
+        .and_then(|a| a.get("width"))
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let color = widget.color.unwrap_or(Color { r: 0, g: 0, b: 0 });
+    b.needs_color = true;
+
+    let new_call = format!(
+        "SidmDrawing::new(&engine, {}, DrawingShape::{shape})",
+        rust_str(&addr)
+    );
+    let mut builders = Vec::new();
+    if fill_mode == "outline" {
+        // MEDM `NoBrush`: no fill, just an outline forced to width >= 1.
+        builders.push(".with_fill(Color32::TRANSPARENT)".to_string());
+        builders.push(format!(
+            ".with_border({}, {})",
+            color_expr(color),
+            float_lit(width.max(1.0))
+        ));
+    } else {
+        builders.push(format!(".with_fill({})", color_expr(color)));
+        if width > 0.0 {
+            builders.push(format!(
+                ".with_border({}, {})",
+                color_expr(color),
+                float_lit(width)
+            ));
+        }
+    }
+    if style == "dash" {
+        b.warnings.push(format!(
+            "line {}: drawing dash border style not applied (SidmDrawing has no pen-style builder)",
+            widget.line
+        ));
+    }
+    push_channel_widget(
+        b,
+        z,
+        geom,
+        "SidmDrawing",
+        &new_call,
+        &format!("adl2sidm: connect {addr} (drawing)"),
+        &builders,
+    );
+}
+
 /// Resolve the geometry and channel address common to every channel-bound
 /// widget, recording the matching skip warning and returning `None` if either is
 /// absent.
@@ -610,8 +680,32 @@ fn channel_address(widget: &MedmWidget, options: &Options) -> Option<String> {
         .get("control")
         .and_then(|a| a.get("chan"))
         .or_else(|| widget.attributes.get("monitor").and_then(|a| a.get("chan")))?;
-    let substituted = substitute_macros(chan, &options.macros);
-    Some(format!("{}{}", options.protocol, substituted))
+    Some(apply_protocol(chan, options))
+}
+
+/// The channel for a `dynamic attribute` (drawings, composites): its `chan` with
+/// macros + protocol when present and non-empty, else a unique local `loc://`
+/// placeholder so the channel-less decoration still constructs. `kind` names the
+/// placeholder (`shape`, `frame`) and the widget line keeps it unique.
+fn dynamic_channel(widget: &MedmWidget, options: &Options, kind: &str) -> String {
+    if let Some(chan) = widget
+        .attributes
+        .get("dynamic attribute")
+        .and_then(|a| a.get("chan"))
+        .filter(|c| !c.is_empty())
+    {
+        return apply_protocol(chan, options);
+    }
+    format!("loc://adl2sidm_{kind}_{}", widget.line)
+}
+
+/// Substitute macros and prefix the protocol onto a bare MEDM channel name.
+fn apply_protocol(chan: &str, options: &Options) -> String {
+    format!(
+        "{}{}",
+        options.protocol,
+        substitute_macros(chan, &options.macros)
+    )
 }
 
 /// Substitute `$(name)` and `${name}` macros; unmatched references are left
@@ -1264,6 +1358,120 @@ bar {
     fn scale_indicators_are_monitors_in_the_middle_layer() {
         let g = scales();
         assert!(g.source.contains("egui::Order::Middle"));
+        assert!(!g.source.contains("egui::Order::Foreground"));
+    }
+
+    /// A solid filled rectangle, an outline-only oval, and a dynamic-attribute
+    /// rectangle bound to a channel — the three drawing shapes.
+    const SHAPES: &str = r#"
+"color map" {
+	colors {
+		ffffff,
+		ff0000,
+	}
+}
+rectangle {
+	object {
+		x=0
+		y=0
+		width=40
+		height=20
+	}
+	"basic attribute" {
+		clr=1
+		style="solid"
+		fill="solid"
+		width=2
+	}
+}
+oval {
+	object {
+		x=50
+		y=0
+		width=30
+		height=30
+	}
+	"basic attribute" {
+		clr=1
+		fill="outline"
+		width=0
+	}
+}
+rectangle {
+	object {
+		x=90
+		y=0
+		width=40
+		height=20
+	}
+	"basic attribute" {
+		clr=1
+		fill="solid"
+	}
+	"dynamic attribute" {
+		chan="$(P)STATE"
+	}
+}
+"#;
+
+    fn shapes() -> Generated {
+        generate(&parse(SHAPES), &Options::default())
+    }
+
+    #[test]
+    fn solid_rectangle_fills_with_color_and_border_from_width() {
+        let g = shapes();
+        assert!(
+            g.source
+                .contains("SidmDrawing::new(&engine, \"loc://adl2sidm_shape_"),
+            "channel-less rectangle should use a loc:// placeholder:\n{}",
+            g.source
+        );
+        assert!(g.source.contains("DrawingShape::Rectangle"));
+        // clr=1 -> ff0000 (red); fill=solid -> with_fill(red); width=2 -> border.
+        assert!(
+            g.source
+                .contains(".with_fill(Color32::from_rgb(255, 0, 0))")
+        );
+        assert!(
+            g.source
+                .contains(".with_border(Color32::from_rgb(255, 0, 0), 2.0)")
+        );
+    }
+
+    #[test]
+    fn outline_oval_is_transparent_with_a_forced_border() {
+        let g = shapes();
+        assert!(g.source.contains("DrawingShape::Ellipse"));
+        assert!(g.source.contains(".with_fill(Color32::TRANSPARENT)"));
+        // width=0 + outline -> forced to 1.0 so the outline shows.
+        assert!(
+            g.source
+                .contains(".with_border(Color32::from_rgb(255, 0, 0), 1.0)"),
+            "{}",
+            g.source
+        );
+    }
+
+    #[test]
+    fn dynamic_attribute_rectangle_binds_its_channel() {
+        let opts = Options {
+            macros: vec![("P".to_string(), "DEV:".to_string())],
+            ..Options::default()
+        };
+        let g = generate(&parse(SHAPES), &opts);
+        assert!(
+            g.source
+                .contains("SidmDrawing::new(&engine, \"ca://DEV:STATE\", DrawingShape::Rectangle)"),
+            "dynamic-attribute channel not bound:\n{}",
+            g.source
+        );
+    }
+
+    #[test]
+    fn drawings_are_decoration_in_the_background_layer() {
+        let g = shapes();
+        assert!(g.source.contains("egui::Order::Background"));
         assert!(!g.source.contains("egui::Order::Foreground"));
     }
 }
