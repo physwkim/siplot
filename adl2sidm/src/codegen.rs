@@ -871,7 +871,7 @@ fn drawing_brush_builders(b: &mut Builder, widget: &MedmWidget) -> Vec<String> {
     }
     // MEDM dynamic-attribute clr="alarm": recolour the colour this shape actually
     // draws with — the border for an `outline` shape, the fill for a solid one.
-    builders.extend(drawing_alarm_builder(b, widget, fill_mode == "outline"));
+    builders.extend(drawing_alarm_builder(widget, fill_mode == "outline"));
     builders
 }
 
@@ -1007,7 +1007,7 @@ fn polyline_stroke_builder(b: &mut Builder, widget: &MedmWidget) -> Vec<String> 
     )];
     // A polyline paints only its pen, so dynamic-attribute clr="alarm" recolours
     // the border (stroke) by severity.
-    builders.extend(drawing_alarm_builder(b, widget, true));
+    builders.extend(drawing_alarm_builder(widget, true));
     builders
 }
 
@@ -2079,15 +2079,14 @@ fn dynamic_color_mode(widget: &MedmWidget) -> Option<&str> {
 /// object's drawing colour — its border when `draws_border_only` (an `outline`
 /// shape or a polyline, which paint only their pen), otherwise its fill. The
 /// drawing is already connected to the dynamic-attribute channel by
-/// [`dynamic_channel`], so only the sensitivity flag is missing. `clr="discrete"`
-/// has no SiDM colour-rule engine and adl2pydm does not convert it either, so it
-/// is warned (the static colour is kept) rather than silently dropped; `static`
-/// (the default) and any unknown mode add nothing.
-fn drawing_alarm_builder(
-    b: &mut Builder,
-    widget: &MedmWidget,
-    draws_border_only: bool,
-) -> Option<String> {
+/// [`dynamic_channel`], so only the sensitivity flag is missing. Returns `None`
+/// for every other mode — and that is FAITHFUL, not a dropped feature: MEDM's
+/// draw code for dynamic-attribute static graphics treats `discrete` identically
+/// to `static` (`case STATIC: case DISCRETE:` both use `colormap[attr.clr]`, the
+/// static colour — verified in medm/medm{Rectangle,Oval,Arc,Polygon,Polyline,
+/// Text}.c and the rising/falling lines), so the static `clr`/`bclr` already
+/// emitted is exactly what MEDM draws.
+fn drawing_alarm_builder(widget: &MedmWidget, draws_border_only: bool) -> Option<String> {
     match dynamic_color_mode(widget) {
         Some("alarm") => Some(
             if draws_border_only {
@@ -2097,14 +2096,6 @@ fn drawing_alarm_builder(
             }
             .to_string(),
         ),
-        Some("discrete") => {
-            b.warnings.push(format!(
-                "line {}: dynamic-attribute clr=\"discrete\" colour rule not applied \
-                 (SiDM has no discrete colour-rule engine; the static colour is kept)",
-                widget.line
-            ));
-            None
-        }
         _ => None,
     }
 }
@@ -2115,9 +2106,11 @@ fn drawing_alarm_builder(
 /// recoloured by that channel's alarm severity each frame: a `Channel` field is
 /// emitted (mirroring the visibility-gate pattern) and the setup binds a `__c`
 /// local = `severity_color(...)` falling back to the static colour for
-/// NoAlarm/disconnected. `clr="discrete"` has no faithful mapping — MEDM's
-/// discrete colour rule is defined only in the (locally-absent) MEDM source, so
-/// it is warned and the static colour is kept rather than fabricating a mapping.
+/// NoAlarm/disconnected. `clr="discrete"` keeps the static colour with no setup —
+/// and that is FAITHFUL: medm/medmText.c draws dynamic-attribute text with
+/// `case STATIC: case DISCRETE:` sharing `colormap[attr.clr]`, so discrete and
+/// static are the same colour for a `text` widget (DISCRETE only differs for
+/// monitor `clrmod`, not the dynamic-attribute `clr`).
 fn static_text_color(
     b: &mut Builder,
     widget: &MedmWidget,
@@ -2154,14 +2147,8 @@ fn static_text_color(
             );
             (setup, "__c".to_string())
         }
-        Some("discrete") => {
-            b.warnings.push(format!(
-                "line {}: static text clr=\"discrete\" colour rule not applied \
-                 (MEDM discrete colour mapping has no local reference; static colour kept)",
-                widget.line
-            ));
-            (String::new(), fallback_expr)
-        }
+        // `discrete` (and `static`/unknown) keep the static colour — for a
+        // dynamic-attribute text widget MEDM draws discrete identically to static.
         _ => (String::new(), fallback_expr),
     }
 }
@@ -3069,9 +3056,11 @@ oval {
     }
 
     #[test]
-    fn dynamic_attribute_clr_discrete_warns_and_keeps_static_colour() {
-        // clr="discrete" needs a colour-rule engine SiDM lacks (adl2pydm does not
-        // convert it either): warn, keep the static colour, add no alarm builder.
+    fn dynamic_attribute_clr_discrete_renders_as_static_no_warning() {
+        // MEDM draws dynamic-attribute static graphics with `case STATIC: case
+        // DISCRETE:` sharing the static colour (medm/medmRectangle.c et al.), so
+        // discrete == static for a shape: keep the static colour, NO alarm builder,
+        // and NO warning (it is rendered faithfully, not an unsupported gap).
         let adl = r#"
 "color map" {
 	colors {
@@ -3103,9 +3092,16 @@ rectangle {
             "discrete must not emit an alarm builder:\n{}",
             g.source
         );
+        // The static border colour (clr=1 → 00ff00) is what MEDM draws for discrete.
         assert!(
-            g.warnings.iter().any(|w| w.contains("clr=\"discrete\"")),
-            "discrete colour rule must warn (not silently dropped): {:?}",
+            g.source
+                .contains(".with_border(Color32::from_rgb(0, 255, 0)"),
+            "discrete keeps the static border colour:\n{}",
+            g.source
+        );
+        assert!(
+            !g.warnings.iter().any(|w| w.contains("discrete")),
+            "discrete on a shape renders faithfully (== static) and must not warn: {:?}",
             g.warnings
         );
     }
@@ -3162,9 +3158,10 @@ text {
     }
 
     #[test]
-    fn static_text_clr_discrete_warns_keeps_static_colour() {
-        // discrete has no faithful mapping (MEDM-internal, no local reference), so a
-        // static text keeps its static colour and warns rather than fabricating one.
+    fn static_text_clr_discrete_renders_as_static_no_warning() {
+        // medm/medmText.c draws dynamic-attribute text with `case STATIC: case
+        // DISCRETE:` sharing the static colour, so discrete == static for a `text`
+        // widget: keep the static colour, no severity read, and NO warning.
         let adl = r#"
 "color map" {
 	colors {
@@ -3197,10 +3194,8 @@ text {
                 .contains("egui::RichText::new(\"STATE\").color(Color32::")
         );
         assert!(
-            g.warnings
-                .iter()
-                .any(|w| w.contains("static text") && w.contains("clr=\"discrete\"")),
-            "static text clr=discrete must warn: {:?}",
+            !g.warnings.iter().any(|w| w.contains("discrete")),
+            "static text discrete renders faithfully (== static) and must not warn: {:?}",
             g.warnings
         );
     }
