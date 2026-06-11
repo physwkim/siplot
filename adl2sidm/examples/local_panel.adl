@@ -17,7 +17,7 @@ display {
 		x=0
 		y=0
 		width=360
-		height=380
+		height=410
 	}
 	clr=1
 	bclr=0
@@ -169,5 +169,35 @@ byte {
 	command[1] {
 		label="Uptime"
 		name="uptime"
+	}
+}
+"related display" {
+	object {
+		x=20
+		y=366
+		width=130
+		height=22
+	}
+	display[0] {
+		label="Detail"
+		name="detail.adl"
+	}
+}
+"related display" {
+	object {
+		x=170
+		y=366
+		width=170
+		height=22
+	}
+	label="Screens"
+	display[0] {
+		label="Overview"
+		name="overview.adl"
+	}
+	display[1] {
+		label="Tuning"
+		name="tuning.adl"
+		args="P=DMM1:"
 	}
 }

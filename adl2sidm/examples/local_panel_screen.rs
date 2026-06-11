@@ -99,6 +99,23 @@ impl Screen {
                 }
             });
         });
+        place(ui, egui::Order::Foreground, egui::Id::new(11u64), 20.0, 366.0, 130.0, 22.0, |ui| {
+            if ui.button("Detail").clicked() {
+                eprintln!("related display: open detail.adl");
+            }
+        });
+        place(ui, egui::Order::Foreground, egui::Id::new(12u64), 170.0, 366.0, 170.0, 22.0, |ui| {
+            ui.menu_button("Screens", |ui| {
+                if ui.button("Overview").clicked() {
+                    eprintln!("related display: open overview.adl");
+                    ui.close();
+                }
+                if ui.button("Tuning").clicked() {
+                    eprintln!("related display: open tuning.adl (macros: P=DMM1:)");
+                    ui.close();
+                }
+            });
+        });
     }
 }
 

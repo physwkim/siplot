@@ -163,14 +163,7 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         "polyline" => emit_polyshape(b, widget, options, z, false),
         "image" => emit_image(b, widget, z),
         "embedded display" => emit_embedded_stub(b, widget),
-        "related display" => emit_deferred_button(
-            b,
-            widget,
-            z,
-            "displays",
-            "Related Display",
-            "navigation deferred",
-        ),
+        "related display" => emit_related_display(b, widget, z),
         "shell command" => emit_shell_command(b, widget, z),
         // Unreachable: every `ADL_WIDGET_SYMBOLS` entry has an arm above. Kept as
         // a defensive backstop so a future symbol can't be silently dropped.
@@ -1248,38 +1241,103 @@ fn emit_embedded_stub(b: &mut Builder, widget: &MedmWidget) {
     ));
 }
 
-/// A deferred control (`related display` navigation, `shell command`
-/// execution): emit a disabled `egui::Button` labelled with its target at the
-/// control layer (Foreground, so the z-order rule still holds), plus a warning.
-/// No channel is fabricated and no `Engine` field is created — the button is
-/// inert, an honest "this control isn't wired yet" marker.
-fn emit_deferred_button(
-    b: &mut Builder,
-    widget: &MedmWidget,
-    z: ZLayer,
-    records_key: &str,
-    generic: &str,
-    deferred: &str,
-) {
+/// `related display` — a real control that reports the screen(s) it would open.
+/// SiDM has no runtime display loader (a project-level deferral), so the button
+/// cannot swap the host app's screen; the faithful in-scope behaviour is a live,
+/// enabled control that logs the target on click instead of an inert disabled
+/// placeholder. One target becomes a plain button; several become an
+/// `egui::menu_button` listing each. Channel-less and Engine-less, so it is
+/// emitted inline at the Foreground z-layer (never occluded).
+fn emit_related_display(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
     let Some(geom) = widget.geometry else {
         skip_no_geometry(b, widget);
         return;
     };
-    let label = deferred_button_label(widget, records_key, generic);
+    let entries = related_display_entries(b, widget);
+    if entries.is_empty() {
+        emit_marker_placeholder(
+            b,
+            widget,
+            z,
+            "related display (no targets)",
+            "related display has no target displays; nothing to open",
+        );
+        return;
+    }
+
     let id = b.index();
-    b.placements.push(Placement::drawn(
-        z,
-        id,
-        geom,
+    let body = if let [(_, report)] = entries.as_slice() {
+        // Exactly one target: a plain button captioned by the widget/target label.
+        let label = deferred_button_label(widget, "displays", "Related Display");
         format!(
-            "ui.add_enabled(false, egui::Button::new({}));",
-            rust_str(&label)
-        ),
-    ));
+            "if ui.button({}).clicked() {{\n    {}\n}}",
+            rust_str(&label),
+            eprintln_literal(report),
+        )
+    } else {
+        // Several targets: a menu whose items each report one target, then close.
+        let title = menu_title(widget, "Related Display");
+        let mut body = format!("ui.menu_button({}, |ui| {{", rust_str(&title));
+        for (caption, report) in &entries {
+            let _ = write!(
+                body,
+                "\n    if ui.button({}).clicked() {{\n        {}\n        ui.close();\n    }}",
+                rust_str(caption),
+                eprintln_literal(report),
+            );
+        }
+        body.push_str("\n});");
+        body
+    };
+    b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
-        "line {}: {:?} -> {deferred}; disabled placeholder button emitted",
-        widget.line, widget.symbol
+        "line {}: related display emitted as a navigation-reporting button/menu \
+         (SiDM has no runtime display loader; click logs the target)",
+        widget.line
     ));
+}
+
+/// The `(caption, report)` pairs for a related-display widget: each `display[N]`'s
+/// button caption (its `label`, else its target `name`) and the message logged on
+/// click — the target file plus any macro `args`. A target with no `name` is
+/// dropped with a warning (nothing to open).
+fn related_display_entries(b: &mut Builder, widget: &MedmWidget) -> Vec<(String, String)> {
+    let displays = widget
+        .records
+        .get("displays")
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut entries = Vec::new();
+    for spec in displays {
+        let Some(name) = spec.get("name").filter(|s| !s.is_empty()) else {
+            b.warnings.push(format!(
+                "line {}: related display entry has no name; skipped",
+                widget.line
+            ));
+            continue;
+        };
+        let args = spec.get("args").map(String::as_str).unwrap_or("");
+        let report = if args.is_empty() {
+            format!("related display: open {name}")
+        } else {
+            format!("related display: open {name} (macros: {args})")
+        };
+        let caption = spec
+            .get("label")
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| name.clone());
+        entries.push((caption, report));
+    }
+    entries
+}
+
+/// An `eprintln!` statement that prints `msg` verbatim: `msg` is the sole format
+/// string with its `{`/`}` doubled, so there are no `{}` placeholders to fill
+/// (clippy-clean — a lone literal format string, no trailing args).
+fn eprintln_literal(msg: &str) -> String {
+    let escaped = msg.replace('{', "{{").replace('}', "}}");
+    format!("eprintln!({});", rust_str(&escaped))
 }
 
 /// The caption for a deferred-control placeholder button: the widget's MEDM
@@ -3032,16 +3090,25 @@ polygon {
     }
 
     #[test]
-    fn related_display_emits_a_disabled_foreground_button() {
+    fn related_display_emits_a_live_navigation_reporting_button() {
         let g = stubs();
-        // related display: the sole display's label captions a disabled button
-        // at the control (Foreground) layer; no Engine field, no channel.
+        // The sole target -> a live, enabled button captioned by the display's
+        // label that logs the target on click (SiDM has no runtime loader to
+        // actually swap screens), at the control (Foreground) layer.
         assert!(
             g.source
-                .contains("ui.add_enabled(false, egui::Button::new(\"Open Detail\"))"),
+                .contains("if ui.button(\"Open Detail\").clicked() {"),
             "related-display button not labelled with its target:\n{}",
             g.source
         );
+        assert!(
+            g.source
+                .contains("eprintln!(\"related display: open detail.adl\");"),
+            "related-display click does not log the target:\n{}",
+            g.source
+        );
+        // No disabled placeholder remains.
+        assert!(!g.source.contains("add_enabled(false"), "{}", g.source);
         let rel = g
             .source
             .find("Open Detail")
@@ -3052,10 +3119,69 @@ polygon {
             g.source
         );
         assert!(
-            g.warnings.iter().any(|w| w.contains("navigation deferred")),
+            g.warnings
+                .iter()
+                .any(|w| w.contains("no runtime display loader")),
             "{:?}",
             g.warnings
         );
+        // Channel-less: no Engine widget fabricated.
+        assert!(!g.source.contains("SidmPushButton"), "{}", g.source);
+    }
+
+    #[test]
+    fn multi_target_related_display_emits_a_menu_logging_each_target() {
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+	}
+}
+"related display" {
+	object {
+		x=0
+		y=0
+		width=120
+		height=20
+	}
+	label="Screens"
+	display[0] {
+		label="A"
+		name="a.adl"
+	}
+	display[1] {
+		label="B"
+		name="b.adl"
+		args="P=X:"
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        // Two targets, a widget label -> a menu titled by the label, one item per
+        // target, each logging the target file (and macros where present).
+        assert!(
+            g.source.contains("ui.menu_button(\"Screens\", |ui| {"),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.source.contains("if ui.button(\"A\").clicked() {"),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains("eprintln!(\"related display: open a.adl\");"),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains("eprintln!(\"related display: open b.adl (macros: P=X:)\");"),
+            "{}",
+            g.source
+        );
+        assert!(g.source.contains("ui.close();"), "{}", g.source);
     }
 
     // A MEDM `dynamic attribute` CALC/visibility rule on otherwise-supported
