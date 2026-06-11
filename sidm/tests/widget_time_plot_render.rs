@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::SidmTimePlot;
-use siplot::{DataMargins, YAxis, egui};
+use sidm::widgets::{SidmTimePlot, TimeAxisMode};
+use siplot::{DataMargins, TickMode, TimeZone, YAxis, egui};
 
 struct App {
     plot: SidmTimePlot,
@@ -207,4 +207,41 @@ fn empty_plot_renders_no_curve_color() {
         green < 60,
         "an empty plot should render almost no curve-coloured pixels; got {green}"
     );
+}
+
+#[test]
+fn time_axis_mode_switches_between_relative_and_wall_clock() {
+    // The X axis defaults to relative seconds and can switch to an absolute
+    // wall-clock axis (the f32-safe path: relative vertices, offset tick labels).
+    let rs = create_render_state(default_wgpu_setup());
+    siplot::install(&rs);
+
+    // Default: numeric ticks + the "since start" unit label.
+    let plot = SidmTimePlot::new(&rs, 0);
+    assert_eq!(plot.time_axis_mode(), TimeAxisMode::SinceStart);
+    assert_eq!(plot.plot().plot().x_tick_mode(), TickMode::Numeric);
+    assert_eq!(plot.plot().graph_x_label(), Some("Time since start (s)"));
+
+    // Wall-clock in an explicit zone: date-time ticks, the creation epoch as the
+    // offset, the zone applied, and no unit label (the ticks are self-describing).
+    let kst = TimeZone::FixedOffset {
+        seconds_east: 32400,
+    };
+    let plot = SidmTimePlot::new(&rs, 0)
+        .with_time_zone(kst)
+        .with_time_axis_mode(TimeAxisMode::WallClock);
+    assert_eq!(plot.plot().plot().x_tick_mode(), TickMode::TimeSeries);
+    assert_eq!(plot.plot().plot().x_time_zone(), kst);
+    assert_eq!(plot.plot().graph_x_label(), None);
+    // The offset is the creation epoch (a recent absolute time), so the relative
+    // tick positions resolve to absolute wall-clock — not the ~1970 a zero offset
+    // would give.
+    assert!(plot.plot().plot().x_time_offset() > 1.6e9);
+
+    // Toggling back at runtime restores the numeric ticks + label (the leftover
+    // offset is inert under the numeric tick mode).
+    let mut plot = plot;
+    plot.set_time_axis_mode(TimeAxisMode::SinceStart);
+    assert_eq!(plot.plot().plot().x_tick_mode(), TickMode::Numeric);
+    assert_eq!(plot.plot().graph_x_label(), Some("Time since start (s)"));
 }

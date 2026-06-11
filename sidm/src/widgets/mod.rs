@@ -61,7 +61,7 @@ pub use slider::{DEFAULT_NUM_STEPS, SidmSlider};
 pub use spinbox::SidmSpinbox;
 pub use symbol::{SidmSymbol, SymbolState, symbol_index_for_value, value_as_state_key};
 pub use time_plot::{
-    DEFAULT_TIME_SPAN, DEFAULT_UPDATE_RATE_HZ, SidmTimePlot, UpdateMode, is_rate_due,
+    DEFAULT_TIME_SPAN, DEFAULT_UPDATE_RATE_HZ, SidmTimePlot, TimeAxisMode, UpdateMode, is_rate_due,
     update_interval,
 };
 pub use waveform_plot::{RedrawMode, SidmWaveformPlot, mode_allows, value_to_waveform};

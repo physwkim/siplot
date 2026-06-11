@@ -20,16 +20,20 @@
 //! frame later), and `OnValueChange` keys off the `stamp` so a reconnect (which
 //! also bumps the stamp) yields one sample.
 //!
-//! X axis is **relative time** (seconds since the plot was created), not the
-//! absolute datetime axis PyDM uses (`TickMode::TimeSeries`). This is a
-//! deliberate, documented limitation: siplot's GPU curve path uploads vertices
-//! as `f32` and its ortho matrix (`core/transform.rs`) is `f32`, so an
-//! absolute epoch X (~`1.7e9`) collapses under catastrophic cancellation — a
-//! five-second window is far below the `f32` ULP at that magnitude and no curve
-//! renders. Storing absolute epochs in the buffer but feeding siplot
-//! `t - t0` keeps the GPU coordinates small (and matches PyDM's documented
-//! "plot by relative time" mode). Restoring an absolute datetime axis needs a
-//! siplot-side `f64` vertex rebase (out of scope for this port).
+//! X axis defaults to **relative time** (seconds since the plot was created)
+//! and can switch to the absolute datetime axis PyDM uses
+//! ([`TimeAxisMode::WallClock`]). The relative default exists because siplot's
+//! GPU curve path uploads vertices as `f32` and its ortho matrix
+//! (`core/transform.rs`) is `f32`, so an absolute epoch X (~`1.7e9`) collapses
+//! under catastrophic cancellation — a five-second window is far below the
+//! `f32` ULP at that magnitude and no curve renders. The buffer stores absolute
+//! epochs but feeds siplot `t - t0`, keeping the GPU coordinates small (and
+//! matching PyDM's documented "plot by relative time" mode). The wall-clock
+//! axis reuses those same `f32`-safe relative vertices and only offsets the
+//! *tick labels* back to absolute time (siplot `set_x_time_offset`), so it needs
+//! no `f64` vertex rebase — siplot lays out date-time ticks over the epoch
+//! window `[min + t0, max + t0]` and shifts each tick position back by `t0` onto
+//! the relative vertices. See [`TimeAxisMode`].
 //!
 //! The sample-feeding logic (`CurveFeed`) and the fixed-rate timing
 //! ([`is_rate_due`] / [`update_interval`]) are pure and unit-tested; the GPU
@@ -39,7 +43,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use siplot::egui::Color32;
 use siplot::egui_wgpu::RenderState;
-use siplot::{DataMargins, ItemHandle, Plot1D, PlotId, PlotResponse, egui};
+use siplot::{DataMargins, ItemHandle, Plot1D, PlotId, PlotResponse, TickMode, TimeZone, egui};
 
 use crate::channel::{Channel, ChannelState, PvValue, ValueEvent, ValueSubscription};
 use crate::engine::{Engine, EngineError};
@@ -62,6 +66,26 @@ pub enum UpdateMode {
     OnValueChange,
     /// Append the latest value at a fixed rate (PyDM `updateMode.AtFixedRate`).
     AtFixedRate,
+}
+
+/// How the strip chart labels its X axis.
+///
+/// PyDM's `PyDMTimePlot` always shows an absolute date-time axis; this port
+/// shipped with a relative-seconds axis because siplot's GPU curve vertices are
+/// `f32` and an absolute epoch (~`1.7e9`) collapses under `f32` precision (see
+/// the module docs). [`TimeAxisMode::WallClock`] restores the absolute axis
+/// without that collapse by keeping the vertices relative and only offsetting
+/// the *tick labels* back to wall-clock (siplot `set_x_time_offset`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TimeAxisMode {
+    /// X tick labels are seconds since the plot was created ("Time since start
+    /// (s)"). The default the port shipped with.
+    #[default]
+    SinceStart,
+    /// X tick labels are the absolute wall-clock time of each sample (PyDM's
+    /// date-time axis), laid out in the configured [`TimeZone`]. The GPU
+    /// vertices stay relative (`f32`-safe); only the labels read absolute.
+    WallClock,
 }
 
 /// Seconds between fixed-rate samples for `rate_hz` (PyDM `update_interval`).
@@ -182,8 +206,14 @@ pub struct SidmTimePlot {
     /// samples immediately).
     last_fixed_push: f64,
     /// Reference epoch (creation time): the X feed to siplot is `t - t0` to keep
-    /// GPU coordinates small (see the module docs).
+    /// GPU coordinates small (see the module docs). Also the epoch offset that
+    /// turns the relative tick positions back into wall-clock labels under
+    /// [`TimeAxisMode::WallClock`].
     t0: f64,
+    /// How the X axis is labeled (relative seconds vs absolute wall-clock).
+    time_axis_mode: TimeAxisMode,
+    /// Time zone for the wall-clock X tick labels (silx `setTimeZone`).
+    time_zone: TimeZone,
     /// State for the pyqtgraph-style Y-axis context menu (auto-scale + range).
     y_menu: YAxisMenu,
 }
@@ -204,8 +234,7 @@ impl SidmTimePlot {
         plot.plot_mut().set_x_autoscale(false);
         plot.plot_mut().set_y_autoscale(true);
         plot.set_auto_reset_zoom(true);
-        plot.set_graph_x_label("Time since start (s)");
-        Self {
+        let mut chart = Self {
             plot,
             curves: Vec::new(),
             update_mode: UpdateMode::OnValueChange,
@@ -214,7 +243,43 @@ impl SidmTimePlot {
             buffer_size: DEFAULT_BUFFER_SIZE,
             last_fixed_push: f64::NEG_INFINITY,
             t0: now_epoch_secs(),
+            time_axis_mode: TimeAxisMode::SinceStart,
+            // Default to the system local zone so the wall-clock axis reads the
+            // user's actual clock (PyDM's date axis is local too); fall back to
+            // UTC if the local zone can't be resolved.
+            time_zone: TimeZone::local().unwrap_or(TimeZone::Utc),
             y_menu: YAxisMenu::new(),
+        };
+        // Set the X tick mode + label for the default (relative) axis.
+        chart.apply_time_axis();
+        chart
+    }
+
+    /// Configure siplot's X tick mode, epoch offset, time zone, and axis label
+    /// for the current [`TimeAxisMode`]. The single owner of the X-axis labeling
+    /// so the tick mode and the label can never disagree.
+    fn apply_time_axis(&mut self) {
+        let (t0, tz) = (self.t0, self.time_zone);
+        {
+            let plot = self.plot.plot_mut();
+            match self.time_axis_mode {
+                // Relative seconds: numeric ticks (offset/zone are inert here).
+                TimeAxisMode::SinceStart => plot.set_x_tick_mode(TickMode::Numeric),
+                // Absolute wall-clock: date-time ticks laid out over the epoch
+                // window [min+t0, max+t0] then shifted back by t0 so they land on
+                // the relative (f32-safe) vertices (see [`TimeAxisMode`]).
+                TimeAxisMode::WallClock => {
+                    plot.set_x_tick_mode(TickMode::TimeSeries);
+                    plot.set_x_time_offset(t0);
+                    plot.set_x_time_zone(tz);
+                }
+            }
+        }
+        // The relative axis needs a unit label; the wall-clock axis is
+        // self-describing (date-time ticks), so it carries none.
+        match self.time_axis_mode {
+            TimeAxisMode::SinceStart => self.plot.set_graph_x_label("Time since start (s)"),
+            TimeAxisMode::WallClock => self.plot.clear_graph_x_label(),
         }
     }
 
@@ -254,6 +319,39 @@ impl SidmTimePlot {
     /// fits the axes exactly).
     pub fn with_data_margins(mut self, margins: DataMargins) -> Self {
         self.plot.plot_mut().set_data_margins(margins);
+        self
+    }
+
+    /// Set how the X axis is labeled — relative "Time since start (s)" (the
+    /// default) or absolute wall-clock time (builder style). See
+    /// [`TimeAxisMode`].
+    pub fn with_time_axis_mode(mut self, mode: TimeAxisMode) -> Self {
+        self.time_axis_mode = mode;
+        self.apply_time_axis();
+        self
+    }
+
+    /// Switch the X-axis labeling between relative and absolute time at runtime
+    /// (so a UI toggle can flip it live). See [`TimeAxisMode`].
+    pub fn set_time_axis_mode(&mut self, mode: TimeAxisMode) {
+        self.time_axis_mode = mode;
+        self.apply_time_axis();
+    }
+
+    /// The current X-axis labeling mode.
+    pub fn time_axis_mode(&self) -> TimeAxisMode {
+        self.time_axis_mode
+    }
+
+    /// Set the time zone used to lay out the wall-clock X tick labels (builder
+    /// style; silx `setTimeZone`). Defaults to the system local zone
+    /// ([`TimeZone::local`], UTC fallback); only affects
+    /// [`TimeAxisMode::WallClock`]. Pass [`TimeZone::Utc`] or a
+    /// [`TimeZone::FixedOffset`] to override (e.g. `seconds_east: 32400` for
+    /// KST/UTC+9).
+    pub fn with_time_zone(mut self, tz: TimeZone) -> Self {
+        self.time_zone = tz;
+        self.apply_time_axis();
         self
     }
 
