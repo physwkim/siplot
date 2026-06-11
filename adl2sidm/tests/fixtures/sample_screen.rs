@@ -16,6 +16,7 @@ pub struct Screen {
     w7: SidmScaleIndicator,
     w8: SidmDrawing,
     w9: SidmDrawing,
+    w10: SidmDrawing,
     w11: SidmTimePlot,
     w12: SidmWaveformPlot,
     w13: SidmFrame,
@@ -57,6 +58,9 @@ impl Screen {
         let w9 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_146", DrawingShape::Ellipse)
             .expect("adl2sidm: connect loc://adl2sidm_shape_146 (drawing)")
             .with_fill(Color32::from_rgb(255, 0, 0));
+        let w10 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_157", DrawingShape::Arc { begin_deg: 0.0, span_deg: 360.0 })
+            .expect("adl2sidm: connect loc://adl2sidm_shape_157 (arc)")
+            .with_fill(Color32::from_rgb(0, 255, 0));
         let mut w11 = SidmTimePlot::new(rs, 0).with_time_span(60.0);
         w11.add_channel(&engine, "ca://DMM1:readback", Color32::from_rgb(0, 0, 255), "$(P)readback").expect("adl2sidm: add strip-chart curve $(P)readback");
         let mut w12 = SidmWaveformPlot::new(rs, 1);
@@ -65,13 +69,13 @@ impl Screen {
             .expect("adl2sidm: connect loc://adl2sidm_frame_196 (composite)");
         let w14 = SidmLabel::new(&engine, "ca://DMM1:status")
             .expect("adl2sidm: connect ca://DMM1:status (text update)");
-        Self { _engine: engine, w1, w2, w3, w4, w5, w6, w7, w8, w9, w11, w12, w13, w14 }
+        Self { _engine: engine, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14 }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         // Back-to-front: decoration (Background) -> monitor (Middle) -> control
         // (Foreground), so controls are never occluded or click-stolen.
-        let Self { _engine: _, w1, w2, w3, w4, w5, w6, w7, w8, w9, w11, w12, w13, w14 } = self;
+        let Self { _engine: _, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14 } = self;
         place(ui, egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 200.0, 20.0, |ui| {
             ui.label(egui::RichText::new("Sample Panel").color(Color32::from_rgb(0, 0, 0)));
         });
@@ -83,7 +87,7 @@ impl Screen {
             let _ = w9.show(ui);
         });
         place(ui, egui::Order::Background, egui::Id::new(10u64), 290.0, 140.0, 60.0, 60.0, |ui| {
-            ui.label(egui::RichText::new("[arc unsupported]").color(Color32::from_rgb(180, 60, 60)));
+            let _ = w10.show(ui);
         });
         place(ui, egui::Order::Middle, egui::Id::new(1u64), 10.0, 40.0, 120.0, 20.0, |ui| {
             let _ = w1.show(ui);

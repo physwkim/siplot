@@ -14,9 +14,14 @@
 //! (ellipse/circle sampled as a polygon — which also rotates for free), verified
 //! by a headless wgpu readback.
 //!
-//! **Deviation:** the `PyDMDrawingPolyline`/`Polygon`/`Arc`/`Pie`/`Chord`/`Image`
-//! subclasses are not ported (arcs/images need extra primitives); the common
-//! filled shapes and the line are.
+//! **Deviation:** `PyDMDrawingPie`/`Chord`/`Image` are not ported. `Arc`,
+//! `Polyline`, and `Polygon` ARE (for the MEDM `arc`/`polyline`/`polygon`
+//! widgets the `adl2sidm` converter targets): an arc is an elliptical sweep
+//! within the bounds — stroked open, or filled as a pie wedge when a brush is
+//! set; a polyline/polygon carries an explicit vertex list ([`SidmDrawing::with_points`])
+//! rather than a box-derived outline. A concave polygon fills as its convex
+//! interpretation (egui `convex_polygon`), matching the existing ellipse-as-convex
+//! approximation.
 
 use siplot::egui::{self, Color32, Pos2, Stroke, Vec2};
 
@@ -24,8 +29,11 @@ use crate::channel::{AlarmSeverity, Channel};
 use crate::engine::{Engine, EngineError};
 use crate::widgets::base::{ChannelBase, severity_color};
 
-/// The shape drawn by a [`SidmDrawing`] (PyDM `PyDMDrawing*` subclasses).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// The shape drawn by a [`SidmDrawing`] (PyDM `PyDMDrawing*` subclasses, plus
+/// the MEDM `arc`/`polyline`/`polygon` shapes the `adl2sidm` converter targets).
+///
+/// `Eq` is intentionally not derived: [`DrawingShape::Arc`] carries `f64` angles.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum DrawingShape {
     /// A filled rectangle (PyDM `PyDMDrawingRectangle`).
     #[default]
@@ -40,10 +48,29 @@ pub enum DrawingShape {
     /// A straight line across the bounds, drawn with the border pen (PyDM
     /// `PyDMDrawingLine`); needs a non-zero border width to be visible.
     Line,
+    /// An elliptical arc within the bounds (MEDM `arc`): the sweep from
+    /// `begin_deg` spanning `span_deg`, with 0° at 3 o'clock and a positive
+    /// angle going counter-clockwise (X11/Qt convention). Stroked as an open arc
+    /// when the brush is transparent, or filled as a pie wedge (centre + arc)
+    /// when an opaque fill is set.
+    Arc {
+        /// Start angle in degrees (MEDM `begin`, converted from 1/64°).
+        begin_deg: f64,
+        /// Signed sweep in degrees (MEDM `path`, converted from 1/64°).
+        span_deg: f64,
+    },
+    /// An open polyline through the widget's [`with_points`](SidmDrawing::with_points)
+    /// vertices (MEDM `polyline`), stroked with the border pen.
+    Polyline,
+    /// A closed, filled polygon through the widget's
+    /// [`with_points`](SidmDrawing::with_points) vertices (MEDM `polygon`).
+    Polygon,
 }
 
 /// Segments used to approximate an ellipse/circle as a polygon.
 const ELLIPSE_SEGMENTS: usize = 48;
+/// Sample count along an [`DrawingShape::Arc`] sweep.
+const ARC_SEGMENTS: usize = 48;
 /// Default drawing size in points.
 const DEFAULT_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 
@@ -102,6 +129,14 @@ pub(crate) fn shape_points(
             let r = hw.min(hh);
             ellipse_local(r, r)
         }
+        DrawingShape::Arc {
+            begin_deg,
+            span_deg,
+        } => arc_local(hw, hh, begin_deg, span_deg),
+        // Polyline/Polygon geometry is the widget's explicit vertex list, not
+        // derived from the box; `SidmDrawing::paint` handles those directly and
+        // never routes them here.
+        DrawingShape::Polyline | DrawingShape::Polygon => Vec::new(),
     };
     let angle = rotation_deg.to_radians();
     local
@@ -123,6 +158,19 @@ fn ellipse_local(rw: f64, rh: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// Sample points along an elliptical arc (radii `(rw, rh)`) about the origin,
+/// from `begin_deg` spanning `span_deg`. 0° is at 3 o'clock and a positive angle
+/// sweeps counter-clockwise on screen (y points down, so the y term is negated).
+fn arc_local(rw: f64, rh: f64, begin_deg: f64, span_deg: f64) -> Vec<(f64, f64)> {
+    (0..=ARC_SEGMENTS)
+        .map(|i| {
+            let frac = i as f64 / ARC_SEGMENTS as f64;
+            let t = (begin_deg + span_deg * frac).to_radians();
+            (rw * t.cos(), -rh * t.sin())
+        })
+        .collect()
+}
+
 /// A static shape driven by a channel only for its alarm/connection state (PyDM
 /// `PyDMDrawing*`).
 pub struct SidmDrawing {
@@ -133,6 +181,9 @@ pub struct SidmDrawing {
     border_width: f32,
     rotation_deg: f64,
     size: Vec2,
+    /// Vertices for [`DrawingShape::Polyline`]/[`DrawingShape::Polygon`], as
+    /// offsets from the widget's top-left corner. Empty for the other shapes.
+    points: Vec<Vec2>,
 }
 
 impl SidmDrawing {
@@ -150,6 +201,7 @@ impl SidmDrawing {
             border_width: 0.0,
             rotation_deg: 0.0,
             size: DEFAULT_SIZE,
+            points: Vec::new(),
         })
     }
 
@@ -176,6 +228,14 @@ impl SidmDrawing {
     /// Set the drawing size in points (builder style).
     pub fn with_size(mut self, size: Vec2) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Set the vertices for a [`DrawingShape::Polyline`]/[`DrawingShape::Polygon`]
+    /// (builder style), as offsets from the widget's top-left corner (MEDM
+    /// `points`). Ignored by the box-derived shapes.
+    pub fn with_points(mut self, points: Vec<Vec2>) -> Self {
+        self.points = points;
         self
     }
 
@@ -227,15 +287,51 @@ impl SidmDrawing {
         let inset = 2.0 * f64::from(self.border_width);
         let w = (f64::from(rect.width()) - inset).max(0.0);
         let h = (f64::from(rect.height()) - inset).max(0.0);
-        let pts = shape_points(self.shape, rect.center(), w, h, self.rotation_deg);
 
-        if self.shape == DrawingShape::Line {
-            if let [a, b] = pts[..] {
-                painter.line_segment([a, b], stroke);
+        match self.shape {
+            DrawingShape::Line => {
+                let pts = shape_points(self.shape, rect.center(), w, h, self.rotation_deg);
+                if let [a, b] = pts[..] {
+                    painter.line_segment([a, b], stroke);
+                }
             }
-        } else {
-            painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
+            // Open vertex path: stroked, never filled.
+            DrawingShape::Polyline => {
+                painter.add(egui::Shape::line(self.placed_points(rect), stroke));
+            }
+            // Closed vertex path: filled (concave fills as its convex hull) +
+            // border.
+            DrawingShape::Polygon => {
+                painter.add(egui::Shape::convex_polygon(
+                    self.placed_points(rect),
+                    fill,
+                    stroke,
+                ));
+            }
+            // An opaque brush fills the arc as a pie wedge (centre + sweep); a
+            // transparent brush strokes the open arc.
+            DrawingShape::Arc { .. } => {
+                let arc = shape_points(self.shape, rect.center(), w, h, self.rotation_deg);
+                if fill.a() > 0 {
+                    let mut wedge = Vec::with_capacity(arc.len() + 1);
+                    wedge.push(rect.center());
+                    wedge.extend(arc);
+                    painter.add(egui::Shape::convex_polygon(wedge, fill, stroke));
+                } else {
+                    painter.add(egui::Shape::line(arc, stroke));
+                }
+            }
+            _ => {
+                let pts = shape_points(self.shape, rect.center(), w, h, self.rotation_deg);
+                painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
+            }
         }
+    }
+
+    /// The polyline/polygon vertices placed into `rect` (offsets from its
+    /// top-left corner).
+    fn placed_points(&self, rect: egui::Rect) -> Vec<Pos2> {
+        self.points.iter().map(|p| rect.min + *p).collect()
     }
 }
 
@@ -310,5 +406,58 @@ mod tests {
             assert!(p.x.abs() <= 10.0 + 1e-3, "x out of range: {}", p.x);
             assert!(p.y.abs() <= 10.0 + 1e-3, "y out of range: {}", p.y);
         }
+    }
+
+    #[test]
+    fn arc_starts_at_begin_angle_and_sweeps_ccw() {
+        // A 20×20 box (radii 10) arc beginning at 0° (3 o'clock) spanning +90°.
+        let center = egui::pos2(0.0, 0.0);
+        let pts = shape_points(
+            DrawingShape::Arc {
+                begin_deg: 0.0,
+                span_deg: 90.0,
+            },
+            center,
+            20.0,
+            20.0,
+            0.0,
+        );
+        assert_eq!(pts.len(), ARC_SEGMENTS + 1);
+        // First sample at 0° → (+r, 0).
+        assert!((pts[0].x - 10.0).abs() < 1e-3, "start x = {}", pts[0].x);
+        assert!(pts[0].y.abs() < 1e-3, "start y = {}", pts[0].y);
+        // Last sample at +90° CCW → straight up (screen y negative).
+        let last = *pts.last().unwrap();
+        assert!(last.x.abs() < 1e-3, "end x = {}", last.x);
+        assert!((last.y + 10.0).abs() < 1e-3, "end y = {last:?}");
+    }
+
+    #[test]
+    fn polyline_polygon_geometry_is_the_vertex_list_not_the_box() {
+        // The box-derived geometry owner returns nothing for vertex shapes.
+        assert!(
+            shape_points(
+                DrawingShape::Polyline,
+                egui::pos2(0.0, 0.0),
+                10.0,
+                10.0,
+                0.0
+            )
+            .is_empty()
+        );
+        // The widget places its vertices as offsets from the rect's top-left.
+        let engine = Engine::new();
+        let draw = SidmDrawing::new(&engine, "loc://poly_test", DrawingShape::Polygon)
+            .expect("connect")
+            .with_points(vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(30.0, 0.0),
+                Vec2::new(15.0, 20.0),
+            ]);
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), Vec2::new(30.0, 20.0));
+        let placed = draw.placed_points(rect);
+        assert_eq!(placed[0], egui::pos2(100.0, 50.0));
+        assert_eq!(placed[1], egui::pos2(130.0, 50.0));
+        assert_eq!(placed[2], egui::pos2(115.0, 70.0));
     }
 }

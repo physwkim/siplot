@@ -158,15 +158,9 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         "composite" => emit_composite(b, widget, options, z),
         "strip chart" => emit_strip_chart(b, widget, options, z),
         "cartesian plot" => emit_cartesian_plot(b, widget, options, z),
-        "arc" => emit_shape_stub(b, widget, z, "arc", "SiDM has no DrawingShape::Arc"),
-        "polygon" => emit_shape_stub(b, widget, z, "polygon", "SiDM has no DrawingShape::Polygon"),
-        "polyline" => emit_shape_stub(
-            b,
-            widget,
-            z,
-            "polyline",
-            "SiDM has no DrawingShape::Polyline",
-        ),
+        "arc" => emit_arc(b, widget, options, z),
+        "polygon" => emit_polyshape(b, widget, options, z, true),
+        "polyline" => emit_polyshape(b, widget, options, z, false),
         "image" => emit_image_stub(b, widget, z),
         "embedded display" => emit_embedded_stub(b, widget),
         "related display" => emit_deferred_button(
@@ -569,6 +563,29 @@ fn emit_drawing(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLay
         return;
     };
     let addr = dynamic_channel(widget, options, "shape");
+    let new_call = format!(
+        "SidmDrawing::new(&engine, {}, DrawingShape::{shape})",
+        rust_str(&addr)
+    );
+    let builders = drawing_brush_builders(b, widget);
+    push_channel_widget(
+        b,
+        z,
+        geom,
+        "SidmDrawing",
+        &new_call,
+        &format!("adl2sidm: connect {addr} (drawing)"),
+        &builders,
+    );
+}
+
+/// The `.with_fill(...)` / `.with_border(...)` builders for any [`SidmDrawing`]
+/// shape, from the `basic attribute` block (shared by rectangle/oval/arc/
+/// polygon/polyline). `solid` fills with the widget colour; `outline` (MEDM
+/// `NoBrush`) draws only a border forced to width >= 1, as adl2pydm's
+/// `write_basic_attribute` does. A `dash` pen style is flagged (no SidmDrawing
+/// pen-style builder).
+fn drawing_brush_builders(b: &mut Builder, widget: &MedmWidget) -> Vec<String> {
     let ba = widget.attributes.get("basic attribute");
     let fill_mode = ba
         .and_then(|a| a.get("fill"))
@@ -585,13 +602,8 @@ fn emit_drawing(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLay
     let color = widget.color.unwrap_or(Color { r: 0, g: 0, b: 0 });
     b.needs_color = true;
 
-    let new_call = format!(
-        "SidmDrawing::new(&engine, {}, DrawingShape::{shape})",
-        rust_str(&addr)
-    );
     let mut builders = Vec::new();
     if fill_mode == "outline" {
-        // MEDM `NoBrush`: no fill, just an outline forced to width >= 1.
         builders.push(".with_fill(Color32::TRANSPARENT)".to_string());
         builders.push(format!(
             ".with_border({}, {})",
@@ -614,15 +626,141 @@ fn emit_drawing(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLay
             widget.line
         ));
     }
+    builders
+}
+
+/// `arc` — a `SidmDrawing(DrawingShape::Arc { begin_deg, span_deg })`. The MEDM
+/// `begin`/`path` angles are parsed to degrees (`beginAngle`/`pathAngle`); SiDM's
+/// arc keeps MEDM's X11 convention (0° at 3 o'clock, CCW positive), so the
+/// parsed values are used directly (no Qt-style negation). An opaque fill paints
+/// a pie wedge; `outline` paints an open stroked arc. Defaults: begin 0°, span
+/// 360° when the keys are absent (a degenerate arc still draws a visible sweep).
+fn emit_arc(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer) {
+    let Some(geom) = widget.geometry else {
+        skip_no_geometry(b, widget);
+        return;
+    };
+    let addr = dynamic_channel(widget, options, "shape");
+    let begin = angle_deg(widget, "beginAngle", 0.0);
+    let span = angle_deg(widget, "pathAngle", 360.0);
+    let new_call = format!(
+        "SidmDrawing::new(&engine, {}, DrawingShape::Arc {{ begin_deg: {}, span_deg: {} }})",
+        rust_str(&addr),
+        float_lit(begin),
+        float_lit(span)
+    );
+    let builders = drawing_brush_builders(b, widget);
     push_channel_widget(
         b,
         z,
         geom,
         "SidmDrawing",
         &new_call,
-        &format!("adl2sidm: connect {addr} (drawing)"),
+        &format!("adl2sidm: connect {addr} (arc)"),
         &builders,
     );
+}
+
+/// `polyline` / `polygon` — a `SidmDrawing(DrawingShape::Polyline|Polygon)` whose
+/// vertices come from the MEDM `points` block. MEDM points are absolute screen
+/// coordinates; they are normalised to offsets from the widget's `object` origin
+/// (matching how `place()` positions the widget's `egui::Area`). A polyline is
+/// stroked (no fill); a polygon honours the `basic attribute` brush. With fewer
+/// than two points the geometry is degenerate, so a placeholder + warning is
+/// emitted instead.
+fn emit_polyshape(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    options: &Options,
+    z: ZLayer,
+    polygon: bool,
+) {
+    let kind = if polygon { "polygon" } else { "polyline" };
+    let Some(geom) = widget.geometry else {
+        skip_no_geometry(b, widget);
+        return;
+    };
+    if widget.points.len() < 2 {
+        emit_marker_placeholder(
+            b,
+            widget,
+            z,
+            &format!("{kind} unsupported"),
+            &format!("{kind} has fewer than 2 points; nothing to draw"),
+        );
+        return;
+    }
+    let addr = dynamic_channel(widget, options, "shape");
+    let shape = if polygon { "Polygon" } else { "Polyline" };
+    let new_call = format!(
+        "SidmDrawing::new(&engine, {}, DrawingShape::{shape})",
+        rust_str(&addr)
+    );
+    let mut builders = if polygon {
+        drawing_brush_builders(b, widget)
+    } else {
+        // A polyline is stroked with the line pen only — no fill brush.
+        polyline_stroke_builder(b, widget)
+    };
+    let verts: Vec<String> = widget
+        .points
+        .iter()
+        .map(|p| {
+            format!(
+                "egui::Vec2::new({}, {})",
+                float_lit(f64::from(p.x - geom.x)),
+                float_lit(f64::from(p.y - geom.y))
+            )
+        })
+        .collect();
+    builders.push(format!(".with_points(vec![{}])", verts.join(", ")));
+    push_channel_widget(
+        b,
+        z,
+        geom,
+        "SidmDrawing",
+        &new_call,
+        &format!("adl2sidm: connect {addr} ({kind})"),
+        &builders,
+    );
+}
+
+/// The stroke-only `.with_border(...)` builder for a `polyline` (MEDM line pen):
+/// the widget colour at the `basic attribute` width, forced to >= 1 so it shows.
+/// A `dash` pen style is flagged (no SidmDrawing pen-style builder).
+fn polyline_stroke_builder(b: &mut Builder, widget: &MedmWidget) -> Vec<String> {
+    let ba = widget.attributes.get("basic attribute");
+    let width = ba
+        .and_then(|a| a.get("width"))
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let style = ba
+        .and_then(|a| a.get("style"))
+        .map(String::as_str)
+        .unwrap_or("solid");
+    let color = widget.color.unwrap_or(Color { r: 0, g: 0, b: 0 });
+    b.needs_color = true;
+    if style == "dash" {
+        b.warnings.push(format!(
+            "line {}: drawing dash border style not applied (SidmDrawing has no pen-style builder)",
+            widget.line
+        ));
+    }
+    vec![format!(
+        ".with_border({}, {})",
+        color_expr(color),
+        float_lit(width.max(1.0))
+    )]
+}
+
+/// A drawing's angle field (`beginAngle`/`pathAngle`) in degrees, or `default`
+/// when absent. The parser already converted MEDM's 1/64° units to degrees.
+fn angle_deg(widget: &MedmWidget, key: &str, default: f64) -> f64 {
+    widget
+        .assignments
+        .get(key)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(default)
 }
 
 /// `composite` — a `SidmFrame` grouping its children. MEDM stores children in
@@ -919,19 +1057,6 @@ fn push_plot_widget(
         geom,
         format!("let _ = {field}.show(ui);"),
     ));
-}
-
-/// A static-shape widget SiDM cannot draw (`arc`/`polygon`/`polyline` — no
-/// matching `DrawingShape`): emit a labelled placeholder marker at the MEDM
-/// geometry so the layout still shows the widget's footprint, plus a warning.
-fn emit_shape_stub(b: &mut Builder, widget: &MedmWidget, z: ZLayer, name: &str, why: &str) {
-    emit_marker_placeholder(
-        b,
-        widget,
-        z,
-        &format!("{name} unsupported"),
-        &format!("{name}: {why}"),
-    );
 }
 
 /// `image` — a MEDM static GIF/TIFF *file* display. SiDM's only image widget
@@ -1553,9 +1678,9 @@ text {
 
     #[test]
     fn unimplemented_widgets_warn_but_do_not_panic() {
-        // `polygon` is in the permanently-stubbed set (no SiDM `DrawingShape`),
-        // so it warns through every wave (a placeholder marker since B8a) while
-        // the screen still assembles.
+        // A `polygon` with no `points` block is degenerate (fewer than 2
+        // vertices), so it falls back to a placeholder marker + warning while the
+        // screen still assembles — the real polygon path is covered separately.
         let adl = r#"
 "color map" {
 	colors {
@@ -2450,10 +2575,11 @@ composite {
         assert!(g.source.contains("SidmWaveformPlot::new(rs, 1)"));
     }
 
-    // The deferred/unsupported widgets: static shapes (no `DrawingShape`), the
-    // static-file image, the embedded display, and the deferred nav/shell
-    // controls. None has a faithful SiDM mapping, so each warns; the visible
-    // ones emit a placeholder, never a silent drop.
+    // The remaining-gap widgets: the static-file image, the embedded display,
+    // and the deferred nav/shell controls. None has a faithful SiDM mapping, so
+    // each warns; the visible ones emit a placeholder, never a silent drop. The
+    // arc and polyline here DO map (to `DrawingShape::Arc`/`Polyline`) and are
+    // asserted as real drawings.
     const STUBS: &str = r#"
 "color map" {
 	colors {
@@ -2468,6 +2594,11 @@ arc {
 		width=40
 		height=40
 	}
+	"basic attribute" {
+		clr=1
+	}
+	begin=2880
+	path=5760
 }
 polyline {
 	object {
@@ -2475,6 +2606,15 @@ polyline {
 		y=10
 		width=40
 		height=40
+	}
+	"basic attribute" {
+		clr=1
+		width=2
+	}
+	points {
+		(60,10)
+		(80,30)
+		(100,10)
 	}
 }
 image {
@@ -2530,27 +2670,84 @@ image {
     }
 
     #[test]
-    fn static_shape_stubs_emit_background_placeholders_and_warn() {
+    fn arc_and_polyline_emit_real_drawings_at_the_background_layer() {
         let g = stubs();
-        // arc and polyline: a labelled marker at the Background (decoration)
-        // layer, no struct field, plus a warning naming the missing shape.
+        // arc -> SidmDrawing(Arc) with the parsed begin/span degrees (2880/64=45,
+        // 5760/64=90), no Qt-style negation, at the Background (decoration) layer.
         assert!(
             g.source
-                .contains("egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 40.0, 40.0"),
-            "arc placeholder not at its Background geometry:\n{}",
+                .contains("DrawingShape::Arc { begin_deg: 45.0, span_deg: 90.0 }"),
+            "arc not emitted with parsed angles:\n{}",
             g.source
         );
-        assert!(g.source.contains("[arc unsupported]"));
-        assert!(g.source.contains("[polyline unsupported]"));
+        // polyline -> SidmDrawing(Polyline) with its vertices normalised to the
+        // widget origin (60,10): (0,0),(20,20),(40,0).
+        assert!(g.source.contains("DrawingShape::Polyline"), "{}", g.source);
         assert!(
-            g.warnings
+            g.source.contains(
+                ".with_points(vec![egui::Vec2::new(0.0, 0.0), \
+                 egui::Vec2::new(20.0, 20.0), egui::Vec2::new(40.0, 0.0)])"
+            ),
+            "polyline points not normalised to the widget origin:\n{}",
+            g.source
+        );
+        // Both are decorations -> Background layer, and both are real fielded
+        // widgets (no fieldless placeholder).
+        assert!(g.source.contains("egui::Order::Background"), "{}", g.source);
+        assert!(g.source.contains(": SidmDrawing,"), "{}", g.source);
+        // Neither warns any longer (they map cleanly now).
+        assert!(
+            !g.warnings
                 .iter()
-                .any(|w| w.contains("arc: SiDM has no DrawingShape::Arc")),
-            "{:?}",
+                .any(|w| w.contains("arc") || w.contains("polyline") && !w.contains("dash")),
+            "unexpected shape warnings: {:?}",
             g.warnings
         );
-        // No widget field for a fieldless placeholder.
-        assert!(!g.source.contains(": SidmDrawing,"));
+    }
+
+    #[test]
+    fn polygon_with_points_fills_and_normalises_to_the_widget_origin() {
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+		00ff00,
+	}
+}
+polygon {
+	object {
+		x=100
+		y=50
+		width=40
+		height=30
+	}
+	"basic attribute" {
+		clr=1
+	}
+	points {
+		(100,50)
+		(140,50)
+		(120,80)
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        assert!(g.source.contains("DrawingShape::Polygon"), "{}", g.source);
+        // clr=1 -> 00ff00 (green) fill; points normalised to (0,0),(40,0),(20,30).
+        assert!(
+            g.source
+                .contains(".with_fill(Color32::from_rgb(0, 255, 0))"),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.source.contains(
+                ".with_points(vec![egui::Vec2::new(0.0, 0.0), \
+                 egui::Vec2::new(40.0, 0.0), egui::Vec2::new(20.0, 30.0)])"
+            ),
+            "{}",
+            g.source
+        );
     }
 
     #[test]

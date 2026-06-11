@@ -15,8 +15,8 @@
 //!    artifact can never silently fall out of date with the emitter.
 //!
 //! The fixture exercises a broad widget surface (label / line edit / push button
-//! / combo / slider / byte / scale indicator / drawing×2 / time plot / waveform
-//! plot / frame, plus an arc placeholder and a CALC `// TODO`).
+//! / combo / slider / byte / scale indicator / drawing×3 incl. an arc / time plot
+//! / waveform plot / frame, plus a CALC `// TODO`).
 
 use adl2sidm::adl_parser::parse;
 use adl2sidm::codegen::{Options, generate};
@@ -79,15 +79,15 @@ fn example_screen_matches_the_committed_module() {
 fn sample_conversion_only_warns_for_the_known_unsupported_bits() {
     let adl = include_str!("fixtures/sample.adl");
     let generated = generate(&parse(adl), &sample_options());
-    // The fixture's only gaps are the arc (no DrawingShape::Arc) and the
-    // rectangle's CALC visibility rule — every other widget converts cleanly.
+    // The fixture's only remaining gap is the rectangle's CALC visibility rule
+    // (no rules engine) — every other widget, including the arc, converts
+    // cleanly to a real SiDM widget.
     assert_eq!(
         generated.warnings.len(),
-        2,
+        1,
         "unexpected warnings: {:?}",
         generated.warnings
     );
-    assert!(generated.warnings.iter().any(|w| w.contains("arc")));
     assert!(
         generated
             .warnings
