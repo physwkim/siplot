@@ -161,7 +161,7 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         "arc" => emit_arc(b, widget, options, z),
         "polygon" => emit_polyshape(b, widget, options, z, true),
         "polyline" => emit_polyshape(b, widget, options, z, false),
-        "image" => emit_image_stub(b, widget, z),
+        "image" => emit_image(b, widget, z),
         "embedded display" => emit_embedded_stub(b, widget),
         "related display" => emit_deferred_button(
             b,
@@ -1059,28 +1059,40 @@ fn push_plot_widget(
     ));
 }
 
-/// `image` — a MEDM static GIF/TIFF *file* display. SiDM's only image widget
-/// (`SidmImageView`) is a live array-data viewer needing a channel a file image
-/// has none of, so emit a labelled placeholder naming the file plus a warning
-/// rather than fabricating a channel.
-fn emit_image_stub(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
+/// `image` — a MEDM static GIF/TIFF *file* display, emitted as a channel-less
+/// `SidmImage` that decodes the file at run time and draws it scaled to the MEDM
+/// geometry. The `image name` is the file path (resolved relative to the running
+/// app's working directory / EPICS display path); a missing/undecodable file
+/// draws a labelled placeholder at run time, not at build time. With no
+/// `image name` there is nothing to load, so a converter placeholder + warning is
+/// emitted instead.
+fn emit_image(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
+    let Some(geom) = widget.geometry else {
+        skip_no_geometry(b, widget);
+        return;
+    };
     let file = widget
         .assignments
         .get("image name")
         .map(String::as_str)
         .unwrap_or("");
-    let label = if file.is_empty() {
-        "image unsupported".to_string()
-    } else {
-        format!("image: {file}")
-    };
-    emit_marker_placeholder(
-        b,
-        widget,
-        z,
-        &label,
-        &format!("image {file:?} is a static file; SiDM has no file-image widget"),
-    );
+    if file.is_empty() {
+        emit_marker_placeholder(
+            b,
+            widget,
+            z,
+            "image (no file)",
+            "image has no \"image name\"; nothing to load",
+        );
+        return;
+    }
+    let new_call = format!("SidmImage::new({})", rust_str(file));
+    let builders = vec![format!(
+        ".with_size(egui::Vec2::new({}, {}))",
+        float_lit(f64::from(geom.width)),
+        float_lit(f64::from(geom.height))
+    )];
+    push_value_widget(b, z, geom, "SidmImage", &new_call, &builders);
 }
 
 /// Emit a fieldless labelled placeholder (a red marker `ui.label`) at the MEDM
@@ -1230,6 +1242,37 @@ fn push_channel_widget(
     // The body references the field's `&mut` local (bound by `ui()`'s `let Self {
     // .. }` destructure), not `self.field`, so a container's draw closure can hold
     // disjoint borrows of the frame and its siblings.
+    b.placements.push(Placement::drawn(
+        z,
+        id,
+        geom,
+        format!("let _ = {field}.show(ui);"),
+    ));
+}
+
+/// Like [`push_channel_widget`] but for a fielded widget whose constructor is
+/// infallible and takes no `&engine` — e.g. a channel-less `SidmImage`. Emits
+/// `let wN = <new_call><builders>;` (no `.expect`) plus its `show(ui)` placement.
+fn push_value_widget(
+    b: &mut Builder,
+    z: ZLayer,
+    geom: Geometry,
+    ty: &str,
+    new_call: &str,
+    builders: &[String],
+) {
+    let id = b.index();
+    let field = format!("w{id}");
+    b.needs_widgets = true;
+
+    let mut ctor = format!("let {field} = {new_call}");
+    for bld in builders {
+        let _ = write!(ctor, "\n            {bld}");
+    }
+    ctor.push(';');
+
+    b.ctors.push(ctor);
+    b.fields.push((field.clone(), ty.to_string()));
     b.placements.push(Placement::drawn(
         z,
         id,
@@ -2751,16 +2794,26 @@ polygon {
     }
 
     #[test]
-    fn image_emits_a_placeholder_naming_the_file_not_a_view() {
+    fn image_emits_a_channel_less_sidm_image_sized_to_the_geometry() {
         let g = stubs();
-        // The MEDM static file image becomes a Middle-layer marker showing the
-        // filename — never a SidmImageView (which would need a channel).
-        assert!(g.source.contains("[image: apple.gif]"), "{}", g.source);
-        assert!(!g.source.contains("SidmImageView"), "{}", g.source);
+        // The MEDM static file image becomes a channel-less SidmImage naming the
+        // file, sized to the MEDM geometry (100×73) — never a SidmImageView
+        // (which would need an array channel a file image has none of).
         assert!(
-            g.warnings
-                .iter()
-                .any(|w| w.contains("static file") && w.contains("apple.gif")),
+            g.source.contains("SidmImage::new(\"apple.gif\")"),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains(".with_size(egui::Vec2::new(100.0, 73.0))"),
+            "{}",
+            g.source
+        );
+        assert!(!g.source.contains("SidmImageView"), "{}", g.source);
+        // It converts cleanly now — no image warning.
+        assert!(
+            !g.warnings.iter().any(|w| w.contains("apple.gif")),
             "{:?}",
             g.warnings
         );

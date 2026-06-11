@@ -49,6 +49,16 @@ tokio = { version = "1", features = [
 # CancellationToken — fired when the last Channel for a connection drops, to
 # stop that connection's task deterministically.
 tokio-util = "0.7"
+# Static-image decoder for `SidmImage` (the MEDM `image` widget): decodes a
+# GIF/PNG/TIFF file to RGBA for an egui texture. Already in the build graph (the
+# vendored egui depends on it), so this adds no new crate to a full build; the
+# format features are scoped to the three MEDM uses. Not behind a feature so the
+# widget is always present (the `adl2sidm` converter emits it unconditionally).
+image = { version = "0.25", default-features = false, features = [
+    "gif",
+    "png",
+    "tiff",
+] }
 
 # EPICS Channel Access backend (feature `ca`). crates.io 0.18.x — an explicit
 # deviation from siplot's no-new-dependency rule, scoped to this crate. The API

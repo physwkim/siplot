@@ -165,6 +165,16 @@ arc {
 		clr=3
 	}
 }
+image {
+	object {
+		x=210
+		y=210
+		width=80
+		height=24
+	}
+	type="gif"
+	"image name"="logo.gif"
+}
 "strip chart" {
 	object {
 		x=10

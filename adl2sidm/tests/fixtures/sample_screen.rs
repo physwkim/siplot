@@ -17,10 +17,11 @@ pub struct Screen {
     w8: SidmDrawing,
     w9: SidmDrawing,
     w10: SidmDrawing,
-    w11: SidmTimePlot,
-    w12: SidmWaveformPlot,
-    w13: SidmFrame,
-    w14: SidmLabel,
+    w11: SidmImage,
+    w12: SidmTimePlot,
+    w13: SidmWaveformPlot,
+    w14: SidmFrame,
+    w15: SidmLabel,
 }
 
 impl Screen {
@@ -61,21 +62,23 @@ impl Screen {
         let w10 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_157", DrawingShape::Arc { begin_deg: 0.0, span_deg: 360.0 })
             .expect("adl2sidm: connect loc://adl2sidm_shape_157 (arc)")
             .with_fill(Color32::from_rgb(0, 255, 0));
-        let mut w11 = SidmTimePlot::new(rs, 0).with_time_span(60.0);
-        w11.add_channel(&engine, "ca://DMM1:readback", Color32::from_rgb(0, 0, 255), "$(P)readback").expect("adl2sidm: add strip-chart curve $(P)readback");
-        let mut w12 = SidmWaveformPlot::new(rs, 1);
-        w12.add_xy_channel(&engine, "ca://DMM1:ywave", Some("ca://DMM1:xwave"), Color32::from_rgb(255, 0, 0), "curve 1").expect("adl2sidm: add waveform curve 1");
-        let w13 = SidmFrame::new(&engine, "loc://adl2sidm_frame_196")
-            .expect("adl2sidm: connect loc://adl2sidm_frame_196 (composite)");
-        let w14 = SidmLabel::new(&engine, "ca://DMM1:status")
+        let w11 = SidmImage::new("logo.gif")
+            .with_size(egui::Vec2::new(80.0, 24.0));
+        let mut w12 = SidmTimePlot::new(rs, 0).with_time_span(60.0);
+        w12.add_channel(&engine, "ca://DMM1:readback", Color32::from_rgb(0, 0, 255), "$(P)readback").expect("adl2sidm: add strip-chart curve $(P)readback");
+        let mut w13 = SidmWaveformPlot::new(rs, 1);
+        w13.add_xy_channel(&engine, "ca://DMM1:ywave", Some("ca://DMM1:xwave"), Color32::from_rgb(255, 0, 0), "curve 1").expect("adl2sidm: add waveform curve 1");
+        let w14 = SidmFrame::new(&engine, "loc://adl2sidm_frame_206")
+            .expect("adl2sidm: connect loc://adl2sidm_frame_206 (composite)");
+        let w15 = SidmLabel::new(&engine, "ca://DMM1:status")
             .expect("adl2sidm: connect ca://DMM1:status (text update)");
-        Self { _engine: engine, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14 }
+        Self { _engine: engine, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15 }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         // Back-to-front: decoration (Background) -> monitor (Middle) -> control
         // (Foreground), so controls are never occluded or click-stolen.
-        let Self { _engine: _, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14 } = self;
+        let Self { _engine: _, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15 } = self;
         place(ui, egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 200.0, 20.0, |ui| {
             ui.label(egui::RichText::new("Sample Panel").color(Color32::from_rgb(0, 0, 0)));
         });
@@ -98,16 +101,19 @@ impl Screen {
         place(ui, egui::Order::Middle, egui::Id::new(7u64), 10.0, 200.0, 180.0, 24.0, |ui| {
             let _ = w7.show(ui);
         });
-        place(ui, egui::Order::Middle, egui::Id::new(11u64), 10.0, 240.0, 380.0, 110.0, |ui| {
+        place(ui, egui::Order::Middle, egui::Id::new(11u64), 210.0, 210.0, 80.0, 24.0, |ui| {
             let _ = w11.show(ui);
         });
-        place(ui, egui::Order::Middle, egui::Id::new(12u64), 10.0, 360.0, 380.0, 110.0, |ui| {
+        place(ui, egui::Order::Middle, egui::Id::new(12u64), 10.0, 240.0, 380.0, 110.0, |ui| {
             let _ = w12.show(ui);
         });
-        place(ui, egui::Order::Middle, egui::Id::new(13u64), 210.0, 210.0, 180.0, 24.0, |ui| {
-            let _ = w13.show(ui, |ui| {
-                place(ui, egui::Order::Middle, egui::Id::new(14u64), 0.0, 0.0, 180.0, 24.0, |ui| {
-                    let _ = w14.show(ui);
+        place(ui, egui::Order::Middle, egui::Id::new(13u64), 10.0, 360.0, 380.0, 110.0, |ui| {
+            let _ = w13.show(ui);
+        });
+        place(ui, egui::Order::Middle, egui::Id::new(14u64), 210.0, 210.0, 180.0, 24.0, |ui| {
+            let _ = w14.show(ui, |ui| {
+                place(ui, egui::Order::Middle, egui::Id::new(15u64), 0.0, 0.0, 180.0, 24.0, |ui| {
+                    let _ = w15.show(ui);
                 });
             });
         });
