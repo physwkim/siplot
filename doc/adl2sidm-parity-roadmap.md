@@ -238,6 +238,17 @@ expression is present; `vis="static"` with only a channel is not a rule.
     the frame, not its child). The rule-annotated screen was generated and
     `cargo check`'d clean against real sidm. Gate: clippy -p adl2sidm clean,
     nextest 50/50.
-- ⬜ C9 — CLI (`--protocol` / `--macro` / `--out` / `--use-scatterplot`).
+- ✅ C9 — CLI. A binary-local `mod cli` (clap derive) drives `.adl` in → `.rs`
+  out, so the library crate stays free of the `clap` dependency. Flags mirror
+  adl2pydm: `-p/--protocol` (default `ca://`), repeatable `-m/--macro NAME=VALUE`
+  (validated by a `value_parser`), `--use-scatterplot`, and `-o/--out` (`-` for
+  stdout, else a path; default = the input path with a `.rs` extension). The
+  driver falls back to the input's file name for the generated header when the
+  `.adl` carries no `file { name }`, prints converter warnings to stderr, and
+  exits non-zero on a read/write error (clap itself exits 2 on a bad argument).
+  3 CLI unit tests (`parse_macro` splits/over-splits/rejects; `Cli::command()`
+  derive is consistent); end-to-end runs on real adl2pydm fixtures (`strip.adl`,
+  `scatter_plot.adl`) produced the expected `.rs` to stdout and to a derived
+  path. Gate: clippy -p adl2sidm clean, nextest 53/53.
 - ⬜ C10 — `tests/compiles.rs` fidelity gate (generated `.rs` `cargo check`s against `sidm`).
 - ⬜ C11 — runnable end-to-end example (sample `.adl` + generated `Screen` + tiny `eframe` main).

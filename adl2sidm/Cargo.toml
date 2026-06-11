@@ -24,5 +24,7 @@ name = "adl2sidm"
 path = "src/main.rs"
 
 [dependencies]
-# CLI argument parsing is wired in the CLI commit (Wave C); the parser, symbol
-# map, and code emitter that land first are pure and dependency-free.
+# The CLI binary parses arguments with clap (a `mod cli` local to `main.rs`).
+# The library — parser, symbol map, code emitter — stays pure and does not use
+# it, so a consumer embedding the converter pulls no CLI machinery.
+clap = { version = "4", features = ["derive"] }
