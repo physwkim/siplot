@@ -98,6 +98,9 @@ impl Screen {
         place(ui, egui::Order::Background, egui::Id::new(11u64), 290.0, 140.0, 60.0, 60.0, |ui| {
             let _ = w11.show(ui);
         });
+        place(ui, egui::Order::Background, egui::Id::new(12u64), 210.0, 210.0, 80.0, 24.0, |ui| {
+            let _ = w12.show(ui);
+        });
         place(ui, egui::Order::Middle, egui::Id::new(1u64), 10.0, 40.0, 120.0, 20.0, |ui| {
             let _ = w1.show(ui);
         });
@@ -106,9 +109,6 @@ impl Screen {
         });
         place(ui, egui::Order::Middle, egui::Id::new(7u64), 10.0, 200.0, 180.0, 24.0, |ui| {
             let _ = w7.show(ui);
-        });
-        place(ui, egui::Order::Middle, egui::Id::new(12u64), 210.0, 210.0, 80.0, 24.0, |ui| {
-            let _ = w12.show(ui);
         });
         place(ui, egui::Order::Middle, egui::Id::new(13u64), 10.0, 240.0, 380.0, 110.0, |ui| {
             let _ = w13.show(ui);

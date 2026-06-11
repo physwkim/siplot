@@ -117,7 +117,13 @@ pub fn lookup(symbol: &str) -> Option<WidgetMap> {
         "oval" => (Decoration, "SidmDrawing(Ellipse)", true),
         "strip chart" => (Monitor, "SidmTimePlot", true),
         "cartesian plot" => (Monitor, "SidmWaveformPlot", true),
-        "image" => (Monitor, "SidmImageView", true),
+        // Divergence from `symbols.py` (`type="monitor"`): the MEDM `image` is a
+        // static GIF/TIFF *file* with no data channel, emitted as a channel-less
+        // `SidmImage`. It is decoration, so it belongs in the Background layer with
+        // the other static graphics (Qt gives adl2pydm native z-order; our 3-bucket
+        // model must bucket it with decorations to keep it behind monitors/controls
+        // and preserve its draw order relative to sibling static shapes).
+        "image" => (Decoration, "SidmImage", true),
 
         // --- unsupported: emit a documented stub + warning ---
         "arc" => (Decoration, "stub: no DrawingShape::Arc", false),
