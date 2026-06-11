@@ -43,13 +43,18 @@ dropped).
 - **Default channel protocol `ca://`** (MEDM is a Channel Access tool); bare
   MEDM PV names get the prefix. Overridable via `--protocol`; basic `$(macro)`
   substitution via `--macro` (port of adl2pydm `convertMacros`).
-- **Deferred** (tracked, not dropped): runtime `.adl`/display-file loader;
-  proportional/grid scaling. MEDM dynamic-attribute **colour** rules
-  (`clr="alarm"/"discrete"`) are *beyond* the parity target — adl2pydm does not
-  convert them either — so they are intentionally not implemented (see the CALC
-  note). The arc/polygon/polyline shapes, the static-file `image`,
-  related-display/shell-command/embedded-display, and CALC *visibility* — all
-  originally deferred — are now implemented (see the coverage table).
+- **Not pursued (decided, 2026-06-11):** a **runtime `.adl` loader** and
+  **proportional/grid scaling**. The compile-time "generate Rust → build → run"
+  model is sufficient; a runtime loader's only gain (no rebuild on `.adl` change)
+  costs the compile-fidelity gate, which is the whole reason codegen was chosen
+  over a loader — so it stays unbuilt by design, not as a backlog item. Scaling
+  is unneeded (faithful absolute placement is the target). MEDM dynamic-attribute
+  **colour** rules (`clr="alarm"/"discrete"`) are *beyond* the parity target —
+  adl2pydm does not convert them either — so they are intentionally not
+  implemented (see the CALC note). The arc/polygon/polyline shapes, the
+  static-file `image`, related-display/shell-command/embedded-display, and CALC
+  *visibility* — all originally deferred — are now implemented (see the coverage
+  table).
 
 ## MEDM widget coverage
 
@@ -359,6 +364,8 @@ Phase-2 gate (per commit): `cargo fmt --all`; `cargo clippy -p adl2sidm
 `cargo nextest run -p adl2sidm` (66/66). Full-workspace pass still owed before
 any push.
 
-Still deferred (tracked): runtime `.adl` loader; proportional/grid scaling. CALC
-**colour** rules (`clr="alarm"/"discrete"`) are beyond the parity target —
-adl2pydm does not convert them either — so they are intentionally not built.
+Not pursued (decided 2026-06-11): a runtime `.adl` loader and proportional/grid
+scaling — the codegen "build and run" model is sufficient and keeps the
+compile-fidelity gate a loader would surrender. CALC **colour** rules
+(`clr="alarm"/"discrete"`) are beyond the parity target — adl2pydm does not
+convert them either — so they are intentionally not built.
