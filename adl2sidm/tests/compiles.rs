@@ -16,7 +16,7 @@
 //!
 //! The fixture exercises a broad widget surface (label / line edit / push button
 //! / combo / slider / byte / scale indicator / drawing×3 incl. an arc / time plot
-//! / waveform plot / frame, plus a CALC `// TODO`).
+//! / waveform plot / frame, plus a wired CALC visibility gate).
 
 use adl2sidm::adl_parser::parse;
 use adl2sidm::codegen::{Options, generate};
@@ -83,9 +83,9 @@ fn example_screen_matches_the_committed_module() {
 fn sample_conversion_only_warns_for_the_known_unsupported_bits() {
     let adl = include_str!("fixtures/sample.adl");
     let generated = generate(&parse(adl), &sample_options());
-    // The fixture's only remaining gap is the rectangle's CALC visibility rule
-    // (no rules engine) — every other widget, including the arc, converts
-    // cleanly to a real SiDM widget.
+    // Every widget converts to a real SiDM widget; the one warning is the
+    // rectangle's CALC visibility rule, now wired as a calc:// gate (an
+    // informational note, not an unsupported gap).
     assert_eq!(
         generated.warnings.len(),
         1,
@@ -96,6 +96,6 @@ fn sample_conversion_only_warns_for_the_known_unsupported_bits() {
         generated
             .warnings
             .iter()
-            .any(|w| w.contains("dynamic rule"))
+            .any(|w| w.contains("dynamic visibility wired"))
     );
 }

@@ -1,6 +1,7 @@
 // AUTO-GENERATED from sample.adl by adl2sidm -- do not edit by hand.
 
 use sidm::Engine;
+use sidm::Channel;
 use sidm::widgets::*;
 use siplot::egui::{self, Color32};
 
@@ -15,13 +16,14 @@ pub struct Screen {
     w6: SidmByteIndicator,
     w7: SidmScaleIndicator,
     w8: SidmDrawing,
-    w9: SidmDrawing,
+    gate9: Channel,
     w10: SidmDrawing,
-    w11: SidmImage,
-    w12: SidmTimePlot,
-    w13: SidmWaveformPlot,
-    w14: SidmFrame,
-    w15: SidmLabel,
+    w11: SidmDrawing,
+    w12: SidmImage,
+    w13: SidmTimePlot,
+    w14: SidmWaveformPlot,
+    w15: SidmFrame,
+    w16: SidmLabel,
 }
 
 impl Screen {
@@ -56,41 +58,45 @@ impl Screen {
             .expect("adl2sidm: connect ca://DMM1:show_box (drawing)")
             .with_fill(Color32::TRANSPARENT)
             .with_border(Color32::from_rgb(192, 192, 192), 2.0);
-        let w9 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_146", DrawingShape::Ellipse)
+        let gate9 = engine
+            .connect("calc://adl2sidm_vis_129?expr=A!=0&A=ca://DMM1:show_box&update=A")
+            .expect("adl2sidm: connect visibility gate calc://adl2sidm_vis_129?expr=A!=0&A=ca://DMM1:show_box&update=A");
+        let w10 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_146", DrawingShape::Ellipse)
             .expect("adl2sidm: connect loc://adl2sidm_shape_146 (drawing)")
             .with_fill(Color32::from_rgb(255, 0, 0));
-        let w10 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_157", DrawingShape::Arc { begin_deg: 0.0, span_deg: 360.0 })
+        let w11 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_157", DrawingShape::Arc { begin_deg: 0.0, span_deg: 360.0 })
             .expect("adl2sidm: connect loc://adl2sidm_shape_157 (arc)")
             .with_fill(Color32::from_rgb(0, 255, 0));
-        let w11 = SidmImage::new("logo.gif")
+        let w12 = SidmImage::new("logo.gif")
             .with_size(egui::Vec2::new(80.0, 24.0));
-        let mut w12 = SidmTimePlot::new(rs, 0).with_time_span(60.0);
-        w12.add_channel(&engine, "ca://DMM1:readback", Color32::from_rgb(0, 0, 255), "$(P)readback").expect("adl2sidm: add strip-chart curve $(P)readback");
-        let mut w13 = SidmWaveformPlot::new(rs, 1);
-        w13.add_xy_channel(&engine, "ca://DMM1:ywave", Some("ca://DMM1:xwave"), Color32::from_rgb(255, 0, 0), "curve 1").expect("adl2sidm: add waveform curve 1");
-        let w14 = SidmFrame::new(&engine, "loc://adl2sidm_frame_206")
+        let mut w13 = SidmTimePlot::new(rs, 0).with_time_span(60.0);
+        w13.add_channel(&engine, "ca://DMM1:readback", Color32::from_rgb(0, 0, 255), "$(P)readback").expect("adl2sidm: add strip-chart curve $(P)readback");
+        let mut w14 = SidmWaveformPlot::new(rs, 1);
+        w14.add_xy_channel(&engine, "ca://DMM1:ywave", Some("ca://DMM1:xwave"), Color32::from_rgb(255, 0, 0), "curve 1").expect("adl2sidm: add waveform curve 1");
+        let w15 = SidmFrame::new(&engine, "loc://adl2sidm_frame_206")
             .expect("adl2sidm: connect loc://adl2sidm_frame_206 (composite)");
-        let w15 = SidmLabel::new(&engine, "ca://DMM1:status")
+        let w16 = SidmLabel::new(&engine, "ca://DMM1:status")
             .expect("adl2sidm: connect ca://DMM1:status (text update)");
-        Self { _engine: engine, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15 }
+        Self { _engine: engine, w1, w2, w3, w4, w5, w6, w7, w8, gate9, w10, w11, w12, w13, w14, w15, w16 }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         // Back-to-front: decoration (Background) -> monitor (Middle) -> control
         // (Foreground), so controls are never occluded or click-stolen.
-        let Self { _engine: _, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15 } = self;
+        let Self { _engine: _, w1, w2, w3, w4, w5, w6, w7, w8, gate9, w10, w11, w12, w13, w14, w15, w16 } = self;
         place(ui, egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 200.0, 20.0, |ui| {
             ui.label(egui::RichText::new("Sample Panel").color(Color32::from_rgb(0, 0, 0)));
         });
-        // TODO: dynamic rule: vis="if not zero" chan="$(P)show_box"
-        place(ui, egui::Order::Background, egui::Id::new(8u64), 210.0, 10.0, 180.0, 120.0, |ui| {
-            let _ = w8.show(ui);
-        });
-        place(ui, egui::Order::Background, egui::Id::new(9u64), 210.0, 140.0, 60.0, 60.0, |ui| {
-            let _ = w9.show(ui);
-        });
-        place(ui, egui::Order::Background, egui::Id::new(10u64), 290.0, 140.0, 60.0, 60.0, |ui| {
+        if gate9.read(|s| s.value.as_ref().and_then(|v| v.as_f64())) != Some(0.0) {
+            place(ui, egui::Order::Background, egui::Id::new(8u64), 210.0, 10.0, 180.0, 120.0, |ui| {
+                let _ = w8.show(ui);
+            });
+        }
+        place(ui, egui::Order::Background, egui::Id::new(10u64), 210.0, 140.0, 60.0, 60.0, |ui| {
             let _ = w10.show(ui);
+        });
+        place(ui, egui::Order::Background, egui::Id::new(11u64), 290.0, 140.0, 60.0, 60.0, |ui| {
+            let _ = w11.show(ui);
         });
         place(ui, egui::Order::Middle, egui::Id::new(1u64), 10.0, 40.0, 120.0, 20.0, |ui| {
             let _ = w1.show(ui);
@@ -101,19 +107,19 @@ impl Screen {
         place(ui, egui::Order::Middle, egui::Id::new(7u64), 10.0, 200.0, 180.0, 24.0, |ui| {
             let _ = w7.show(ui);
         });
-        place(ui, egui::Order::Middle, egui::Id::new(11u64), 210.0, 210.0, 80.0, 24.0, |ui| {
-            let _ = w11.show(ui);
-        });
-        place(ui, egui::Order::Middle, egui::Id::new(12u64), 10.0, 240.0, 380.0, 110.0, |ui| {
+        place(ui, egui::Order::Middle, egui::Id::new(12u64), 210.0, 210.0, 80.0, 24.0, |ui| {
             let _ = w12.show(ui);
         });
-        place(ui, egui::Order::Middle, egui::Id::new(13u64), 10.0, 360.0, 380.0, 110.0, |ui| {
+        place(ui, egui::Order::Middle, egui::Id::new(13u64), 10.0, 240.0, 380.0, 110.0, |ui| {
             let _ = w13.show(ui);
         });
-        place(ui, egui::Order::Middle, egui::Id::new(14u64), 210.0, 210.0, 180.0, 24.0, |ui| {
-            let _ = w14.show(ui, |ui| {
-                place(ui, egui::Order::Middle, egui::Id::new(15u64), 0.0, 0.0, 180.0, 24.0, |ui| {
-                    let _ = w15.show(ui);
+        place(ui, egui::Order::Middle, egui::Id::new(14u64), 10.0, 360.0, 380.0, 110.0, |ui| {
+            let _ = w14.show(ui);
+        });
+        place(ui, egui::Order::Middle, egui::Id::new(15u64), 210.0, 210.0, 180.0, 24.0, |ui| {
+            let _ = w15.show(ui, |ui| {
+                place(ui, egui::Order::Middle, egui::Id::new(16u64), 0.0, 0.0, 180.0, 24.0, |ui| {
+                    let _ = w16.show(ui);
                 });
             });
         });

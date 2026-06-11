@@ -66,26 +66,26 @@ pub struct Generated {
 }
 
 /// One placed widget: where it goes (`z`, `geom`, a unique Area `id`) and the
-/// statement(s) that draw it inside the `place` closure. `comment` is an
-/// optional line emitted just above the placement — used for the `// TODO:
-/// dynamic rule:` note SiDM cannot yet apply.
+/// statement(s) that draw it inside the `place` closure. `gate` is an optional
+/// boolean expression: when present, the `place(...)` call is wrapped in `if
+/// <gate> { … }` so a MEDM `dynamic attribute` visibility rule can hide it.
 struct Placement {
     z: ZLayer,
     id: u64,
     geom: Geometry,
     body: String,
-    comment: Option<String>,
+    gate: Option<String>,
 }
 
 impl Placement {
-    /// A placement with no attached comment (the common case).
+    /// A placement with no visibility gate (the common case).
     fn drawn(z: ZLayer, id: u64, geom: Geometry, body: String) -> Self {
         Self {
             z,
             id,
             geom,
             body,
-            comment: None,
+            gate: None,
         }
     }
 }
@@ -108,6 +108,9 @@ struct Builder {
     /// Whether any emitted code references `Color32` / `sidm::widgets`.
     needs_color: bool,
     needs_widgets: bool,
+    /// Whether any emitted code references `sidm::Channel` (a dynamic visibility
+    /// gate field).
+    needs_channel: bool,
     /// Canonical paths of the `.adl` files currently being inlined (embedded
     /// display recursion), newest last. Guards against include cycles; its length
     /// is the current nesting depth (capped at [`MAX_EMBED_DEPTH`]).
@@ -189,49 +192,153 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         )),
     }
 
-    // A MEDM `dynamic attribute` visibility/CALC rule has no SiDM rules engine to
-    // apply it, so annotate every placement this widget produced with a
-    // `// TODO: dynamic rule:` note (and warn) rather than dropping it silently.
-    // A composite's children are already emitted (and annotated) above, so by
-    // here `placements[start..]` is just this widget's own placement(s).
-    if let Some(comment) = dynamic_rule_comment(widget) {
-        for placement in &mut b.placements[start..] {
-            placement.comment = Some(comment.clone());
-        }
-        b.warnings.push(format!(
-            "line {}: {:?} -> {comment} (no rules engine); emitted as a comment",
-            widget.line, widget.symbol
-        ));
-    }
+    // A MEDM `dynamic attribute` visibility rule gates every placement this widget
+    // produced: build a `calc://` channel that evaluates the rule and wrap the
+    // `place(...)` call in `if <gate non-zero> { … }`. A composite's children are
+    // already drained into its frame placement above, so by here `placements[start..]`
+    // is just this widget's own placement(s) — gating them hides the whole group.
+    apply_dynamic_visibility(b, widget, options, start);
 }
 
-/// A `// TODO: dynamic rule:` note documenting a MEDM `dynamic attribute`
-/// visibility/CALC rule SiDM cannot yet apply, or `None` when the widget has no
-/// such rule. A rule exists when `vis` is conditional (anything but `"static"`)
-/// or a `calc` expression is present; the MEDM fields (`vis`, `calc`, and the
-/// A–D channels) are quoted verbatim so a human can port them.
-fn dynamic_rule_comment(widget: &MedmWidget) -> Option<String> {
+/// MEDM `dynamic attribute` channel keys → `calc://` variable names (the bound
+/// channels A–D).
+const VIS_CHANNEL_KEYS: [(&str, &str); 4] = [
+    ("chan", "A"),
+    ("chanB", "B"),
+    ("chanC", "C"),
+    ("chanD", "D"),
+];
+
+/// Wire a MEDM `dynamic attribute` visibility rule for the placements in
+/// `[start..]`: emit a `calc://` gate channel (field + ctor) and tag each of this
+/// widget's placements with the boolean that hides it when the rule is false. A
+/// widget with no rule (or whose expression the `calc://` address cannot carry)
+/// is left ungated.
+fn apply_dynamic_visibility(b: &mut Builder, widget: &MedmWidget, options: &Options, start: usize) {
+    let Some(gate_addr) = visibility_gate_address(b, widget, options) else {
+        return;
+    };
+    let id = b.index();
+    let field = format!("gate{id}");
+    b.needs_channel = true;
+    b.ctors.push(format!(
+        "let {field} = engine\n            .connect({})\n            .expect({});",
+        rust_str(&gate_addr),
+        rust_str(&format!("adl2sidm: connect visibility gate {gate_addr}"))
+    ));
+    b.fields.push((field.clone(), "Channel".to_string()));
+    // Read the gate's scalar each frame: hidden only when it is exactly zero, so a
+    // control stays visible while the gate has no value yet (the calc:// channel
+    // publishes only once all its children connect) and whenever it is non-zero.
+    let cond = format!("{field}.read(|s| s.value.as_ref().and_then(|v| v.as_f64())) != Some(0.0)");
+    for placement in &mut b.placements[start..] {
+        placement.gate = Some(cond.clone());
+    }
+    b.warnings.push(format!(
+        "line {}: dynamic visibility wired via {gate_addr}",
+        widget.line
+    ));
+}
+
+/// The `calc://` gate address for a widget's `dynamic attribute` visibility rule,
+/// or `None` when it has no rule (`vis="static"` or no `vis`/`calc`), no channel
+/// to evaluate, or an expression the `calc://` query cannot carry. The channels
+/// A–D bind `chan`/`chanB`/`chanC`/`chanD`; the expression combines the `vis`
+/// mode with the optional `calc` field and is translated MEDM-CALC → `evalexpr`.
+fn visibility_gate_address(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    options: &Options,
+) -> Option<String> {
     let da = widget.attributes.get("dynamic attribute")?;
-    let vis = da.get("vis").map(String::as_str);
-    let calc = da.get("calc");
-    let has_rule = calc.is_some() || matches!(vis, Some(v) if v != "static");
-    if !has_rule {
+    let vis = da.get("vis").map(String::as_str).unwrap_or("if not zero");
+    let calc = da.get("calc").map(String::as_str).filter(|c| !c.is_empty());
+    if vis == "static" {
+        return None; // always visible — no gate
+    }
+
+    let mut vars = Vec::new();
+    for (key, name) in VIS_CHANNEL_KEYS {
+        if let Some(chan) = da.get(key).filter(|c| !c.is_empty()) {
+            vars.push((name, apply_protocol(chan, options)));
+        }
+    }
+    if vars.is_empty() {
+        return None; // a visibility rule with no channel cannot be evaluated
+    }
+
+    let expr = translate_calc_to_evalexpr(&medm_visibility_expr(vis, calc));
+    if expr.contains('&') {
+        // The `calc://` query splits on `&`, so an expression with logical/bitwise
+        // AND cannot be transported. Leave the widget always-visible and say so
+        // rather than emit a silently-wrong gate.
+        b.warnings.push(format!(
+            "line {}: dynamic visibility expr {expr:?} contains '&' (logical/bitwise \
+             AND) which a calc:// address cannot carry; left always-visible",
+            widget.line
+        ));
         return None;
     }
 
-    let mut parts = Vec::new();
-    if let Some(v) = vis {
-        parts.push(format!("vis={v:?}"));
+    let mut addr = format!("calc://adl2sidm_vis_{}?expr={expr}", widget.line);
+    let mut update = Vec::new();
+    for (name, child) in &vars {
+        let _ = write!(addr, "&{name}={child}");
+        update.push(*name);
     }
-    if let Some(c) = calc {
-        parts.push(format!("calc={c:?}"));
+    let _ = write!(addr, "&update={}", update.join(","));
+    Some(addr)
+}
+
+/// The MEDM CALC expression for a visibility rule, combining the `vis` mode with
+/// the optional `calc` field — a port of adl2pydm's
+/// `processDynamicAttributeAsRules`. `vis="calc"` uses the `calc` field verbatim
+/// (default `A`); `if zero` / `if not zero` test the calc result (default channel
+/// `A`) against zero with MEDM's `=` / `#` operators.
+fn medm_visibility_expr(vis: &str, calc: Option<&str>) -> String {
+    match (vis, calc) {
+        ("calc", Some(expr)) => expr.to_string(),
+        ("calc", None) => "A".to_string(),
+        ("if zero", Some(expr)) => format!("({expr})=0"),
+        ("if zero", None) => "A=0".to_string(),
+        // "if not zero" (the MEDM default) and any unknown mode.
+        (_, Some(expr)) => format!("({expr})#0"),
+        (_, None) => "A#0".to_string(),
     }
-    for key in ["chan", "chanB", "chanC", "chanD"] {
-        if let Some(ch) = da.get(key).filter(|c| !c.is_empty()) {
-            parts.push(format!("{key}={ch:?}"));
+}
+
+/// Translate a MEDM CALC expression to `evalexpr` syntax. Only two operators
+/// differ: `#` (not-equal) → `!=`, and `=` (equal) → `==`. MEDM's `&&`, `||`,
+/// `!`, the relational operators, and arithmetic already match `evalexpr`, and
+/// the channel refs `A`–`D` are bound directly as `evalexpr` variables.
+fn translate_calc_to_evalexpr(medm: &str) -> String {
+    replace_standalone_eq(&medm.replace('#', "!="))
+}
+
+/// Replace MEDM's `=` (equality) with `evalexpr`'s `==`, leaving the compound
+/// operators `>=`, `<=`, `!=`, `==` untouched.
+fn replace_standalone_eq(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '=' {
+            if chars.get(i + 1) == Some(&'=') {
+                out.push_str("=="); // already `==` — copy whole, skip the pair
+                i += 2;
+                continue;
+            }
+            if matches!(out.chars().last(), Some('>' | '<' | '!')) {
+                out.push('='); // part of `>=`, `<=`, `!=`
+            } else {
+                out.push_str("==");
+            }
+        } else {
+            out.push(chars[i]);
         }
+        i += 1;
     }
-    Some(format!("TODO: dynamic rule: {}", parts.join(" ")))
+    out
 }
 
 /// `text` — a static label (a fixed string, no channel). Drawn with a plain
@@ -1803,6 +1910,9 @@ fn assemble(b: &Builder, screen: &MedmScreen) -> String {
     // Imports: egis/Engine/siplot are always used; Color32 and the widget glob
     // only when something references them (keeps the output warning-clean).
     let _ = writeln!(s, "use sidm::Engine;");
+    if b.needs_channel {
+        let _ = writeln!(s, "use sidm::Channel;");
+    }
     if b.needs_widgets {
         let _ = writeln!(s, "use sidm::widgets::*;");
     }
@@ -1896,8 +2006,8 @@ fn emit_ui(s: &mut String, b: &Builder) {
 /// Emit one `place(...)` call at `indent`, offsetting the geometry by `(dx, dy)`
 /// — `0, 0` at the top level; a composite's origin for its children so they land
 /// inside the frame's interior coordinates. The `body` may be several lines (a
-/// container's nested draws), each re-indented inside the closure. An attached
-/// `comment` is written just above the `place(...)` call.
+/// container's nested draws), each re-indented inside the closure. A `gate`
+/// wraps the whole call in `if <gate> { … }` for a dynamic visibility rule.
 fn write_placement(s: &mut String, p: &Placement, dx: i32, dy: i32, indent: &str) {
     let Geometry {
         x,
@@ -1905,12 +2015,18 @@ fn write_placement(s: &mut String, p: &Placement, dx: i32, dy: i32, indent: &str
         width,
         height,
     } = p.geom;
-    if let Some(comment) = &p.comment {
-        let _ = writeln!(s, "{indent}// {comment}");
-    }
+    // A visibility gate wraps the placement in an `if`; the `place(...)` call then
+    // sits one indent level deeper.
+    let inner = match &p.gate {
+        Some(cond) => {
+            let _ = writeln!(s, "{indent}if {cond} {{");
+            format!("{indent}    ")
+        }
+        None => indent.to_string(),
+    };
     let _ = writeln!(
         s,
-        "{indent}place(ui, {}, egui::Id::new({}u64), {}.0, {}.0, {}.0, {}.0, |ui| {{",
+        "{inner}place(ui, {}, egui::Id::new({}u64), {}.0, {}.0, {}.0, {}.0, |ui| {{",
         p.z.order_ident(),
         p.id,
         x - dx,
@@ -1919,9 +2035,12 @@ fn write_placement(s: &mut String, p: &Placement, dx: i32, dy: i32, indent: &str
         height
     );
     for line in p.body.lines() {
-        let _ = writeln!(s, "{indent}    {line}");
+        let _ = writeln!(s, "{inner}    {line}");
     }
-    let _ = writeln!(s, "{indent}}});");
+    let _ = writeln!(s, "{inner}}});");
+    if p.gate.is_some() {
+        let _ = writeln!(s, "{indent}}}");
+    }
 }
 
 /// Emit the shared absolute-placement helper.
@@ -3603,19 +3722,26 @@ composite {
     }
 
     #[test]
-    fn dynamic_rule_emits_a_todo_comment_above_the_placement() {
+    fn dynamic_calc_rule_wraps_the_placement_in_a_visibility_gate() {
         let g = calc();
-        let comment = "// TODO: dynamic rule: vis=\"calc\" calc=\"A=3\" chan=\"DEV:sample\"";
-        let at = g.source.find(comment).expect("rule comment");
-        // The comment sits immediately above the rectangle's place() call.
-        let after = &g.source[at..];
-        let nl = after.find('\n').unwrap();
+        // vis="calc" calc="A=3" -> evalexpr "A==3", channel A bound to the rule's
+        // chan, carried in a calc:// gate address.
         assert!(
-            after[nl..].trim_start().starts_with("place(ui,"),
-            "comment must directly precede the placement:\n{}",
+            g.source.contains("expr=A==3&A=ca://DEV:sample&update=A"),
+            "gate calc:// address missing or wrong:\n{}",
             g.source
         );
-        // The widget itself still emits — the rule is documented, not a drop.
+        // A gate Channel field is connected and the rectangle's place() is wrapped
+        // in the visibility conditional.
+        assert!(g.source.contains(": Channel,"), "{}", g.source);
+        assert!(g.source.contains("use sidm::Channel;"), "{}", g.source);
+        let gate = g.source.find("if gate").expect("visibility conditional");
+        assert!(
+            g.source[gate..].contains("place(ui,"),
+            "gate must wrap a place() call:\n{}",
+            g.source
+        );
+        // The rectangle itself still emits (gated, not dropped).
         assert!(
             g.source.contains(
                 "SidmDrawing::new(&engine, \"ca://DEV:sample\", DrawingShape::Rectangle)"
@@ -3626,22 +3752,21 @@ composite {
         assert!(
             g.warnings
                 .iter()
-                .any(|w| w.contains("dynamic rule") && w.contains("no rules engine")),
+                .any(|w| w.contains("dynamic visibility wired")),
             "{:?}",
             g.warnings
         );
     }
 
     #[test]
-    fn static_visibility_is_not_a_rule_so_emits_no_comment() {
+    fn static_visibility_is_not_a_rule_so_emits_no_gate() {
         let g = calc();
-        // The oval's dynamic attribute is vis="static" with only a channel —
-        // no conditional rule — so it gets no TODO comment, though the drawing
-        // still binds that channel.
+        // The oval's dynamic attribute is vis="static" with only a channel — no
+        // conditional rule — so no gate binds DEV:always, though the drawing still
+        // uses that channel.
         assert!(
-            !g.source.contains("chan=\\\"DEV:always\\\"")
-                && !g.source.contains("dynamic rule: vis=\"static\""),
-            "static visibility must not produce a rule comment:\n{}",
+            !g.source.contains("A=ca://DEV:always"),
+            "static visibility must not bind a gate channel:\n{}",
             g.source
         );
         assert!(
@@ -3653,26 +3778,91 @@ composite {
     }
 
     #[test]
-    fn composite_dynamic_rule_annotates_the_frame_not_its_child() {
+    fn composite_dynamic_rule_gates_the_frame_not_its_child() {
         let g = calc();
-        let comment = "// TODO: dynamic rule: vis=\"if zero\" chan=\"DEV:hide\"";
-        let at = g.source.find(comment).expect("composite rule comment");
-        // The comment precedes the frame's Middle placement, and the only such
-        // rule comment appears once (the child text entry has no rule).
-        let after = &g.source[at..];
-        let nl = after.find('\n').unwrap();
+        // vis="if zero" with no calc -> "A == 0", channel A = the composite's chan.
         assert!(
-            after[nl..]
-                .trim_start()
-                .starts_with("place(ui, egui::Order::Middle"),
-            "composite rule must annotate the frame placement:\n{}",
+            g.source.contains("expr=A==0&A=ca://DEV:hide&update=A"),
+            "composite gate address missing or wrong:\n{}",
             g.source
         );
-        assert_eq!(
-            g.source.matches("DEV:hide").count(),
-            1,
-            "rule must annotate only the frame, not be duplicated onto the child:\n{}",
+        // DEV:hide is the rule's channel, bound ONLY inside the gate's calc://
+        // address (`A=ca://DEV:hide`). It must never appear as a widget channel —
+        // neither the composite frame (which uses a synthetic `loc://`) nor the
+        // inner child — so the rule gates the frame without leaking onto it.
+        assert!(
+            !g.source.contains("&engine, \"ca://DEV:hide\""),
+            "rule channel leaked onto a widget instead of gating the frame:\n{}",
             g.source
         );
+        // The gated place() is the frame's Middle placement.
+        let mid = g
+            .source
+            .find("place(ui, egui::Order::Middle")
+            .expect("frame place");
+        assert!(
+            g.source[mid.saturating_sub(200)..mid].contains("if gate"),
+            "composite gate must wrap the frame placement:\n{}",
+            g.source
+        );
+    }
+
+    #[test]
+    fn medm_calc_translates_to_evalexpr_operators() {
+        // `#` -> `!=`, standalone `=` -> `==`; the compound operators are kept.
+        assert_eq!(translate_calc_to_evalexpr("A=3"), "A==3");
+        assert_eq!(translate_calc_to_evalexpr("A#0"), "A!=0");
+        assert_eq!(translate_calc_to_evalexpr("A>=2"), "A>=2");
+        assert_eq!(translate_calc_to_evalexpr("A<=2"), "A<=2");
+        assert_eq!(translate_calc_to_evalexpr("A==3"), "A==3");
+        assert_eq!(translate_calc_to_evalexpr("A>1||B<2"), "A>1||B<2");
+    }
+
+    #[test]
+    fn medm_visibility_expr_combines_vis_mode_and_calc() {
+        assert_eq!(medm_visibility_expr("if not zero", None), "A#0");
+        assert_eq!(medm_visibility_expr("if zero", None), "A=0");
+        assert_eq!(medm_visibility_expr("calc", Some("A>5")), "A>5");
+        assert_eq!(medm_visibility_expr("if not zero", Some("A+B")), "(A+B)#0");
+        assert_eq!(medm_visibility_expr("if zero", Some("A+B")), "(A+B)=0");
+    }
+
+    #[test]
+    fn dynamic_visibility_with_logical_and_is_left_visible_with_a_warning() {
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+	}
+}
+rectangle {
+	object {
+		x=0
+		y=0
+		width=20
+		height=20
+	}
+	"basic attribute" {
+		clr=1
+	}
+	"dynamic attribute" {
+		vis="calc"
+		calc="A&&B"
+		chan="X"
+		chanB="Y"
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        // `A&&B` has a `&`, which a calc:// query splits on -> no gate, warned, and
+        // the rectangle is left always-visible (still emitted).
+        assert!(!g.source.contains("calc://adl2sidm_vis_"), "{}", g.source);
+        assert!(!g.source.contains("if gate"), "{}", g.source);
+        assert!(
+            g.warnings.iter().any(|w| w.contains("contains '&'")),
+            "{:?}",
+            g.warnings
+        );
+        assert!(g.source.contains("DrawingShape::Rectangle"), "{}", g.source);
     }
 }
