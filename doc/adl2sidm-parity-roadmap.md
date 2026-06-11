@@ -92,7 +92,8 @@ expression is present; `vis="static"` with only a channel is not a rule.
 
 ## Wave / commit log
 
-- ⬜ A1 — workspace member `adl2sidm` scaffold + this roadmap skeleton.
+- ✅ A1 — workspace member `adl2sidm` scaffold (binary + library) + this
+  roadmap skeleton; root `Cargo.toml` `[workspace] members` += `adl2sidm`.
 - ✅ A2 — `adl_parser.rs` (block parser + widget-tree IR). Faithful port of
   `adl_parser.py`: line-oriented block/assignment scanning, colour-table
   resolution (`colors` hex list or `dl_color` blocks), geometry, `control`/
