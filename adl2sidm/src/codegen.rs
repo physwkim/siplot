@@ -673,6 +673,9 @@ fn emit_byte(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
         builders.push(format!(".with_off_color({})", color_expr(off)));
         b.needs_color = true;
     }
+    // `clrmod="alarm"` recolours lit bits by severity (static on/off colours stay
+    // the `NoAlarm` fallback).
+    builders.extend(alarm_content_builder(widget));
     push_channel_widget(
         b,
         z,
@@ -707,14 +710,14 @@ fn emit_scale_indicator(
         builders.push(".with_bar_indicator(true)".to_string());
     }
     // MEDM's foreground `clr` colours the bar fill / pointer line; sidm's scale
-    // indicator otherwise uses its own default blue. Reproduce the MEDM colour.
-    // `clrmod="alarm"` would track severity instead, but `SidmScaleIndicator`
-    // exposes no public alarm-sensitivity builder, so only the static colour is
-    // carried (the severity override is a sidm-side gap, not done here).
+    // indicator otherwise uses its own default blue. Reproduce the MEDM colour as
+    // the static bar colour; `clrmod="alarm"` additionally tracks severity (the
+    // alarm builder below), and the static colour is the `NoAlarm` fallback.
     if let Some(c) = widget.color {
         builders.push(format!(".with_bar_color({})", color_expr(c)));
         b.needs_color = true;
     }
+    builders.extend(alarm_content_builder(widget));
     if let Some((lo, hi)) = user_defined_limits(widget) {
         builders.push(format!(
             ".with_limits({}, {})",
@@ -1967,8 +1970,8 @@ fn string_format_builder(widget: &MedmWidget, addr: &str) -> Option<String> {
 /// static colour and emit nothing. `adl2pydm` leaves this to PyDM's widget
 /// defaults; sidm defaults `alarm_sensitive_content` off, so reproducing MEDM's
 /// alarm colouring needs the builder set explicitly. Only callers whose sidm
-/// widget actually exposes `with_alarm_sensitive_content` (currently `SidmLabel`
-/// and `SidmDrawing`) may use this.
+/// widget actually exposes `with_alarm_sensitive_content` (`SidmLabel`,
+/// `SidmDrawing`, `SidmScaleIndicator`, `SidmByteIndicator`) may use this.
 fn alarm_content_builder(widget: &MedmWidget) -> Option<String> {
     (widget.assignments.get("clrmod").map(String::as_str) == Some("alarm"))
         .then(|| ".with_alarm_sensitive_content(true)".to_string())
@@ -2787,6 +2790,65 @@ rectangle {
         // Both PVs are still emitted (the static one just keeps its default).
         assert!(g.source.contains("ca://$(P)alarmPV"));
         assert!(g.source.contains("ca://$(P)staticPV"));
+    }
+
+    #[test]
+    fn clrmod_alarm_makes_bar_and_byte_alarm_sensitive() {
+        // clrmod="alarm" on a bar and a byte must set alarm-sensitivity on their
+        // sidm widgets (severity recolours the bar/lit bits); the static clr/bclr
+        // stay as the NoAlarm fallback.
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+		00ff00,
+	}
+}
+bar {
+	object {
+		x=0
+		y=0
+		width=20
+		height=100
+	}
+	monitor {
+		chan="BAR"
+		clr=1
+	}
+	clrmod="alarm"
+}
+byte {
+	object {
+		x=30
+		y=0
+		width=120
+		height=20
+	}
+	monitor {
+		chan="BYT"
+		clr=1
+	}
+	clrmod="alarm"
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        // Both widgets get the alarm builder; the static colours are still emitted.
+        assert_eq!(
+            g.source
+                .matches(".with_alarm_sensitive_content(true)")
+                .count(),
+            2,
+            "both the bar and the byte should be alarm-sensitive:\n{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains(".with_bar_color(Color32::from_rgb(0, 255, 0))")
+        );
+        assert!(
+            g.source
+                .contains(".with_on_color(Color32::from_rgb(0, 255, 0))")
+        );
     }
 
     #[test]

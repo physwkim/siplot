@@ -130,6 +130,14 @@ impl SidmScaleIndicator {
         self
     }
 
+    /// Recolour the bar/pointer by alarm severity (PyDM `alarmSensitiveContent`,
+    /// builder style). When on, [`Self::show`] tints by severity and falls back
+    /// to [`Self::with_bar_color`] for `NoAlarm`.
+    pub fn with_alarm_sensitive_content(mut self, on: bool) -> Self {
+        self.base.alarm_sensitive_content = on;
+        self
+    }
+
     /// Set the scale size in points (builder style).
     pub fn with_size(mut self, size: Vec2) -> Self {
         self.size = size;

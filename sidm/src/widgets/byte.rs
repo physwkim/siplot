@@ -14,7 +14,7 @@ use siplot::egui::{self, Color32};
 
 use crate::channel::{AlarmSeverity, Channel, ChannelState, PvValue};
 use crate::engine::{Engine, EngineError};
-use crate::widgets::base::ChannelBase;
+use crate::widgets::base::{ChannelBase, severity_color};
 
 /// Layout direction for the row/column of bit indicators.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -156,6 +156,14 @@ impl SidmByteIndicator {
         self
     }
 
+    /// Recolour lit bits by alarm severity (PyDM `alarmSensitiveContent`, builder
+    /// style). When on, an on bit follows the channel severity (falling back to
+    /// [`Self::with_on_color`] for `NoAlarm`); off bits keep their colour.
+    pub fn with_alarm_sensitive_content(mut self, on: bool) -> Self {
+        self.base.alarm_sensitive_content = on;
+        self
+    }
+
     /// The underlying channel.
     pub fn channel(&self) -> &Channel {
         self.base.channel()
@@ -170,14 +178,20 @@ impl SidmByteIndicator {
 
     /// Colour for one bit given the channel state (PyDM `update_indicators`):
     /// disconnected → disconnected colour, `INVALID` alarm → invalid colour,
-    /// otherwise on/off colour.
+    /// otherwise on/off colour. When alarm-sensitive content is on, a lit bit is
+    /// recoloured by the channel severity (MEDM `clrmod="alarm"`), falling back to
+    /// the static on colour for `NoAlarm`.
     pub fn bit_color(&self, state: &ChannelState, bit_on: bool) -> Color32 {
         if !state.connected {
             self.disconnected_color
         } else if state.severity == AlarmSeverity::Invalid {
             self.invalid_color
         } else if bit_on {
-            self.on_color
+            if self.base.alarm_sensitive_content {
+                severity_color(state.effective_severity()).unwrap_or(self.on_color)
+            } else {
+                self.on_color
+            }
         } else {
             self.off_color
         }
@@ -318,6 +332,24 @@ mod tests {
         let s = state(false, AlarmSeverity::Invalid);
         assert_eq!(b.bit_color(&s, true), DISCONNECTED_COLOR);
         assert_eq!(b.bit_color(&s, false), DISCONNECTED_COLOR);
+    }
+
+    #[test]
+    fn alarm_sensitive_content_recolours_lit_bits_by_severity() {
+        let b = indicator().with_alarm_sensitive_content(true);
+        // A lit bit follows the channel severity; an unlit bit keeps its colour.
+        let minor = state(true, AlarmSeverity::Minor);
+        assert_eq!(
+            b.bit_color(&minor, true),
+            severity_color(AlarmSeverity::Minor).unwrap()
+        );
+        assert_eq!(b.bit_color(&minor, false), OFF_COLOR);
+        // NoAlarm has no severity colour, so a lit bit falls back to the on colour.
+        let ok = state(true, AlarmSeverity::NoAlarm);
+        assert_eq!(b.bit_color(&ok, true), ON_COLOR);
+        // Without alarm sensitivity, a Minor alarm leaves the lit bit at on colour.
+        let plain = indicator();
+        assert_eq!(plain.bit_color(&minor, true), ON_COLOR);
     }
 
     #[test]
