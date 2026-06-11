@@ -95,7 +95,13 @@ not silently dropped (SiDM has no rules engine yet).
   as in `parseColorAssignments`), `limits` splicing, `points`, recursive
   `composite` children, and indexed `trace`/`pen`/`display`/`command` records.
   6 unit tests; sanity-checked against all 60 real adl2pydm fixtures (no panic).
-- ⬜ A3 — `symbols.rs` (MEDM → SiDM map + category + z-layer table).
+- ✅ A3 — `symbols.rs` (MEDM → SiDM map + category + z-layer table). `lookup`
+  maps every MEDM widget to its SiDM target + a draw `Category`
+  (Decoration/Monitor/Control/Container); `Category::z_layer` is the single
+  owner of the back-to-front ordering, `has_channel` tells the emitter whether
+  to wire a PV. `related display`/`shell command` are typed Control (front) even
+  though adl2pydm types them `static`, so a decoration cannot occlude them.
+  6 tests (full-coverage of `ADL_WIDGET_SYMBOLS`, z-layer ordering, stub flags).
 - ⬜ B4 — `codegen.rs` scaffold + simplest widgets (text / text update / text entry).
 - ⬜ B5 — emitter batch: controls (message button, menu, choice button, valuator, wheel switch, byte).
 - ⬜ B6 — emitter batch: indicators + shapes (bar/indicator/meter, composite, rectangle/oval).

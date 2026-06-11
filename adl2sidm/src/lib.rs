@@ -26,3 +26,4 @@
 //! [`sidm`]: https://docs.rs/sidm
 
 pub mod adl_parser;
+pub mod symbols;
