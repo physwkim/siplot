@@ -105,7 +105,16 @@ impl SidmSlider {
             .framed(ui, &state, true, |ui| match range {
                 Some((lo, hi)) => {
                     let step = self.step_size((lo, hi));
+                    // Clamp/step-normalize EDITS only. The default
+                    // `SliderClamping::Always` re-normalizes the incoming
+                    // value every frame and marks the response changed when
+                    // that alters it, which turned every off-grid monitor
+                    // update into a write-back put (an external 13.6 on a
+                    // 5..20 range came back as 13.55 one frame later). PyDM
+                    // writes only from user interaction
+                    // (`internal_slider_moved` → `send_value`).
                     let mut slider = egui::Slider::new(&mut value, lo..=hi)
+                        .clamping(egui::SliderClamping::Edits)
                         .max_decimals(decimals.max(0) as usize);
                     if step > 0.0 {
                         slider = slider.step_by(step);
@@ -180,6 +189,53 @@ mod tests {
             ..ChannelState::default()
         };
         assert_eq!(control_range(&st, None), None);
+    }
+
+    #[test]
+    fn external_off_grid_update_does_not_echo_a_put() {
+        // PyDM parity: `send_value` fires only from user interaction
+        // (`internal_slider_moved`); a monitor update must never write
+        // back. With egui's default `SliderClamping::Always` the slider
+        // re-normalized the incoming value every frame (clamp + step
+        // rounding + max_decimals) and reported the result as changed, so
+        // an external write landing off the step grid (13.6 on a 5..20
+        // range = 0.15 steps) was echoed back to the channel as 13.55 one
+        // frame later — retargeting the IOC that wrote it.
+        let (engine, slider) = slider("loc://slider_echo");
+        let slider = slider.with_limits(5.0, 20.0).with_precision(3);
+        let seed = engine.connect("loc://slider_echo").expect("seed handle");
+        assert!(
+            wait_for(|| slider.channel().is_connected(), Duration::from_secs(2)),
+            "slider channel never connected"
+        );
+        seed.put(PvValue::Float(13.6));
+        assert!(
+            wait_for(
+                || slider
+                    .channel()
+                    .read(|s| s.value == Some(PvValue::Float(13.6))),
+                Duration::from_secs(2)
+            ),
+            "channel never saw the external 13.6"
+        );
+
+        let mut slider = slider;
+        let mut harness = egui_kittest::Harness::new_ui(move |ui| {
+            slider.show(ui);
+        });
+        harness.step();
+        // Give an in-flight echo put time to land before asserting.
+        std::thread::sleep(Duration::from_millis(100));
+        harness.step();
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Rendering without interaction must not write anything: the
+        // channel still holds the un-snapped external value.
+        assert_eq!(
+            seed.read(|s| s.value.clone()),
+            Some(PvValue::Float(13.6)),
+            "slider echoed a write-back put on a pure monitor update"
+        );
     }
 
     #[test]
