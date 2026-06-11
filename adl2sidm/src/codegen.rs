@@ -205,7 +205,7 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         "polyline" => emit_polyshape(b, widget, options, z, false),
         "image" => emit_image(b, widget, z),
         "embedded display" => emit_embedded_display(b, widget, options, z),
-        "related display" => emit_related_display(b, widget, z),
+        "related display" => emit_related_display(b, widget, options, z),
         "shell command" => emit_shell_command(b, widget, z),
         // Unreachable: every `ADL_WIDGET_SYMBOLS` entry has an arm above. Kept as
         // a defensive backstop so a future symbol can't be silently dropped.
@@ -1602,12 +1602,12 @@ fn embed_placeholder(b: &mut Builder, widget: &MedmWidget, z: ZLayer, file: &str
 /// placeholder. One target becomes a plain button; several become an
 /// `egui::menu_button` listing each. Channel-less and Engine-less, so it is
 /// emitted inline at the Foreground z-layer (never occluded).
-fn emit_related_display(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
+fn emit_related_display(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer) {
     let Some(geom) = widget.geometry else {
         skip_no_geometry(b, widget);
         return;
     };
-    let entries = related_display_entries(b, widget);
+    let entries = related_display_entries(b, widget, options);
     if entries.is_empty() {
         emit_marker_placeholder(
             b,
@@ -1653,9 +1653,16 @@ fn emit_related_display(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
 
 /// The `(caption, report)` pairs for a related-display widget: each `display[N]`'s
 /// button caption (its `label`, else its target `name`) and the message logged on
-/// click — the target file plus any macro `args`. A target with no `name` is
-/// dropped with a warning (nothing to open).
-fn related_display_entries(b: &mut Builder, widget: &MedmWidget) -> Vec<(String, String)> {
+/// click — the target file plus any macro `args`. The target `name` and `args`
+/// have the parent `-m` macros substituted, consistent with how channel addresses
+/// resolve macros at convert time (sidm has no runtime macro engine), so the
+/// logged target shows resolved values rather than raw `$(P)` placeholders. A
+/// target with no `name` is dropped with a warning (nothing to open).
+fn related_display_entries(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    options: &Options,
+) -> Vec<(String, String)> {
     let displays = widget
         .records
         .get("displays")
@@ -1663,14 +1670,18 @@ fn related_display_entries(b: &mut Builder, widget: &MedmWidget) -> Vec<(String,
         .unwrap_or(&[]);
     let mut entries = Vec::new();
     for spec in displays {
-        let Some(name) = spec.get("name").filter(|s| !s.is_empty()) else {
+        let Some(raw_name) = spec.get("name").filter(|s| !s.is_empty()) else {
             b.warnings.push(format!(
                 "line {}: related display entry has no name; skipped",
                 widget.line
             ));
             continue;
         };
-        let args = spec.get("args").map(String::as_str).unwrap_or("");
+        let name = substitute_macros(raw_name, &options.macros);
+        let args = substitute_macros(
+            spec.get("args").map(String::as_str).unwrap_or(""),
+            &options.macros,
+        );
         let report = if args.is_empty() {
             format!("related display: open {name}")
         } else {
@@ -4342,6 +4353,48 @@ composite {
             g.source
         );
         assert!(g.source.contains("ui.close();"), "{}", g.source);
+    }
+
+    #[test]
+    fn related_display_target_substitutes_parent_macros() {
+        // The logged target name and macro args resolve the parent `-m` macros at
+        // convert time (consistent with channel-address resolution; sidm has no
+        // runtime macro engine), so the message shows values, not `$(P)`/`$(R)`.
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+	}
+}
+"related display" {
+	object {
+		x=0
+		y=0
+		width=120
+		height=20
+	}
+	display[0] {
+		label="Detail"
+		name="$(P)detail.adl"
+		args="R=$(R)"
+	}
+}
+"#;
+        let options = Options {
+            macros: vec![
+                ("P".to_string(), "13SIM1:".to_string()),
+                ("R".to_string(), "cam1:".to_string()),
+            ],
+            ..Options::default()
+        };
+        let g = generate(&parse(adl), &options);
+        assert!(
+            g.source.contains(
+                "eprintln!(\"related display: open 13SIM1:detail.adl (macros: R=cam1:)\");"
+            ),
+            "related-display target macros not substituted:\n{}",
+            g.source
+        );
     }
 
     // A MEDM `dynamic attribute` CALC/visibility rule on otherwise-supported
