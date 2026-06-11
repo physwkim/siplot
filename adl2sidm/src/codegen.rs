@@ -141,8 +141,37 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         "composite" => emit_composite(b, widget, options, z),
         "strip chart" => emit_strip_chart(b, widget, options, z),
         "cartesian plot" => emit_cartesian_plot(b, widget, options, z),
+        "arc" => emit_shape_stub(b, widget, z, "arc", "SiDM has no DrawingShape::Arc"),
+        "polygon" => emit_shape_stub(b, widget, z, "polygon", "SiDM has no DrawingShape::Polygon"),
+        "polyline" => emit_shape_stub(
+            b,
+            widget,
+            z,
+            "polyline",
+            "SiDM has no DrawingShape::Polyline",
+        ),
+        "image" => emit_image_stub(b, widget, z),
+        "embedded display" => emit_embedded_stub(b, widget),
+        "related display" => emit_deferred_button(
+            b,
+            widget,
+            z,
+            "displays",
+            "Related Display",
+            "navigation deferred",
+        ),
+        "shell command" => emit_deferred_button(
+            b,
+            widget,
+            z,
+            "commands",
+            "Shell Command",
+            "shell execution deferred",
+        ),
+        // Unreachable: every `ADL_WIDGET_SYMBOLS` entry has an arm above. Kept as
+        // a defensive backstop so a future symbol can't be silently dropped.
         _ => b.warnings.push(format!(
-            "line {}: {:?} -> {} not emitted yet (skipped)",
+            "line {}: {:?} -> {} has no emitter (skipped)",
             widget.line, widget.symbol, map.sidm_widget
         )),
     }
@@ -836,6 +865,140 @@ fn push_plot_widget(
     });
 }
 
+/// A static-shape widget SiDM cannot draw (`arc`/`polygon`/`polyline` — no
+/// matching `DrawingShape`): emit a labelled placeholder marker at the MEDM
+/// geometry so the layout still shows the widget's footprint, plus a warning.
+fn emit_shape_stub(b: &mut Builder, widget: &MedmWidget, z: ZLayer, name: &str, why: &str) {
+    emit_marker_placeholder(
+        b,
+        widget,
+        z,
+        &format!("{name} unsupported"),
+        &format!("{name}: {why}"),
+    );
+}
+
+/// `image` — a MEDM static GIF/TIFF *file* display. SiDM's only image widget
+/// (`SidmImageView`) is a live array-data viewer needing a channel a file image
+/// has none of, so emit a labelled placeholder naming the file plus a warning
+/// rather than fabricating a channel.
+fn emit_image_stub(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
+    let file = widget
+        .assignments
+        .get("image name")
+        .map(String::as_str)
+        .unwrap_or("");
+    let label = if file.is_empty() {
+        "image unsupported".to_string()
+    } else {
+        format!("image: {file}")
+    };
+    emit_marker_placeholder(
+        b,
+        widget,
+        z,
+        &label,
+        &format!("image {file:?} is a static file; SiDM has no file-image widget"),
+    );
+}
+
+/// Emit a fieldless labelled placeholder (a red marker `ui.label`) at the MEDM
+/// geometry plus a converter warning — for widgets SiDM cannot represent but
+/// whose footprint should still be visible. Never a silent drop.
+fn emit_marker_placeholder(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    z: ZLayer,
+    label: &str,
+    warn: &str,
+) {
+    let Some(geom) = widget.geometry else {
+        skip_no_geometry(b, widget);
+        return;
+    };
+    let id = b.index();
+    b.needs_color = true;
+    b.placements.push(Placement {
+        z,
+        id,
+        geom,
+        body: format!(
+            "ui.label(egui::RichText::new({}).color(Color32::from_rgb(180, 60, 60)));",
+            rust_str(&format!("[{label}]"))
+        ),
+    });
+    b.warnings
+        .push(format!("line {}: {warn}; placeholder emitted", widget.line));
+}
+
+/// `embedded display` — not implemented in adl2pydm either, and SiDM has no
+/// runtime display loader; warn and skip (no placeholder, matching the plan).
+fn emit_embedded_stub(b: &mut Builder, widget: &MedmWidget) {
+    b.warnings.push(format!(
+        "line {}: embedded display unsupported (no runtime display loader); skipped",
+        widget.line
+    ));
+}
+
+/// A deferred control (`related display` navigation, `shell command`
+/// execution): emit a disabled `egui::Button` labelled with its target at the
+/// control layer (Foreground, so the z-order rule still holds), plus a warning.
+/// No channel is fabricated and no `Engine` field is created — the button is
+/// inert, an honest "this control isn't wired yet" marker.
+fn emit_deferred_button(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    z: ZLayer,
+    records_key: &str,
+    generic: &str,
+    deferred: &str,
+) {
+    let Some(geom) = widget.geometry else {
+        skip_no_geometry(b, widget);
+        return;
+    };
+    let label = deferred_button_label(widget, records_key, generic);
+    let id = b.index();
+    b.placements.push(Placement {
+        z,
+        id,
+        geom,
+        body: format!(
+            "ui.add_enabled(false, egui::Button::new({}));",
+            rust_str(&label)
+        ),
+    });
+    b.warnings.push(format!(
+        "line {}: {:?} -> {deferred}; disabled placeholder button emitted",
+        widget.line, widget.symbol
+    ));
+}
+
+/// The caption for a deferred-control placeholder button: the widget's MEDM
+/// `label` (sans the leading `-` MEDM uses to hide the menu icon), else the sole
+/// target's `label`/`name` when there is exactly one, else a generic name.
+fn deferred_button_label(widget: &MedmWidget, records_key: &str, generic: &str) -> String {
+    if let Some(trimmed) = widget
+        .assignments
+        .get("label")
+        .map(|l| l.trim_start_matches('-'))
+        .filter(|l| !l.is_empty())
+    {
+        return trimmed.to_string();
+    }
+    if let Some(records) = widget.records.get(records_key)
+        && records.len() == 1
+    {
+        if let Some(l) = records[0].get("label").filter(|s| !s.is_empty()) {
+            return l.clone();
+        }
+        if let Some(n) = records[0].get("name").filter(|s| !s.is_empty()) {
+            return n.clone();
+        }
+    }
+    generic.to_string()
+}
+
 /// Resolve the geometry and channel address common to every channel-bound
 /// widget, recording the matching skip warning and returning `None` if either is
 /// absent.
@@ -1331,7 +1494,8 @@ text {
     #[test]
     fn unimplemented_widgets_warn_but_do_not_panic() {
         // `polygon` is in the permanently-stubbed set (no SiDM `DrawingShape`),
-        // so it warns through every wave — a stable stand-in for "no emitter".
+        // so it warns through every wave (a placeholder marker since B8a) while
+        // the screen still assembles.
         let adl = r#"
 "color map" {
 	colors {
@@ -2217,5 +2381,183 @@ composite {
         // Distinct PlotIds keep their GPU resources separate.
         assert!(g.source.contains("SidmTimePlot::new(rs, 0)"));
         assert!(g.source.contains("SidmWaveformPlot::new(rs, 1)"));
+    }
+
+    // The deferred/unsupported widgets: static shapes (no `DrawingShape`), the
+    // static-file image, the embedded display, and the deferred nav/shell
+    // controls. None has a faithful SiDM mapping, so each warns; the visible
+    // ones emit a placeholder, never a silent drop.
+    const STUBS: &str = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+	}
+}
+arc {
+	object {
+		x=10
+		y=10
+		width=40
+		height=40
+	}
+}
+polyline {
+	object {
+		x=60
+		y=10
+		width=40
+		height=40
+	}
+}
+image {
+	object {
+		x=10
+		y=60
+		width=100
+		height=73
+	}
+	type="gif"
+	"image name"="apple.gif"
+}
+"embedded display" {
+	object {
+		x=10
+		y=140
+		width=100
+		height=50
+	}
+}
+"related display" {
+	object {
+		x=10
+		y=200
+		width=100
+		height=20
+	}
+	display[0] {
+		label="Open Detail"
+		name="detail.adl"
+	}
+}
+"shell command" {
+	object {
+		x=10
+		y=230
+		width=100
+		height=20
+	}
+	command[0] {
+		label="Eyes"
+		name="xeyes"
+	}
+	command[1] {
+		label="Load"
+		name="xload"
+	}
+}
+"#;
+
+    fn stubs() -> Generated {
+        generate(&parse(STUBS), &Options::default())
+    }
+
+    #[test]
+    fn static_shape_stubs_emit_background_placeholders_and_warn() {
+        let g = stubs();
+        // arc and polyline: a labelled marker at the Background (decoration)
+        // layer, no struct field, plus a warning naming the missing shape.
+        assert!(
+            g.source
+                .contains("egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 40.0, 40.0"),
+            "arc placeholder not at its Background geometry:\n{}",
+            g.source
+        );
+        assert!(g.source.contains("[arc unsupported]"));
+        assert!(g.source.contains("[polyline unsupported]"));
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("arc: SiDM has no DrawingShape::Arc")),
+            "{:?}",
+            g.warnings
+        );
+        // No widget field for a fieldless placeholder.
+        assert!(!g.source.contains(": SidmDrawing,"));
+    }
+
+    #[test]
+    fn image_emits_a_placeholder_naming_the_file_not_a_view() {
+        let g = stubs();
+        // The MEDM static file image becomes a Middle-layer marker showing the
+        // filename — never a SidmImageView (which would need a channel).
+        assert!(g.source.contains("[image: apple.gif]"), "{}", g.source);
+        assert!(!g.source.contains("SidmImageView"), "{}", g.source);
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("static file") && w.contains("apple.gif")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn embedded_display_is_skipped_with_a_warning_and_no_placement() {
+        let g = stubs();
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("embedded display unsupported")),
+            "{:?}",
+            g.warnings
+        );
+        // Skipped means no placeholder text for it (unlike the shape stubs).
+        assert!(!g.source.contains("embedded"), "{}", g.source);
+    }
+
+    #[test]
+    fn deferred_controls_emit_disabled_foreground_buttons() {
+        let g = stubs();
+        // related display: the sole display's label captions a disabled button
+        // at the control (Foreground) layer; no Engine field, no channel.
+        assert!(
+            g.source
+                .contains("ui.add_enabled(false, egui::Button::new(\"Open Detail\"))"),
+            "related-display button not labelled with its target:\n{}",
+            g.source
+        );
+        // shell command has two commands and no widget label -> generic caption.
+        assert!(
+            g.source
+                .contains("ui.add_enabled(false, egui::Button::new(\"Shell Command\"))"),
+            "{}",
+            g.source
+        );
+        // Both sit at Foreground so a decoration can never occlude them.
+        let rel = g
+            .source
+            .find("Open Detail")
+            .expect("related display button");
+        let before = &g.source[..rel];
+        assert!(
+            before.rfind("egui::Order::Foreground").is_some(),
+            "deferred control must be a Foreground placement:\n{}",
+            g.source
+        );
+        assert!(
+            g.warnings.iter().any(|w| w.contains("navigation deferred")),
+            "{:?}",
+            g.warnings
+        );
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("shell execution deferred")),
+            "{:?}",
+            g.warnings
+        );
+        // No channel widgets were created for these inert controls.
+        assert!(!g.source.contains("SidmPushButton"), "{}", g.source);
     }
 }

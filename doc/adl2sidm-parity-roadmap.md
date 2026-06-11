@@ -75,13 +75,13 @@ Category drives the z-layer: `static` = decoration (back), `monitor` = read-only
 | oval | static | `SidmDrawing(Ellipse)` | ✅ |
 | strip chart | monitor | `SidmTimePlot` | ✅ |
 | cartesian plot | monitor | `SidmWaveformPlot` / `SidmScatterPlot` | ✅ |
-| image | monitor | ⏸ stub + warning (static GIF/TIFF file, no array channel) | ⬜ |
-| arc | static | ⏸ stub + warning (no `DrawingShape::Arc`) | ⬜ |
-| polygon | static | ⏸ stub + warning (no `DrawingShape::Polygon`) | ⬜ |
-| polyline | static | ⏸ stub + warning (no `DrawingShape::Polyline`) | ⬜ |
-| related display | controller | ⏸ disabled `SidmPushButton` (nav deferred) | ⬜ |
-| shell command | controller | ⏸ disabled `SidmPushButton` (shell deferred) | ⬜ |
-| embedded display | container | ⏸ skip + warning (not in adl2pydm either) | ⬜ |
+| image | monitor | ⏸ placeholder marker + warning (static GIF/TIFF file, no array channel) | ✅ |
+| arc | static | ⏸ placeholder marker + warning (no `DrawingShape::Arc`) | ✅ |
+| polygon | static | ⏸ placeholder marker + warning (no `DrawingShape::Polygon`) | ✅ |
+| polyline | static | ⏸ placeholder marker + warning (no `DrawingShape::Polyline`) | ✅ |
+| related display | controller | ⏸ disabled `egui::Button` + warning (nav deferred) | ✅ |
+| shell command | controller | ⏸ disabled `egui::Button` + warning (shell deferred) | ✅ |
+| embedded display | container | ⏸ skip + warning (not in adl2pydm either) | ✅ |
 
 Dynamic-attribute CALC (visibility/colour rules; adl2pydm `calc2rules.py`):
 emitted as a `// TODO: dynamic rule:` comment on the widget — a documented gap,
@@ -196,7 +196,29 @@ not silently dropped (SiDM has no rules engine yet).
     fabricate a channel that the `.adl` never names — so `image` becomes a
     stub + warning alongside the deferred 6, not a plot emitter. (`image` still
     warns through the default dispatch arm until B8 lands its dedicated stub.)
-- ⬜ B8 — stubs + warnings for the deferred 6 + `image` + CALC `// TODO` comments.
+- 🚧 B8 — stubs + warnings for the deferred 6 + `image` + CALC `// TODO` comments
+  (split into B8a stubs, B8b CALC comments).
+  - ✅ B8a — stub emitters for every remaining MEDM widget, each warning (never a
+    silent drop). The static shapes (`arc`/`polygon`/`polyline`) and the
+    static-file `image` emit a fieldless red placeholder marker (`ui.label`) at
+    the MEDM geometry, so the layout still shows the widget's footprint;
+    `image`'s marker names the file. `embedded display` is skipped with a warning
+    (no placeholder, as it is unimplemented in adl2pydm too). `related display`
+    and `shell command` emit a *disabled* `egui::Button` captioned with their
+    target (the widget `label` sans the MEDM `-` icon-suppress prefix, else the
+    sole target's label/name, else a generic) at the control (Foreground) layer —
+    no channel is fabricated and no `Engine` field is created, an honest inert
+    marker; navigation/shell are deferred to match `sidm`'s own deferred set.
+    Every `ADL_WIDGET_SYMBOLS` entry now has a dispatch arm; the `_` arm is a
+    defensive backstop. 4 new codegen tests (Background shape placeholders +
+    missing-shape warnings; image placeholder names the file and is not a
+    `SidmImageView`; embedded display skipped with no placement; deferred
+    controls are Foreground disabled buttons captioned by target, no
+    `SidmPushButton`/channel). The 7-stub screen was generated and `cargo
+    check`'d clean against real sidm. Gate: clippy -p adl2sidm clean, nextest
+    47/47.
+  - ⬜ B8b — CALC dynamic-attribute (`vis`/`calc`) → `// TODO: dynamic rule:`
+    comment on the widget (SiDM has no rules engine).
 - ⬜ C9 — CLI (`--protocol` / `--macro` / `--out` / `--use-scatterplot`).
 - ⬜ C10 — `tests/compiles.rs` fidelity gate (generated `.rs` `cargo check`s against `sidm`).
 - ⬜ C11 — runnable end-to-end example (sample `.adl` + generated `Screen` + tiny `eframe` main).
