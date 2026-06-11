@@ -17,6 +17,9 @@ use siplot::{ItemHandle, Plot1D, PlotId, PlotResponse, egui};
 
 use crate::channel::{Channel, PvValue};
 use crate::engine::{Engine, EngineError};
+use crate::widgets::plot_menu::{
+    YAxisMenu, enable_y_autoscale, set_y_range, show_with_y_axis_menu,
+};
 use crate::widgets::plot_style::{CurveStyle, ensure_axis_autoscale};
 
 /// When a waveform/scatter curve redraws relative to its X/Y channels (PyDM
@@ -148,6 +151,8 @@ impl WaveformCurve {
 pub struct SidmWaveformPlot {
     plot: Plot1D,
     curves: Vec<WaveformCurve>,
+    /// State for the pyqtgraph-style Y-axis context menu (auto-scale + range).
+    y_menu: YAxisMenu,
 }
 
 impl SidmWaveformPlot {
@@ -157,6 +162,7 @@ impl SidmWaveformPlot {
         Self {
             plot: Plot1D::new(render_state, id),
             curves: Vec::new(),
+            y_menu: YAxisMenu::new(),
         }
     }
 
@@ -255,7 +261,20 @@ impl SidmWaveformPlot {
             }
         }
         ui.ctx().request_repaint();
-        self.plot.show(ui)
+        show_with_y_axis_menu(&mut self.plot, &mut self.y_menu, ui)
+    }
+
+    /// Pin a fixed Y range, disabling live autoscale (pyqtgraph `setYRange`);
+    /// the range survives data updates until autoscale is re-enabled. Same effect
+    /// as the context menu's "Set Y range".
+    pub fn set_y_range(&mut self, min: f64, max: f64) {
+        set_y_range(&mut self.plot, min, max);
+    }
+
+    /// Re-enable live Y autoscale and refit to the data now (pyqtgraph
+    /// auto-range); same effect as the context menu's "Auto-scale".
+    pub fn enable_y_autoscale(&mut self) {
+        enable_y_autoscale(&mut self.plot);
     }
 }
 

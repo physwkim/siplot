@@ -22,6 +22,7 @@ pub mod frame;
 pub mod image_view;
 pub mod label;
 pub mod line_edit;
+pub(crate) mod plot_menu;
 pub mod plot_style;
 pub mod push_button;
 pub mod ring_buffer;
