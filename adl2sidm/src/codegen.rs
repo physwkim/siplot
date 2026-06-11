@@ -54,12 +54,28 @@ pub struct Generated {
 }
 
 /// One placed widget: where it goes (`z`, `geom`, a unique Area `id`) and the
-/// statement(s) that draw it inside the `place` closure.
+/// statement(s) that draw it inside the `place` closure. `comment` is an
+/// optional line emitted just above the placement — used for the `// TODO:
+/// dynamic rule:` note SiDM cannot yet apply.
 struct Placement {
     z: ZLayer,
     id: u64,
     geom: Geometry,
     body: String,
+    comment: Option<String>,
+}
+
+impl Placement {
+    /// A placement with no attached comment (the common case).
+    fn drawn(z: ZLayer, id: u64, geom: Geometry, body: String) -> Self {
+        Self {
+            z,
+            id,
+            geom,
+            body,
+            comment: None,
+        }
+    }
 }
 
 /// Accumulates the pieces of the generated module as the widget tree is walked.
@@ -122,6 +138,7 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
     };
 
     let z = map.category.z_layer();
+    let start = b.placements.len();
     match widget.symbol.as_str() {
         "text" => emit_static_text(b, widget, z),
         "text update" => emit_text_update(b, widget, options, z),
@@ -175,6 +192,50 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
             widget.line, widget.symbol, map.sidm_widget
         )),
     }
+
+    // A MEDM `dynamic attribute` visibility/CALC rule has no SiDM rules engine to
+    // apply it, so annotate every placement this widget produced with a
+    // `// TODO: dynamic rule:` note (and warn) rather than dropping it silently.
+    // A composite's children are already emitted (and annotated) above, so by
+    // here `placements[start..]` is just this widget's own placement(s).
+    if let Some(comment) = dynamic_rule_comment(widget) {
+        for placement in &mut b.placements[start..] {
+            placement.comment = Some(comment.clone());
+        }
+        b.warnings.push(format!(
+            "line {}: {:?} -> {comment} (no rules engine); emitted as a comment",
+            widget.line, widget.symbol
+        ));
+    }
+}
+
+/// A `// TODO: dynamic rule:` note documenting a MEDM `dynamic attribute`
+/// visibility/CALC rule SiDM cannot yet apply, or `None` when the widget has no
+/// such rule. A rule exists when `vis` is conditional (anything but `"static"`)
+/// or a `calc` expression is present; the MEDM fields (`vis`, `calc`, and the
+/// A–D channels) are quoted verbatim so a human can port them.
+fn dynamic_rule_comment(widget: &MedmWidget) -> Option<String> {
+    let da = widget.attributes.get("dynamic attribute")?;
+    let vis = da.get("vis").map(String::as_str);
+    let calc = da.get("calc");
+    let has_rule = calc.is_some() || matches!(vis, Some(v) if v != "static");
+    if !has_rule {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if let Some(v) = vis {
+        parts.push(format!("vis={v:?}"));
+    }
+    if let Some(c) = calc {
+        parts.push(format!("calc={c:?}"));
+    }
+    for key in ["chan", "chanB", "chanC", "chanD"] {
+        if let Some(ch) = da.get(key).filter(|c| !c.is_empty()) {
+            parts.push(format!("{key}={ch:?}"));
+        }
+    }
+    Some(format!("TODO: dynamic rule: {}", parts.join(" ")))
 }
 
 /// `text` — a static label (a fixed string, no channel). Drawn with a plain
@@ -196,7 +257,7 @@ fn emit_static_text(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         rust_str(&text),
         color_expr(color)
     );
-    b.placements.push(Placement { z, id, geom, body });
+    b.placements.push(Placement::drawn(z, id, geom, body));
 }
 
 /// `text update` — a read-only `SidmLabel` bound to a channel.
@@ -610,12 +671,7 @@ fn emit_composite(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZL
     }
     let _ = write!(body, "}});");
 
-    b.placements.push(Placement {
-        z,
-        id: frame_id,
-        geom,
-        body,
-    });
+    b.placements.push(Placement::drawn(z, frame_id, geom, body));
 }
 
 /// `strip chart` → `SidmTimePlot`: each MEDM `pen` is a time-series curve. A pen
@@ -857,12 +913,12 @@ fn push_plot_widget(
     b.fields.push((field.clone(), ty.to_string()));
     // Reference the field's `&mut` local (bound by `ui()`'s `let Self { .. }`
     // destructure), matching every other widget's draw.
-    b.placements.push(Placement {
+    b.placements.push(Placement::drawn(
         z,
         id,
         geom,
-        body: format!("let _ = {field}.show(ui);"),
-    });
+        format!("let _ = {field}.show(ui);"),
+    ));
 }
 
 /// A static-shape widget SiDM cannot draw (`arc`/`polygon`/`polyline` — no
@@ -918,15 +974,15 @@ fn emit_marker_placeholder(
     };
     let id = b.index();
     b.needs_color = true;
-    b.placements.push(Placement {
+    b.placements.push(Placement::drawn(
         z,
         id,
         geom,
-        body: format!(
+        format!(
             "ui.label(egui::RichText::new({}).color(Color32::from_rgb(180, 60, 60)));",
             rust_str(&format!("[{label}]"))
         ),
-    });
+    ));
     b.warnings
         .push(format!("line {}: {warn}; placeholder emitted", widget.line));
 }
@@ -959,15 +1015,15 @@ fn emit_deferred_button(
     };
     let label = deferred_button_label(widget, records_key, generic);
     let id = b.index();
-    b.placements.push(Placement {
+    b.placements.push(Placement::drawn(
         z,
         id,
         geom,
-        body: format!(
+        format!(
             "ui.add_enabled(false, egui::Button::new({}));",
             rust_str(&label)
         ),
-    });
+    ));
     b.warnings.push(format!(
         "line {}: {:?} -> {deferred}; disabled placeholder button emitted",
         widget.line, widget.symbol
@@ -1049,12 +1105,12 @@ fn push_channel_widget(
     // The body references the field's `&mut` local (bound by `ui()`'s `let Self {
     // .. }` destructure), not `self.field`, so a container's draw closure can hold
     // disjoint borrows of the frame and its siblings.
-    b.placements.push(Placement {
+    b.placements.push(Placement::drawn(
         z,
         id,
         geom,
-        body: format!("let _ = {field}.show(ui);"),
-    });
+        format!("let _ = {field}.show(ui);"),
+    ));
 }
 
 /// A `.with_precision(n)` builder from a widget's `precDefault` (its `limits`
@@ -1319,7 +1375,8 @@ fn emit_ui(s: &mut String, b: &Builder) {
 /// Emit one `place(...)` call at `indent`, offsetting the geometry by `(dx, dy)`
 /// — `0, 0` at the top level; a composite's origin for its children so they land
 /// inside the frame's interior coordinates. The `body` may be several lines (a
-/// container's nested draws), each re-indented inside the closure.
+/// container's nested draws), each re-indented inside the closure. An attached
+/// `comment` is written just above the `place(...)` call.
 fn write_placement(s: &mut String, p: &Placement, dx: i32, dy: i32, indent: &str) {
     let Geometry {
         x,
@@ -1327,6 +1384,9 @@ fn write_placement(s: &mut String, p: &Placement, dx: i32, dy: i32, indent: &str
         width,
         height,
     } = p.geom;
+    if let Some(comment) = &p.comment {
+        let _ = writeln!(s, "{indent}// {comment}");
+    }
     let _ = writeln!(
         s,
         "{indent}place(ui, {}, egui::Id::new({}u64), {}.0, {}.0, {}.0, {}.0, |ui| {{",
@@ -2559,5 +2619,153 @@ image {
         );
         // No channel widgets were created for these inert controls.
         assert!(!g.source.contains("SidmPushButton"), "{}", g.source);
+    }
+
+    // A MEDM `dynamic attribute` CALC/visibility rule on otherwise-supported
+    // widgets: a rectangle with a real `calc` rule, an oval with only a `static`
+    // visibility (no rule), and a composite whose rule should annotate just the
+    // frame.
+    const CALC: &str = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+	}
+}
+rectangle {
+	object {
+		x=10
+		y=10
+		width=40
+		height=40
+	}
+	"basic attribute" {
+		clr=1
+	}
+	"dynamic attribute" {
+		vis="calc"
+		calc="A=3"
+		chan="DEV:sample"
+	}
+}
+oval {
+	object {
+		x=60
+		y=10
+		width=40
+		height=40
+	}
+	"basic attribute" {
+		clr=1
+	}
+	"dynamic attribute" {
+		vis="static"
+		chan="DEV:always"
+	}
+}
+composite {
+	object {
+		x=100
+		y=100
+		width=80
+		height=40
+	}
+	chan=""
+	"dynamic attribute" {
+		vis="if zero"
+		chan="DEV:hide"
+	}
+	children {
+		"text entry" {
+			object {
+				x=110
+				y=110
+				width=40
+				height=18
+			}
+			control {
+				chan="SET"
+			}
+		}
+	}
+}
+"#;
+
+    fn calc() -> Generated {
+        generate(&parse(CALC), &Options::default())
+    }
+
+    #[test]
+    fn dynamic_rule_emits_a_todo_comment_above_the_placement() {
+        let g = calc();
+        let comment = "// TODO: dynamic rule: vis=\"calc\" calc=\"A=3\" chan=\"DEV:sample\"";
+        let at = g.source.find(comment).expect("rule comment");
+        // The comment sits immediately above the rectangle's place() call.
+        let after = &g.source[at..];
+        let nl = after.find('\n').unwrap();
+        assert!(
+            after[nl..].trim_start().starts_with("place(ui,"),
+            "comment must directly precede the placement:\n{}",
+            g.source
+        );
+        // The widget itself still emits — the rule is documented, not a drop.
+        assert!(
+            g.source.contains(
+                "SidmDrawing::new(&engine, \"ca://DEV:sample\", DrawingShape::Rectangle)"
+            ),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("dynamic rule") && w.contains("no rules engine")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn static_visibility_is_not_a_rule_so_emits_no_comment() {
+        let g = calc();
+        // The oval's dynamic attribute is vis="static" with only a channel —
+        // no conditional rule — so it gets no TODO comment, though the drawing
+        // still binds that channel.
+        assert!(
+            !g.source.contains("chan=\\\"DEV:always\\\"")
+                && !g.source.contains("dynamic rule: vis=\"static\""),
+            "static visibility must not produce a rule comment:\n{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains("SidmDrawing::new(&engine, \"ca://DEV:always\", DrawingShape::Ellipse)"),
+            "{}",
+            g.source
+        );
+    }
+
+    #[test]
+    fn composite_dynamic_rule_annotates_the_frame_not_its_child() {
+        let g = calc();
+        let comment = "// TODO: dynamic rule: vis=\"if zero\" chan=\"DEV:hide\"";
+        let at = g.source.find(comment).expect("composite rule comment");
+        // The comment precedes the frame's Middle placement, and the only such
+        // rule comment appears once (the child text entry has no rule).
+        let after = &g.source[at..];
+        let nl = after.find('\n').unwrap();
+        assert!(
+            after[nl..]
+                .trim_start()
+                .starts_with("place(ui, egui::Order::Middle"),
+            "composite rule must annotate the frame placement:\n{}",
+            g.source
+        );
+        assert_eq!(
+            g.source.matches("DEV:hide").count(),
+            1,
+            "rule must annotate only the frame, not be duplicated onto the child:\n{}",
+            g.source
+        );
     }
 }

@@ -83,9 +83,12 @@ Category drives the z-layer: `static` = decoration (back), `monitor` = read-only
 | shell command | controller | ⏸ disabled `egui::Button` + warning (shell deferred) | ✅ |
 | embedded display | container | ⏸ skip + warning (not in adl2pydm either) | ✅ |
 
-Dynamic-attribute CALC (visibility/colour rules; adl2pydm `calc2rules.py`):
-emitted as a `// TODO: dynamic rule:` comment on the widget — a documented gap,
-not silently dropped (SiDM has no rules engine yet).
+Dynamic-attribute CALC (visibility/colour rules; adl2pydm `calc2rules.py`): ✅
+emitted as a `// TODO: dynamic rule:` comment just above the widget's placement
+(quoting the MEDM `vis`/`calc`/A–D channel fields verbatim) plus a warning — a
+documented gap, not silently dropped (SiDM has no rules engine yet). A rule is
+recognised when `vis` is conditional (anything but `"static"`) or a `calc`
+expression is present; `vis="static"` with only a channel is not a rule.
 
 ## Wave / commit log
 
@@ -196,7 +199,7 @@ not silently dropped (SiDM has no rules engine yet).
     fabricate a channel that the `.adl` never names — so `image` becomes a
     stub + warning alongside the deferred 6, not a plot emitter. (`image` still
     warns through the default dispatch arm until B8 lands its dedicated stub.)
-- 🚧 B8 — stubs + warnings for the deferred 6 + `image` + CALC `// TODO` comments
+- ✅ B8 — stubs + warnings for the deferred 6 + `image` + CALC `// TODO` comments
   (split into B8a stubs, B8b CALC comments).
   - ✅ B8a — stub emitters for every remaining MEDM widget, each warning (never a
     silent drop). The static shapes (`arc`/`polygon`/`polyline`) and the
@@ -217,8 +220,24 @@ not silently dropped (SiDM has no rules engine yet).
     `SidmPushButton`/channel). The 7-stub screen was generated and `cargo
     check`'d clean against real sidm. Gate: clippy -p adl2sidm clean, nextest
     47/47.
-  - ⬜ B8b — CALC dynamic-attribute (`vis`/`calc`) → `// TODO: dynamic rule:`
-    comment on the widget (SiDM has no rules engine).
+  - ✅ B8b — CALC dynamic-attribute (`vis`/`calc`) → a `// TODO: dynamic rule:`
+    comment emitted just above the widget's placement, quoting the MEDM
+    `vis`/`calc`/A–D channel fields verbatim, plus a warning (SiDM has no rules
+    engine). A `comment: Option<String>` was threaded onto `Placement` (via a
+    `Placement::drawn` constructor so the default lives in one place) and emitted
+    by `write_placement`, so the note rides with the placement whether it is
+    drawn at the top level or nested inside a composite frame. The dispatcher
+    attaches the comment as a post-pass over the placements each widget produced:
+    a composite's children are already emitted (and individually annotated)
+    before the composite's own rule is attached, so the rule lands on the frame
+    only, never duplicated onto a child. A rule is recognised when `vis` is
+    conditional or a `calc` is present; `vis="static"` with only a channel is not
+    a rule (the channel still binds, e.g. for a drawing). 3 new codegen tests
+    (calc rule comment directly precedes the placement and the widget still binds
+    its channel; static visibility emits no comment; a composite rule annotates
+    the frame, not its child). The rule-annotated screen was generated and
+    `cargo check`'d clean against real sidm. Gate: clippy -p adl2sidm clean,
+    nextest 50/50.
 - ⬜ C9 — CLI (`--protocol` / `--macro` / `--out` / `--use-scatterplot`).
 - ⬜ C10 — `tests/compiles.rs` fidelity gate (generated `.rs` `cargo check`s against `sidm`).
 - ⬜ C11 — runnable end-to-end example (sample `.adl` + generated `Screen` + tiny `eframe` main).
