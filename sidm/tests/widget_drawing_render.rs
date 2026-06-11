@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmDrawing`].
+//! Headless wgpu readback of [`SidmDrawing`].
 //!
 //! The colour decision and rotation maths are unit-tested purely in the module;
 //! this proves a filled shape actually reaches the screen. A red-filled
@@ -14,7 +14,7 @@ use std::rc::Rc;
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::{DrawingShape, PydmDrawing};
+use sidm::widgets::{DrawingShape, SidmDrawing};
 use siplot::egui;
 
 fn count_red(raw: &[u8]) -> u32 {
@@ -26,7 +26,7 @@ fn count_red(raw: &[u8]) -> u32 {
 fn render_drawing(fill: egui::Color32) -> u32 {
     let rs = create_render_state(default_wgpu_setup());
     let engine = Engine::new();
-    let drawing = PydmDrawing::new(&engine, "loc://drawing_demo", DrawingShape::Rectangle)
+    let drawing = SidmDrawing::new(&engine, "loc://drawing_demo", DrawingShape::Rectangle)
         .expect("connect")
         .with_fill(fill)
         .with_size(egui::vec2(120.0, 80.0));

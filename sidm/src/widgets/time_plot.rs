@@ -1,4 +1,4 @@
-//! `PydmTimePlot` — scalar-versus-time strip chart over one or more channels.
+//! `SidmTimePlot` — scalar-versus-time strip chart over one or more channels.
 //!
 //! Ports `pydm/widgets/timeplot.py` (`PyDMTimePlot` + `TimePlotCurveItem`) onto
 //! a `siplot` [`Plot1D`] in time-series tick mode. Each channel is a curve
@@ -160,7 +160,7 @@ fn redraw_curve(plot: &mut Plot1D, curve: &mut TimeCurve, t0: f64) {
 }
 
 /// A scrolling strip chart of scalar PVs versus time (PyDM `PyDMTimePlot`).
-pub struct PydmTimePlot {
+pub struct SidmTimePlot {
     plot: Plot1D,
     curves: Vec<TimeCurve>,
     update_mode: UpdateMode,
@@ -175,7 +175,7 @@ pub struct PydmTimePlot {
     t0: f64,
 }
 
-impl PydmTimePlot {
+impl SidmTimePlot {
     /// Create an empty time plot on the given GPU `render_state` and plot `id`.
     /// The Y axis autoscales; the X axis is relative time driven by the scroll
     /// window.

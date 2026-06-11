@@ -1,4 +1,4 @@
-//! `sidm` — PyDM-style EPICS display layer for [`siplot`].
+//! `sidm` — SiDM, a PyDM-style EPICS display layer for [`siplot`].
 //!
 //! A Rust port of [PyDM](https://github.com/slaclab/pydm)'s core engine and
 //! widgets (a PyQt EPICS display manager), built on top of `siplot`'s
@@ -13,8 +13,8 @@
 //!   widgets every frame. Qt's per-slot signals collapse into one
 //!   `Arc`-shared, repaint-on-update state cell because egui re-renders from
 //!   current state each frame.
-//! - **`widgets`** — retained widget structs (`PydmLabel`, `PydmLineEdit`,
-//!   `PydmByteIndicator`, the time/waveform/scatter plots, the camera image
+//! - **`widgets`** — retained widget structs (`SidmLabel`, `SidmLineEdit`,
+//!   `SidmByteIndicator`, the time/waveform/scatter plots, the camera image
 //!   view, …) that read their channel's state and draw with alarm-severity
 //!   styling, connection gating, and precision/unit formatting.
 //!

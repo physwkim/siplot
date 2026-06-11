@@ -1,4 +1,4 @@
-//! `PydmSlider` — a horizontal slider that writes a float.
+//! `SidmSlider` — a horizontal slider that writes a float.
 //!
 //! Ports `pydm/widgets/slider.py`: the track spans `num_steps` discrete
 //! positions (PyDM default `101`) linearly mapped across the range
@@ -11,7 +11,7 @@
 //!
 //! The range resolution is the pure
 //! [`control_range`]; the write is
-//! [`PydmSlider::set_value`]; [`PydmSlider::show`] is a thin egui shell.
+//! [`SidmSlider::set_value`]; [`SidmSlider::show`] is a thin egui shell.
 
 use siplot::egui;
 
@@ -23,7 +23,7 @@ use crate::widgets::base::{ChannelBase, control_range};
 pub const DEFAULT_NUM_STEPS: u32 = 101;
 
 /// A writable horizontal slider (PyDM `PyDMSlider`).
-pub struct PydmSlider {
+pub struct SidmSlider {
     base: ChannelBase,
     /// Override the min/max instead of using the PV's control limits (PyDM
     /// `userDefinedLimits`).
@@ -34,7 +34,7 @@ pub struct PydmSlider {
     pub precision_override: Option<i32>,
 }
 
-impl PydmSlider {
+impl SidmSlider {
     /// Connect `address` and wrap it in a slider.
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
         Ok(Self {
@@ -143,9 +143,9 @@ mod tests {
         cond()
     }
 
-    fn slider(address: &str) -> (Engine, PydmSlider) {
+    fn slider(address: &str) -> (Engine, SidmSlider) {
         let engine = Engine::new();
-        let slider = PydmSlider::new(&engine, address).expect("connect");
+        let slider = SidmSlider::new(&engine, address).expect("connect");
         (engine, slider)
     }
 

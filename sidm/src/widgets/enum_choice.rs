@@ -1,5 +1,5 @@
 //! Shared enum-selection logic for the enum-driven writable widgets
-//! ([`PydmEnumComboBox`], [`PydmEnumButton`]).
+//! ([`SidmEnumComboBox`], [`SidmEnumButton`]).
 //!
 //! PyDM's `PyDMEnumComboBox` and `PyDMEnumButton` share the same semantics: the
 //! choices come from the channel's enum strings (`enum_strings_changed`), the
@@ -7,8 +7,8 @@
 //! one writes its integer index (`send_value`). One owner keeps the two widgets
 //! from drifting apart.
 //!
-//! [`PydmEnumComboBox`]: crate::widgets::PydmEnumComboBox
-//! [`PydmEnumButton`]: crate::widgets::PydmEnumButton
+//! [`SidmEnumComboBox`]: crate::widgets::SidmEnumComboBox
+//! [`SidmEnumButton`]: crate::widgets::SidmEnumButton
 
 use crate::channel::{ChannelState, PvValue};
 

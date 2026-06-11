@@ -1,4 +1,4 @@
-//! `PydmFrame` — a channel-connected container.
+//! `SidmFrame` — a channel-connected container.
 //!
 //! Ports `pydm/widgets/frame.py` (`PyDMFrame`): a grouping container that can
 //! optionally disable its children when the channel disconnects
@@ -10,7 +10,7 @@
 //! frame instead wraps a content closure each frame, gating it with
 //! [`egui::Ui::add_enabled_ui`] through [`ChannelBase::framed_with_enabled`]. The
 //! one piece of real logic — the enable decision — is the pure
-//! [`PydmFrame::frame_enabled`], unit-tested; the border/inset/tooltip rendering
+//! [`SidmFrame::frame_enabled`], unit-tested; the border/inset/tooltip rendering
 //! is the same primitive the other widgets use (verified by the base widget's
 //! readback test).
 
@@ -20,12 +20,12 @@ use crate::engine::{Engine, EngineError};
 use crate::widgets::base::ChannelBase;
 
 /// A channel-connected grouping container (PyDM `PyDMFrame`).
-pub struct PydmFrame {
+pub struct SidmFrame {
     base: ChannelBase,
     disable_on_disconnect: bool,
 }
 
-impl PydmFrame {
+impl SidmFrame {
     /// Connect `address` and wrap it as a frame. The alarm border is off by
     /// default (PyDM `PyDMFrame.alarmSensitiveBorder = False`).
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
@@ -85,17 +85,17 @@ mod tests {
     #[test]
     fn enabled_unless_disconnected_and_opted_in() {
         // Default (disable_on_disconnect = false): always enabled.
-        assert!(PydmFrame::frame_enabled(false, true));
-        assert!(PydmFrame::frame_enabled(false, false));
+        assert!(SidmFrame::frame_enabled(false, true));
+        assert!(SidmFrame::frame_enabled(false, false));
         // Opted in: enabled iff connected.
-        assert!(PydmFrame::frame_enabled(true, true));
-        assert!(!PydmFrame::frame_enabled(true, false));
+        assert!(SidmFrame::frame_enabled(true, true));
+        assert!(!SidmFrame::frame_enabled(true, false));
     }
 
     #[test]
     fn frame_default_border_is_off() {
         let engine = crate::Engine::new();
-        let frame = PydmFrame::new(&engine, "loc://frame_test").expect("connect");
+        let frame = SidmFrame::new(&engine, "loc://frame_test").expect("connect");
         // PyDM frame defaults alarmSensitiveBorder off (the value widgets are on).
         assert!(!frame.base().alarm_sensitive_border);
         assert!(!frame.disable_on_disconnect);

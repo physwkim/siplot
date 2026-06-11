@@ -1,4 +1,4 @@
-//! `PydmEnumButton` — pick an enum value from a row/column of buttons.
+//! `SidmEnumButton` — pick an enum value from a row/column of buttons.
 //!
 //! Ports `pydm/widgets/enum_button.py` (`PyDMEnumButton`): one (exclusive)
 //! button per enum string, the checked one being the current value
@@ -9,10 +9,10 @@
 //!
 //! The choices / current index / written value are the shared
 //! [`enum_choice`](crate::widgets::enum_choice) owner (also used by
-//! [`PydmEnumComboBox`]); the display order is the pure [`order_indices`];
-//! [`PydmEnumButton::show`] is a thin egui shell.
+//! [`SidmEnumComboBox`]); the display order is the pure [`order_indices`];
+//! [`SidmEnumButton::show`] is a thin egui shell.
 //!
-//! [`PydmEnumComboBox`]: crate::widgets::PydmEnumComboBox
+//! [`SidmEnumComboBox`]: crate::widgets::SidmEnumComboBox
 
 use siplot::egui;
 
@@ -48,7 +48,7 @@ pub fn order_indices(num_items: usize, custom_order: Option<&[usize]>, invert: b
 
 /// A group of exclusive buttons bound to a PV's enum strings (PyDM
 /// `PyDMEnumButton`).
-pub struct PydmEnumButton {
+pub struct SidmEnumButton {
     base: ChannelBase,
     widget_type: EnumButtonType,
     orientation: Orientation,
@@ -56,7 +56,7 @@ pub struct PydmEnumButton {
     invert_order: bool,
 }
 
-impl PydmEnumButton {
+impl SidmEnumButton {
     /// Connect `address` and wrap it in an enum button group.
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
         Ok(Self {
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn select_writes_the_index_to_the_channel() {
         let engine = Engine::new();
-        let button = PydmEnumButton::new(&engine, "loc://enum_button_select").expect("connect");
+        let button = SidmEnumButton::new(&engine, "loc://enum_button_select").expect("connect");
         assert!(
             wait_for(|| button.channel().is_connected(), Duration::from_secs(2)),
             "button channel never connected"

@@ -2,12 +2,12 @@
 //! line.
 //!
 //! Run with:
-//! `cargo run -p sidm --example pydm_ca_panel -- <scalar_pv> [<flags_pv>]`
+//! `cargo run -p sidm --example sidm_ca_panel -- <scalar_pv> [<flags_pv>]`
 //!
-//! - `<scalar_pv>` — a numeric PV, shown as a [`PydmLabel`] readout, edited with
-//!   a [`PydmLineEdit`] and a [`PydmSlider`], and trended on a [`PydmTimePlot`];
+//! - `<scalar_pv>` — a numeric PV, shown as a [`SidmLabel`] readout, edited with
+//!   a [`SidmLineEdit`] and a [`SidmSlider`], and trended on a [`SidmTimePlot`];
 //! - `<flags_pv>` (optional) — an integer PV shown bit by bit on a
-//!   [`PydmByteIndicator`].
+//!   [`SidmByteIndicator`].
 //!
 //! With no IOC reachable the channels stay disconnected and the widgets render
 //! their disconnected state (the channel address in the label, a dashed border);
@@ -15,17 +15,17 @@
 
 use eframe::egui;
 use sidm::Engine;
-use sidm::widgets::{PydmByteIndicator, PydmLabel, PydmLineEdit, PydmSlider, PydmTimePlot};
+use sidm::widgets::{SidmByteIndicator, SidmLabel, SidmLineEdit, SidmSlider, SidmTimePlot};
 
 struct CaPanel {
     // The engine owns the tokio runtime and the CA connections; it must outlive
     // the widgets that hold `Channel` handles.
     _engine: Engine,
-    scalar_label: PydmLabel,
-    scalar_edit: PydmLineEdit,
-    scalar_slider: PydmSlider,
-    scalar_plot: PydmTimePlot,
-    flags_byte: Option<PydmByteIndicator>,
+    scalar_label: SidmLabel,
+    scalar_edit: SidmLineEdit,
+    scalar_slider: SidmSlider,
+    scalar_plot: SidmTimePlot,
+    flags_byte: Option<SidmByteIndicator>,
 }
 
 impl CaPanel {
@@ -39,10 +39,10 @@ impl CaPanel {
         let engine = Engine::new();
         engine.attach_repaint(cc.egui_ctx.clone());
 
-        let scalar_label = PydmLabel::new(&engine, scalar).expect("connect scalar label");
-        let scalar_edit = PydmLineEdit::new(&engine, scalar).expect("connect scalar edit");
-        let scalar_slider = PydmSlider::new(&engine, scalar).expect("connect scalar slider");
-        let mut scalar_plot = PydmTimePlot::new(rs, 0).with_time_span(60.0);
+        let scalar_label = SidmLabel::new(&engine, scalar).expect("connect scalar label");
+        let scalar_edit = SidmLineEdit::new(&engine, scalar).expect("connect scalar edit");
+        let scalar_slider = SidmSlider::new(&engine, scalar).expect("connect scalar slider");
+        let mut scalar_plot = SidmTimePlot::new(rs, 0).with_time_span(60.0);
         scalar_plot
             .add_channel(
                 &engine,
@@ -53,7 +53,7 @@ impl CaPanel {
             .expect("connect scalar curve");
 
         let flags_byte = flags.map(|addr| {
-            PydmByteIndicator::new(&engine, addr)
+            SidmByteIndicator::new(&engine, addr)
                 .expect("connect flags byte")
                 .with_num_bits(16)
         });
@@ -72,7 +72,7 @@ impl CaPanel {
 impl eframe::App for CaPanel {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading("sidm · PyDM ca:// panel");
+            ui.heading("SiDM ca:// panel");
             ui.label("Live Channel Access PVs. Disconnected PVs show a dashed border.");
             ui.separator();
 
@@ -102,7 +102,7 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!(
-            "usage: cargo run -p sidm --example pydm_ca_panel -- <scalar_pv> [<flags_pv>]\n\
+            "usage: cargo run -p sidm --example sidm_ca_panel -- <scalar_pv> [<flags_pv>]\n\
              \n\
              \t<scalar_pv>  a numeric CA PV (label + line edit + slider + strip chart)\n\
              \t<flags_pv>   an integer CA PV (byte indicator); optional"
@@ -113,7 +113,7 @@ fn main() -> eframe::Result {
     let flags = args.get(1).map(|pv| format!("ca://{pv}"));
 
     eframe::run_native(
-        "sidm · PyDM ca:// panel",
+        "SiDM ca:// panel",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

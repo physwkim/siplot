@@ -1,4 +1,4 @@
-//! `PydmWaveformPlot` — array-channel curves (Y versus X or index).
+//! `SidmWaveformPlot` — array-channel curves (Y versus X or index).
 //!
 //! Ports `pydm/widgets/waveformplot.py` (`PyDMWaveformPlot` +
 //! `WaveformCurveItem`) onto a `siplot` [`Plot1D`]. Each curve has a Y array
@@ -145,12 +145,12 @@ impl WaveformCurve {
 
 /// A plot of array-valued PVs: Y versus X, or Y versus index (PyDM
 /// `PyDMWaveformPlot`).
-pub struct PydmWaveformPlot {
+pub struct SidmWaveformPlot {
     plot: Plot1D,
     curves: Vec<WaveformCurve>,
 }
 
-impl PydmWaveformPlot {
+impl SidmWaveformPlot {
     /// Create an empty waveform plot on the given GPU `render_state` and plot
     /// `id`.
     pub fn new(render_state: &RenderState, id: PlotId) -> Self {

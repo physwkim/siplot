@@ -1,9 +1,9 @@
-//! `PydmEventPlot` — scalar pairs extracted from an event array, accumulated as
+//! `SidmEventPlot` — scalar pairs extracted from an event array, accumulated as
 //! XY markers.
 //!
 //! Ports `pydm/widgets/eventplot.py` (`PyDMEventPlot` + `EventPlotCurveItem`)
 //! onto a `siplot` [`Plot1D`] scatter item. Unlike
-//! [`PydmScatterPlot`](crate::widgets::PydmScatterPlot) (which
+//! [`SidmScatterPlot`](crate::widgets::SidmScatterPlot) (which
 //! pairs two scalar channels), each event curve subscribes to **one** array
 //! channel: every update delivers an event array, and a fixed `(x_idx, y_idx)`
 //! pair selects the `(x, y)` sample to append to a capacity-bounded
@@ -81,13 +81,13 @@ impl EventCurve {
 
 /// A plot accumulating `(x, y)` pairs selected from a single event array PV
 /// (PyDM `PyDMEventPlot`).
-pub struct PydmEventPlot {
+pub struct SidmEventPlot {
     plot: Plot1D,
     curves: Vec<EventCurve>,
     buffer_size: usize,
 }
 
-impl PydmEventPlot {
+impl SidmEventPlot {
     /// Create an empty event plot on the given GPU `render_state` and plot `id`.
     pub fn new(render_state: &RenderState, id: PlotId) -> Self {
         Self {

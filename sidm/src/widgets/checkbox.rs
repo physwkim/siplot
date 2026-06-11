@@ -1,9 +1,9 @@
-//! `PydmCheckbox` — a writable boolean toggle.
+//! `SidmCheckbox` — a writable boolean toggle.
 //!
 //! Ports `pydm/widgets/checkbox.py`: checked when the channel value is positive
 //! (`new_val > 0`), and a toggle writes `1`/`0` (PyDM `send_value`). The check
 //! state and the value written are pure (`is_checked`, `value_for`); the egui
-//! toggle is a thin shell over [`PydmCheckbox::set_checked`].
+//! toggle is a thin shell over [`SidmCheckbox::set_checked`].
 
 use siplot::egui;
 
@@ -12,13 +12,13 @@ use crate::engine::{Engine, EngineError};
 use crate::widgets::base::ChannelBase;
 
 /// A writable boolean checkbox (PyDM `PyDMCheckbox`).
-pub struct PydmCheckbox {
+pub struct SidmCheckbox {
     base: ChannelBase,
     /// The text shown beside the checkbox.
     pub label: String,
 }
 
-impl PydmCheckbox {
+impl SidmCheckbox {
     /// Connect `address` and wrap it in a checkbox with the given label.
     pub fn new(
         engine: &Engine,
@@ -103,32 +103,32 @@ mod tests {
 
     #[test]
     fn checked_iff_value_is_positive() {
-        assert!(PydmCheckbox::is_checked(&state_of(Some(PvValue::Int(1)))));
-        assert!(PydmCheckbox::is_checked(&state_of(Some(PvValue::Float(
+        assert!(SidmCheckbox::is_checked(&state_of(Some(PvValue::Int(1)))));
+        assert!(SidmCheckbox::is_checked(&state_of(Some(PvValue::Float(
             0.5
         )))));
-        assert!(PydmCheckbox::is_checked(&state_of(Some(PvValue::Bool(
+        assert!(SidmCheckbox::is_checked(&state_of(Some(PvValue::Bool(
             true
         )))));
-        assert!(!PydmCheckbox::is_checked(&state_of(Some(PvValue::Int(0)))));
-        assert!(!PydmCheckbox::is_checked(&state_of(Some(PvValue::Bool(
+        assert!(!SidmCheckbox::is_checked(&state_of(Some(PvValue::Int(0)))));
+        assert!(!SidmCheckbox::is_checked(&state_of(Some(PvValue::Bool(
             false
         )))));
-        assert!(!PydmCheckbox::is_checked(&state_of(None)));
+        assert!(!SidmCheckbox::is_checked(&state_of(None)));
     }
 
     #[test]
     fn value_for_keeps_bool_type_else_int() {
         assert_eq!(
-            PydmCheckbox::value_for(true, &state_of(Some(PvValue::Bool(false)))),
+            SidmCheckbox::value_for(true, &state_of(Some(PvValue::Bool(false)))),
             PvValue::Bool(true)
         );
         assert_eq!(
-            PydmCheckbox::value_for(true, &state_of(Some(PvValue::Int(0)))),
+            SidmCheckbox::value_for(true, &state_of(Some(PvValue::Int(0)))),
             PvValue::Int(1)
         );
         assert_eq!(
-            PydmCheckbox::value_for(false, &state_of(Some(PvValue::Float(2.0)))),
+            SidmCheckbox::value_for(false, &state_of(Some(PvValue::Float(2.0)))),
             PvValue::Int(0)
         );
     }
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn set_checked_writes_to_the_channel() {
         let engine = Engine::new();
-        let checkbox = PydmCheckbox::new(&engine, "loc://checkbox_set", "enable").expect("connect");
+        let checkbox = SidmCheckbox::new(&engine, "loc://checkbox_set", "enable").expect("connect");
         assert!(
             wait_for(|| checkbox.channel().is_connected(), Duration::from_secs(2)),
             "checkbox channel never connected"

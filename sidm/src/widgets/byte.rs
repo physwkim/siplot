@@ -1,11 +1,11 @@
-//! `PydmByteIndicator` — per-bit LED display of an integer value.
+//! `SidmByteIndicator` — per-bit LED display of an integer value.
 //!
 //! Ports `pydm/widgets/byte.py`: shifts the value, takes `num_bits` bits
 //! LSB-first, and draws each as an on/off coloured square (or circle), laid out
 //! horizontally or vertically with optional per-bit labels.
 //!
 //! The bit extraction and the per-bit colour are pure (`extract_bits`,
-//! [`PydmByteIndicator::bit_color`]); the egui drawing is exercised by a
+//! [`SidmByteIndicator::bit_color`]); the egui drawing is exercised by a
 //! headless wgpu readback test. The on/off/disconnected/invalid colours are the
 //! byte widget's own (`0,255,0` / `100,100,100` / `255,255,255` / `255,0,255`),
 //! not the alarm-border palette. PyDM's blink mode is not ported.
@@ -54,7 +54,7 @@ const DISCONNECTED_COLOR: Color32 = Color32::WHITE;
 const INVALID_COLOR: Color32 = Color32::from_rgb(255, 0, 255);
 
 /// LED grid of an integer's bits (PyDM `PyDMByteIndicator`).
-pub struct PydmByteIndicator {
+pub struct SidmByteIndicator {
     base: ChannelBase,
     /// Number of bits to display (PyDM `numBits`).
     pub num_bits: usize,
@@ -80,7 +80,7 @@ pub struct PydmByteIndicator {
     pub invalid_color: Color32,
 }
 
-impl PydmByteIndicator {
+impl SidmByteIndicator {
     /// Connect `address` and wrap it in a byte indicator with PyDM's defaults
     /// (1 bit, no shift, vertical, square, little-endian, labels on, the byte
     /// palette).
@@ -270,9 +270,9 @@ mod tests {
         }
     }
 
-    fn indicator() -> PydmByteIndicator {
+    fn indicator() -> SidmByteIndicator {
         let engine = Engine::new();
-        PydmByteIndicator::new(&engine, "loc://byte_test").expect("connect")
+        SidmByteIndicator::new(&engine, "loc://byte_test").expect("connect")
     }
 
     #[test]

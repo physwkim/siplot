@@ -1,8 +1,8 @@
-//! `PydmImageView` — a 1-D array channel rendered as a 2-D image.
+//! `SidmImageView` — a 1-D array channel rendered as a 2-D image.
 //!
 //! Ports `pydm/widgets/image.py` (`PyDMImageView`) onto a `siplot`
 //! [`ImageView`]. The image channel delivers a flat array; an optional width
-//! channel (or a fixed [`PydmImageView::with_width`]) gives the row length, and
+//! channel (or a fixed [`SidmImageView::with_width`]) gives the row length, and
 //! the array is reshaped to `height × width` (`ImageUpdateThread.run`). The
 //! colormap range is the manual `colorMapMin`/`colorMapMax` unless
 //! `normalizeData` is set, in which case it is the data's min/max
@@ -106,7 +106,7 @@ pub fn color_range(normalize: bool, manual: (f32, f32), pixels: &[f32]) -> (f64,
 }
 
 /// A camera/array image driven by an EPICS waveform (PyDM `PyDMImageView`).
-pub struct PydmImageView {
+pub struct SidmImageView {
     view: ImageView,
     image_channel: Channel,
     width_channel: Option<Channel>,
@@ -123,7 +123,7 @@ pub struct PydmImageView {
     has_image: bool,
 }
 
-impl PydmImageView {
+impl SidmImageView {
     /// Connect the image channel (and optional width channel) and create the
     /// view on the given GPU `render_state` and plot `id`.
     pub fn new(

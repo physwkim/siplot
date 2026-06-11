@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmByteIndicator`]'s LED grid.
+//! Headless wgpu readback of [`SidmByteIndicator`]'s LED grid.
 //!
 //! The bit extraction and per-bit colour are unit-tested purely in
 //! `widgets/byte.rs`; this proves the egui drawing puts the on/off colours on
@@ -15,12 +15,12 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
-use sidm::widgets::PydmByteIndicator;
+use sidm::widgets::SidmByteIndicator;
 use sidm::{Engine, PvValue};
 use siplot::egui;
 
 struct App {
-    indicator: PydmByteIndicator,
+    indicator: SidmByteIndicator,
 }
 
 impl App {
@@ -51,7 +51,7 @@ struct Counts {
 fn render(value: i64, num_bits: usize) -> Counts {
     let rs = create_render_state(default_wgpu_setup());
     let engine = Engine::new();
-    let indicator = PydmByteIndicator::new(&engine, "loc://byte_render")
+    let indicator = SidmByteIndicator::new(&engine, "loc://byte_render")
         .expect("connect")
         .with_num_bits(num_bits)
         .with_show_labels(false);

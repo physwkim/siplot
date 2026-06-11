@@ -1,4 +1,4 @@
-//! `PydmDateTimeLabel` — render a numeric time channel as a date/time string.
+//! `SidmDateTimeLabel` — render a numeric time channel as a date/time string.
 //!
 //! Ports `pydm/widgets/datetime.py` (`PyDMDateTimeLabel`): the channel value is a
 //! number of milliseconds (or seconds, [`TimeBase`]) that is either an absolute
@@ -93,13 +93,13 @@ fn now_epoch_ms() -> i64 {
 
 /// A read-only label rendering a numeric time channel as a date/time string
 /// (PyDM `PyDMDateTimeLabel`).
-pub struct PydmDateTimeLabel {
+pub struct SidmDateTimeLabel {
     base: ChannelBase,
     time_base: TimeBase,
     relative: bool,
 }
 
-impl PydmDateTimeLabel {
+impl SidmDateTimeLabel {
     /// Connect `address` and wrap it in a date/time label.
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
         Ok(Self {
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn no_value_renders_empty() {
         let engine = crate::Engine::new();
-        let label = PydmDateTimeLabel::new(&engine, "loc://dt_empty").expect("connect");
+        let label = SidmDateTimeLabel::new(&engine, "loc://dt_empty").expect("connect");
         let state = ChannelState {
             connected: true,
             value: None,

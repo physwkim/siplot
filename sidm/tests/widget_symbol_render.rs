@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmSymbol`].
+//! Headless wgpu readback of [`SidmSymbol`].
 //!
 //! The value→state lookup is unit-tested purely in the module; this proves the
 //! selected symbol actually reaches the screen and that a value with no
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::{DrawingShape, PydmSymbol};
+use sidm::widgets::{DrawingShape, SidmSymbol};
 use siplot::egui;
 
 fn wait_for(mut cond: impl FnMut() -> bool, timeout: Duration) -> bool {
@@ -41,7 +41,7 @@ fn render_symbol(value: i64) -> u32 {
     let rs = create_render_state(default_wgpu_setup());
     let engine = Engine::new();
     let address = format!("loc://symbol_demo?type=int&init={value}");
-    let symbol = PydmSymbol::new(&engine, &address)
+    let symbol = SidmSymbol::new(&engine, &address)
         .expect("connect")
         .with_state(0, DrawingShape::Circle, egui::Color32::from_gray(90))
         .with_state(1, DrawingShape::Circle, egui::Color32::from_rgb(255, 0, 0))

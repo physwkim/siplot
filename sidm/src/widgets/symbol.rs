@@ -1,4 +1,4 @@
-//! `PydmSymbol` — a distinct symbol shown for each integer value of a channel.
+//! `SidmSymbol` — a distinct symbol shown for each integer value of a channel.
 //!
 //! Ports the core of `pydm/widgets/symbol.py` (`PyDMSymbol`): the widget holds a
 //! map keyed on integer channel values, and for the current value it draws the
@@ -64,13 +64,13 @@ pub fn symbol_index_for_value(value: Option<i64>, keys: &[i64]) -> Option<usize>
 
 /// A widget that draws a different symbol for each integer value of a channel
 /// (PyDM `PyDMSymbol`).
-pub struct PydmSymbol {
+pub struct SidmSymbol {
     base: ChannelBase,
     states: Vec<SymbolState>,
     size: Vec2,
 }
 
-impl PydmSymbol {
+impl SidmSymbol {
     /// Connect `address` and wrap it as a symbol with no states yet (add them
     /// with [`Self::with_state`]).
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {

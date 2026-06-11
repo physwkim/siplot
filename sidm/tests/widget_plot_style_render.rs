@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::{CurveStyle, PydmScatterPlot, PydmTimePlot};
+use sidm::widgets::{CurveStyle, SidmScatterPlot, SidmTimePlot};
 use siplot::{AxisSide, YAxis, egui};
 
 fn now_epoch_secs() -> f64 {
@@ -47,7 +47,7 @@ fn set_curve_style_recolors_the_curve_on_screen() {
     siplot::install(&rs);
 
     let engine = Engine::new();
-    let mut plot = PydmTimePlot::new(&rs, 0).with_time_span(6.0);
+    let mut plot = SidmTimePlot::new(&rs, 0).with_time_span(6.0);
     let idx = plot
         .add_channel(
             &engine,
@@ -114,7 +114,7 @@ fn set_curve_style_binds_curve_to_extra_axis_and_autoscales_it() {
     siplot::install(&rs);
 
     let engine = Engine::new();
-    let mut plot = PydmScatterPlot::new(&rs, 0);
+    let mut plot = SidmScatterPlot::new(&rs, 0);
     let extra = plot.plot_mut().add_extra_y_axis(AxisSide::Right);
     let idx = plot
         .add_xy_channel(
@@ -179,7 +179,7 @@ fn set_curve_style_rejects_out_of_range_index() {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut plot = PydmTimePlot::new(&rs, 0);
+    let mut plot = SidmTimePlot::new(&rs, 0);
     // No curves added yet.
     assert!(!plot.set_curve_style(0, CurveStyle::line(egui::Color32::WHITE)));
     drop(engine);

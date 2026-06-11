@@ -1,21 +1,21 @@
-//! A panel of PyDM-style widgets driven entirely by `loc://` and `fake://`
+//! A panel of SiDM widgets driven entirely by `loc://` and `fake://`
 //! channels — no IOC, no network.
 //!
-//! - a `fake://` sine drives a [`PydmLabel`] readout and a scrolling
-//!   [`PydmTimePlot`] (one address ⇒ one pooled connection ⇒ one generator);
-//! - a shared `loc://` float setpoint is edited from a [`PydmLineEdit`] and a
-//!   [`PydmSlider`] and read back by a [`PydmLabel`] — writing from either
+//! - a `fake://` sine drives a [`SidmLabel`] readout and a scrolling
+//!   [`SidmTimePlot`] (one address ⇒ one pooled connection ⇒ one generator);
+//! - a shared `loc://` float setpoint is edited from a [`SidmLineEdit`] and a
+//!   [`SidmSlider`] and read back by a [`SidmLabel`] — writing from either
 //!   widget updates the others through the channel (single-owner value, no local
 //!   echo);
-//! - a `loc://` integer is entered as hex in a [`PydmLineEdit`] and shown bit by
-//!   bit in a [`PydmByteIndicator`].
+//! - a `loc://` integer is entered as hex in a [`SidmLineEdit`] and shown bit by
+//!   bit in a [`SidmByteIndicator`].
 //!
-//! Run with: `cargo run -p sidm --example pydm_local_panel`
+//! Run with: `cargo run -p sidm --example sidm_local_panel`
 
 use eframe::egui;
 use sidm::Engine;
 use sidm::widgets::{
-    DisplayFormat, PydmByteIndicator, PydmLabel, PydmLineEdit, PydmSlider, PydmTimePlot,
+    DisplayFormat, SidmByteIndicator, SidmLabel, SidmLineEdit, SidmSlider, SidmTimePlot,
 };
 
 // One `fake://` sine for both the readout and the strip chart. The engine pools
@@ -30,13 +30,13 @@ struct LocalPanel {
     // The engine owns the tokio runtime and the connections; it must outlive the
     // widgets that hold `Channel` handles.
     _engine: Engine,
-    temp_label: PydmLabel,
-    temp_plot: PydmTimePlot,
-    setpoint_edit: PydmLineEdit,
-    setpoint_slider: PydmSlider,
-    setpoint_label: PydmLabel,
-    flags_edit: PydmLineEdit,
-    flags_byte: PydmByteIndicator,
+    temp_label: SidmLabel,
+    temp_plot: SidmTimePlot,
+    setpoint_edit: SidmLineEdit,
+    setpoint_slider: SidmSlider,
+    setpoint_label: SidmLabel,
+    flags_edit: SidmLineEdit,
+    flags_byte: SidmByteIndicator,
 }
 
 impl LocalPanel {
@@ -52,10 +52,10 @@ impl LocalPanel {
         // Repaint the window whenever a channel value changes.
         engine.attach_repaint(cc.egui_ctx.clone());
 
-        let temp_label = PydmLabel::new(&engine, TEMP)
+        let temp_label = SidmLabel::new(&engine, TEMP)
             .expect("connect temperature label")
             .with_precision(1);
-        let mut temp_plot = PydmTimePlot::new(rs, 0).with_time_span(20.0);
+        let mut temp_plot = SidmTimePlot::new(rs, 0).with_time_span(20.0);
         temp_plot
             .add_channel(
                 &engine,
@@ -65,18 +65,18 @@ impl LocalPanel {
             )
             .expect("connect temperature curve");
 
-        let setpoint_edit = PydmLineEdit::new(&engine, SETPOINT).expect("connect setpoint edit");
-        let setpoint_slider = PydmSlider::new(&engine, SETPOINT)
+        let setpoint_edit = SidmLineEdit::new(&engine, SETPOINT).expect("connect setpoint edit");
+        let setpoint_slider = SidmSlider::new(&engine, SETPOINT)
             .expect("connect setpoint slider")
             .with_limits(0.0, 10.0);
-        let setpoint_label = PydmLabel::new(&engine, SETPOINT)
+        let setpoint_label = SidmLabel::new(&engine, SETPOINT)
             .expect("connect setpoint label")
             .with_precision(2);
 
-        let flags_edit = PydmLineEdit::new(&engine, FLAGS)
+        let flags_edit = SidmLineEdit::new(&engine, FLAGS)
             .expect("connect flags edit")
             .with_format(DisplayFormat::Hex);
-        let flags_byte = PydmByteIndicator::new(&engine, FLAGS)
+        let flags_byte = SidmByteIndicator::new(&engine, FLAGS)
             .expect("connect flags byte")
             .with_num_bits(8);
 
@@ -96,7 +96,7 @@ impl LocalPanel {
 impl eframe::App for LocalPanel {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading("sidm · PyDM local panel (no IOC)");
+            ui.heading("SiDM local panel (no IOC)");
             ui.label(
                 "loc:// + fake:// channels. Edit the setpoint and flags; \
                  the temperature is a fake sine.",
@@ -131,7 +131,7 @@ impl eframe::App for LocalPanel {
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "sidm · PyDM local panel",
+        "SiDM local panel",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             ..Default::default()

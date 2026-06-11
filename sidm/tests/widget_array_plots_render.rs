@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmWaveformPlot`] and [`PydmScatterPlot`].
+//! Headless wgpu readback of [`SidmWaveformPlot`] and [`SidmScatterPlot`].
 //!
 //! The redraw gating and array extraction are unit-tested purely in their
 //! modules; this proves the array curve / scatter markers actually reach the
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
-use sidm::widgets::{PydmScatterPlot, PydmWaveformPlot};
+use sidm::widgets::{SidmScatterPlot, SidmWaveformPlot};
 use sidm::{Engine, PvValue};
 use siplot::egui;
 
@@ -43,7 +43,7 @@ fn waveform_curve_renders_from_a_y_array() {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut plot = PydmWaveformPlot::new(&rs, 0);
+    let mut plot = SidmWaveformPlot::new(&rs, 0);
     plot.add_channel(
         &engine,
         "loc://wave_y",
@@ -91,7 +91,7 @@ fn scatter_markers_render_from_injected_pairs() {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut plot = PydmScatterPlot::new(&rs, 0);
+    let mut plot = SidmScatterPlot::new(&rs, 0);
     let idx = plot
         .add_xy_channel(
             &engine,
@@ -133,7 +133,7 @@ fn empty_array_plot_renders_no_curve_color() {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut plot = PydmWaveformPlot::new(&rs, 0);
+    let mut plot = SidmWaveformPlot::new(&rs, 0);
     plot.add_channel(
         &engine,
         "loc://wave_empty",

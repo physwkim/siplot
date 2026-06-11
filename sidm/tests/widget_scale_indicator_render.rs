@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmScaleIndicator`].
+//! Headless wgpu readback of [`SidmScaleIndicator`].
 //!
 //! The proportion maths is unit-tested purely in the module; this proves the bar
 //! actually reaches the screen and tracks the value. A red bar over `[0, 100]` is
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::PydmScaleIndicator;
+use sidm::widgets::SidmScaleIndicator;
 use siplot::egui;
 
 fn wait_for(mut cond: impl FnMut() -> bool, timeout: Duration) -> bool {
@@ -40,7 +40,7 @@ fn render_scale(init: f64) -> u32 {
     let rs = create_render_state(default_wgpu_setup());
     let engine = Engine::new();
     let address = format!("loc://scale_demo?type=float&init={init}");
-    let scale = PydmScaleIndicator::new(&engine, &address)
+    let scale = SidmScaleIndicator::new(&engine, &address)
         .expect("connect")
         .with_limits(0.0, 100.0)
         .with_bar_indicator(true)

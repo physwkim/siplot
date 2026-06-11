@@ -1,4 +1,4 @@
-//! `PydmLabel` — a read-only value display.
+//! `SidmLabel` — a read-only value display.
 //!
 //! Ports `pydm/widgets/label.py`: a label that shows its channel's value,
 //! formatted via [`format_value`], with alarm-severity border/text styling from
@@ -13,7 +13,7 @@ use crate::widgets::base::ChannelBase;
 use crate::widgets::display_format::{DisplayFormat, FormatSpec, format_value};
 
 /// A read-only channel value display (PyDM `PyDMLabel`).
-pub struct PydmLabel {
+pub struct SidmLabel {
     base: ChannelBase,
     /// How the value is rendered (PyDM `displayFormat`).
     pub format: DisplayFormat,
@@ -23,7 +23,7 @@ pub struct PydmLabel {
     pub show_units: bool,
 }
 
-impl PydmLabel {
+impl SidmLabel {
     /// Connect `address` through `engine` and wrap it in a label with PyDM's
     /// defaults (native format, PV precision, no units, alarm border on).
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn formats_value_with_precision_and_units() {
         let engine = Engine::new();
-        let label = PydmLabel::new(&engine, "loc://label_fmt")
+        let label = SidmLabel::new(&engine, "loc://label_fmt")
             .expect("connect")
             .with_precision(2)
             .with_show_units(true);
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn disconnected_shows_channel_address() {
         let engine = Engine::new();
-        let label = PydmLabel::new(&engine, "loc://label_disc").expect("connect");
+        let label = SidmLabel::new(&engine, "loc://label_disc").expect("connect");
         let state = ChannelState {
             connected: false,
             value: Some(PvValue::Float(9.0)),
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn enum_value_renders_label() {
         let engine = Engine::new();
-        let label = PydmLabel::new(&engine, "loc://label_enum").expect("connect");
+        let label = SidmLabel::new(&engine, "loc://label_enum").expect("connect");
         let mut state = connected_state(PvValue::Int(1));
         state.enum_strings = Some(["Off".to_owned(), "On".to_owned()].into());
         assert_eq!(label.display_text(&state), "On");
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn live_value_flows_from_a_write() {
         let engine = Engine::new();
-        let label = PydmLabel::new(&engine, "loc://label_live").expect("connect");
+        let label = SidmLabel::new(&engine, "loc://label_live").expect("connect");
         let writer = engine.connect("loc://label_live").expect("second handle");
         assert!(
             wait_for(|| label.channel().is_connected(), Duration::from_secs(2)),

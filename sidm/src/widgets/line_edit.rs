@@ -1,7 +1,7 @@
-//! `PydmLineEdit` — a writable text entry.
+//! `SidmLineEdit` — a writable text entry.
 //!
 //! Ports `pydm/widgets/line_edit.py`: a single-line text field that shows the
-//! channel value (formatted like [`PydmLabel`](crate::widgets::PydmLabel)) and, on Enter, parses the typed
+//! channel value (formatted like [`SidmLabel`](crate::widgets::SidmLabel)) and, on Enter, parses the typed
 //! text back into a [`PvValue`] and writes it. The parse is keyed on the current
 //! value's type (the PyDM `channeltype`) and the display format, mirroring
 //! `send_value`:
@@ -29,7 +29,7 @@ use crate::widgets::base::ChannelBase;
 use crate::widgets::display_format::{DisplayFormat, FormatSpec, format_value};
 
 /// A writable channel text entry (PyDM `PyDMLineEdit`).
-pub struct PydmLineEdit {
+pub struct SidmLineEdit {
     base: ChannelBase,
     /// How the value is rendered and how typed text is interpreted (PyDM
     /// `displayFormat`).
@@ -44,7 +44,7 @@ pub struct PydmLineEdit {
     editing: bool,
 }
 
-impl PydmLineEdit {
+impl SidmLineEdit {
     /// Connect `address` through `engine` and wrap it in a writable line edit
     /// with PyDM's defaults.
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
@@ -90,7 +90,7 @@ impl PydmLineEdit {
     }
 
     /// The text the field shows for `state`: the formatted value, or empty when
-    /// no value has arrived. Unlike [`PydmLabel`](crate::widgets::PydmLabel), a line edit keeps showing the
+    /// no value has arrived. Unlike [`SidmLabel`](crate::widgets::SidmLabel), a line edit keeps showing the
     /// last value while disconnected (the field is merely disabled).
     pub fn current_text(&self, state: &ChannelState) -> String {
         format_value(state.value.as_ref(), state, self.format_spec())

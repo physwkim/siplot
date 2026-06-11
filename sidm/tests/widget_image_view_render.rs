@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmImageView`].
+//! Headless wgpu readback of [`SidmImageView`].
 //!
 //! The reshape, array extraction, and colour-range logic are unit-tested purely
 //! in the module; this proves a flat array channel actually reaches the screen
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
-use sidm::widgets::PydmImageView;
+use sidm::widgets::SidmImageView;
 use sidm::{Engine, PvValue};
 use siplot::egui;
 
@@ -50,7 +50,7 @@ fn count_colorful(raw: &[u8]) -> u32 {
 
 /// Hide the colorbar and side histograms so only the image contributes
 /// colour-mapped pixels.
-fn bare(view: &mut PydmImageView) {
+fn bare(view: &mut SidmImageView) {
     view.view_mut().set_show_colorbar(false);
     view.view_mut().set_side_histogram_displayed(false);
 }
@@ -60,7 +60,7 @@ fn gradient_array_renders_a_color_mapped_image() {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut view = PydmImageView::new(&engine, &rs, 0, "loc://cam", None)
+    let mut view = SidmImageView::new(&engine, &rs, 0, "loc://cam", None)
         .expect("connect image channel")
         .with_width(16)
         .with_color_map_range(0.0, 255.0);
@@ -108,7 +108,7 @@ fn view_without_data_renders_no_color_mapped_image() {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut view = PydmImageView::new(&engine, &rs, 0, "loc://cam_empty", None)
+    let mut view = SidmImageView::new(&engine, &rs, 0, "loc://cam_empty", None)
         .expect("connect image channel")
         .with_width(16);
     bare(&mut view);

@@ -1,4 +1,4 @@
-//! `PydmEnumComboBox` — pick an enum value from a drop-down.
+//! `SidmEnumComboBox` — pick an enum value from a drop-down.
 //!
 //! Ports `pydm/widgets/enum_combo_box.py`: the items come from the channel's
 //! enum strings (`enum_strings_changed`), the current selection is derived from
@@ -7,9 +7,9 @@
 //! an item writes its **index** (`internal_combo_box_activated_int` →
 //! `send_value_signal.emit(index)`).
 //!
-//! The item list and current index are the pure [`PydmEnumComboBox::options`] /
-//! [`PydmEnumComboBox::current_index`]; [`PydmEnumComboBox::show`] is a thin egui
-//! shell over [`PydmEnumComboBox::select`].
+//! The item list and current index are the pure [`SidmEnumComboBox::options`] /
+//! [`SidmEnumComboBox::current_index`]; [`SidmEnumComboBox::show`] is a thin egui
+//! shell over [`SidmEnumComboBox::select`].
 
 use siplot::egui;
 
@@ -19,11 +19,11 @@ use crate::widgets::base::ChannelBase;
 use crate::widgets::enum_choice::{enum_current_index, enum_index_value, enum_options};
 
 /// A drop-down bound to a PV's enum strings (PyDM `PyDMEnumComboBox`).
-pub struct PydmEnumComboBox {
+pub struct SidmEnumComboBox {
     base: ChannelBase,
 }
 
-impl PydmEnumComboBox {
+impl SidmEnumComboBox {
     /// Connect `address` and wrap it in an enum combo box.
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
         Ok(Self {
@@ -118,20 +118,20 @@ mod tests {
     #[test]
     fn options_are_the_enum_strings_or_empty() {
         let st = state_with(None, Some(&["Off", "On"]));
-        assert_eq!(PydmEnumComboBox::options(&st), vec!["Off", "On"]);
+        assert_eq!(SidmEnumComboBox::options(&st), vec!["Off", "On"]);
         let st = state_with(None, None);
-        assert!(PydmEnumComboBox::options(&st).is_empty());
+        assert!(SidmEnumComboBox::options(&st).is_empty());
     }
 
     #[test]
     fn current_index_from_int_enum_and_bool() {
         let enums = Some(["Off", "On", "Trip"].as_slice());
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(Some(PvValue::Int(2)), enums)),
+            SidmEnumComboBox::current_index(&state_with(Some(PvValue::Int(2)), enums)),
             Some(2)
         );
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(
+            SidmEnumComboBox::current_index(&state_with(
                 Some(PvValue::Enum {
                     index: 1,
                     label: None
@@ -141,7 +141,7 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(Some(PvValue::Bool(true)), enums)),
+            SidmEnumComboBox::current_index(&state_with(Some(PvValue::Bool(true)), enums)),
             Some(1)
         );
     }
@@ -150,12 +150,12 @@ mod tests {
     fn current_index_from_string_matches_enum_text() {
         let enums = Some(["Off", "On", "Trip"].as_slice());
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(Some(PvValue::Str("Trip".into())), enums)),
+            SidmEnumComboBox::current_index(&state_with(Some(PvValue::Str("Trip".into())), enums)),
             Some(2)
         );
         // A string with no matching item selects nothing (PyDM findText == -1).
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(Some(PvValue::Str("Nope".into())), enums)),
+            SidmEnumComboBox::current_index(&state_with(Some(PvValue::Str("Nope".into())), enums)),
             None
         );
     }
@@ -164,16 +164,16 @@ mod tests {
     fn current_index_none_for_unsupported_or_missing() {
         let enums = Some(["Off", "On"].as_slice());
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(Some(PvValue::Float(1.0)), enums)),
+            SidmEnumComboBox::current_index(&state_with(Some(PvValue::Float(1.0)), enums)),
             None
         );
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(None, enums)),
+            SidmEnumComboBox::current_index(&state_with(None, enums)),
             None
         );
         // A negative int is not a valid index.
         assert_eq!(
-            PydmEnumComboBox::current_index(&state_with(Some(PvValue::Int(-1)), enums)),
+            SidmEnumComboBox::current_index(&state_with(Some(PvValue::Int(-1)), enums)),
             None
         );
     }
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn select_writes_the_index_to_the_channel() {
         let engine = Engine::new();
-        let combo = PydmEnumComboBox::new(&engine, "loc://enum_combo_select").expect("connect");
+        let combo = SidmEnumComboBox::new(&engine, "loc://enum_combo_select").expect("connect");
         assert!(
             wait_for(|| combo.channel().is_connected(), Duration::from_secs(2)),
             "combo channel never connected"

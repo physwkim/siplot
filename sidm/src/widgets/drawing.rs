@@ -1,4 +1,4 @@
-//! `PydmDrawing` — a static shape with a fill, border, rotation, and optional
+//! `SidmDrawing` — a static shape with a fill, border, rotation, and optional
 //! alarm-driven recolouring.
 //!
 //! Ports the core of `pydm/widgets/drawing.py` (`PyDMDrawing` + the
@@ -24,7 +24,7 @@ use crate::channel::{AlarmSeverity, Channel};
 use crate::engine::{Engine, EngineError};
 use crate::widgets::base::{ChannelBase, severity_color};
 
-/// The shape drawn by a [`PydmDrawing`] (PyDM `PyDMDrawing*` subclasses).
+/// The shape drawn by a [`SidmDrawing`] (PyDM `PyDMDrawing*` subclasses).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DrawingShape {
     /// A filled rectangle (PyDM `PyDMDrawingRectangle`).
@@ -83,7 +83,7 @@ fn rotate(dx: f64, dy: f64, angle_rad: f64) -> (f64, f64) {
 /// box and rotated by `rotation_deg`. A `Line` returns its two endpoints.
 ///
 /// Shared with [`crate::widgets::symbol`]: it is the one owner of the shape
-/// geometry, so `PydmSymbol` fills its bounds with these points rather than
+/// geometry, so `SidmSymbol` fills its bounds with these points rather than
 /// re-deriving the ellipse sampling.
 pub(crate) fn shape_points(
     shape: DrawingShape,
@@ -125,7 +125,7 @@ fn ellipse_local(rw: f64, rh: f64) -> Vec<(f64, f64)> {
 
 /// A static shape driven by a channel only for its alarm/connection state (PyDM
 /// `PyDMDrawing*`).
-pub struct PydmDrawing {
+pub struct SidmDrawing {
     base: ChannelBase,
     shape: DrawingShape,
     fill: Color32,
@@ -135,7 +135,7 @@ pub struct PydmDrawing {
     size: Vec2,
 }
 
-impl PydmDrawing {
+impl SidmDrawing {
     /// Connect `address` and wrap it as a drawing of `shape`. The border is off
     /// by default (PyDM pen `NoPen`), as is the alarm border (PyDM
     /// `PyDMDrawing.alarmSensitiveBorder = False`).

@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmEventPlot`].
+//! Headless wgpu readback of [`SidmEventPlot`].
 //!
 //! `event_sample` (the `(x_idx, y_idx)` selection) is unit-tested purely in the
 //! module; this drives real `loc://` event arrays through the widget — exercising
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
-use sidm::widgets::PydmEventPlot;
+use sidm::widgets::SidmEventPlot;
 use sidm::{Engine, PvValue};
 use siplot::egui;
 
@@ -44,7 +44,7 @@ fn render_events(samples: &[(f64, f64)]) -> (u32, usize) {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
     let engine = Engine::new();
-    let mut plot = PydmEventPlot::new(&rs, 0);
+    let mut plot = SidmEventPlot::new(&rs, 0);
     let idx = plot
         .add_channel(
             &engine,

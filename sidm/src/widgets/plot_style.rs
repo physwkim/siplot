@@ -5,7 +5,7 @@
 //! `symbolSize`, and `yAxisName` (which named Y axis the curve is plotted
 //! against). siplot's [`CurveSpec`] carries the exact same knobs, so this module
 //! is the one owner of the PyDM-curve-property → `CurveSpec` mapping that
-//! `PydmTimePlot` / `PydmWaveformPlot` / `PydmScatterPlot` / `PydmEventPlot` all
+//! `SidmTimePlot` / `SidmWaveformPlot` / `SidmScatterPlot` / `SidmEventPlot` all
 //! build their specs from.
 //!
 //! PyDM (via `MultiAxisPlot`) supports an arbitrary number of named Y axes

@@ -85,10 +85,10 @@ eframe = "0.34"
 # A panel of PyDM-style widgets driven entirely by `loc://`/`fake://` channels,
 # so it runs with no IOC.
 [[example]]
-name = "pydm_local_panel"
+name = "sidm_local_panel"
 required-features = []
 
 # The same panel against live `ca://` PVs supplied on the command line.
 [[example]]
-name = "pydm_ca_panel"
+name = "sidm_ca_panel"
 required-features = ["ca"]

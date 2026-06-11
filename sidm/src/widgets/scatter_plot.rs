@@ -1,4 +1,4 @@
-//! `PydmScatterPlot` — paired scalar channels as accumulated XY markers.
+//! `SidmScatterPlot` — paired scalar channels as accumulated XY markers.
 //!
 //! Ports `pydm/widgets/scatterplot.py` (`PyDMScatterPlot` +
 //! `ScatterPlotCurveItem`) onto a `siplot` [`Plot1D`] scatter item. Each curve
@@ -97,13 +97,13 @@ impl ScatterCurve {
 
 /// A plot accumulating `(x, y)` pairs from paired scalar PVs (PyDM
 /// `PyDMScatterPlot`).
-pub struct PydmScatterPlot {
+pub struct SidmScatterPlot {
     plot: Plot1D,
     curves: Vec<ScatterCurve>,
     buffer_size: usize,
 }
 
-impl PydmScatterPlot {
+impl SidmScatterPlot {
     /// Create an empty scatter plot on the given GPU `render_state` and plot
     /// `id`.
     pub fn new(render_state: &RenderState, id: PlotId) -> Self {

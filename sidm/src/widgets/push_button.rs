@@ -1,4 +1,4 @@
-//! `PydmPushButton` — write a fixed value on click.
+//! `SidmPushButton` — write a fixed value on click.
 //!
 //! Ports `pydm/widgets/pushbutton.py`: on click it writes `press_value` to the
 //! channel; with `relative` set it writes `current + press_value` for numeric
@@ -8,8 +8,8 @@
 //! [`egui::Modal`]).
 //!
 //! The value computation is the pure [`compute_send_value`]; the click/modal
-//! handling in [`PydmPushButton::show`] is a thin shell over
-//! [`PydmPushButton::send_press`]. PyDM's password protection and the separate
+//! handling in [`SidmPushButton::show`] is a thin shell over
+//! [`SidmPushButton::send_press`]. PyDM's password protection and the separate
 //! press-vs-release pointer timing are not ported: a click is one press (plus an
 //! absolute release write when `release_value` is set).
 
@@ -53,7 +53,7 @@ pub fn compute_send_value(
 }
 
 /// A momentary write button (PyDM `PyDMPushButton`).
-pub struct PydmPushButton {
+pub struct SidmPushButton {
     base: ChannelBase,
     /// Button caption.
     pub label: String,
@@ -73,7 +73,7 @@ pub struct PydmPushButton {
     confirm_pending: bool,
 }
 
-impl PydmPushButton {
+impl SidmPushButton {
     /// Connect `address` and wrap it in a push button with the given caption and
     /// press value.
     pub fn new(
@@ -263,7 +263,7 @@ mod tests {
         let writer = engine.connect("loc://pushbtn_send").expect("seed handle");
         // Seed a numeric value so relative has something to add to.
         writer.put(PvValue::Int(10));
-        let button = PydmPushButton::new(&engine, "loc://pushbtn_send", "Step", "5")
+        let button = SidmPushButton::new(&engine, "loc://pushbtn_send", "Step", "5")
             .expect("connect")
             .with_relative(true);
         assert!(

@@ -1,4 +1,4 @@
-//! `PydmSpinbox` — a numeric entry that writes a float.
+//! `SidmSpinbox` — a numeric entry that writes a float.
 //!
 //! Ports `pydm/widgets/spinbox.py`: a `QDoubleSpinBox` whose decimals follow the
 //! PV precision (`precision_changed` → `setDecimals`), whose min/max follow the
@@ -9,7 +9,7 @@
 //!
 //! The range resolution is the pure
 //! [`control_range`]; the write is
-//! [`PydmSpinbox::set_value`]; [`PydmSpinbox::show`] is a thin egui shell.
+//! [`SidmSpinbox::set_value`]; [`SidmSpinbox::show`] is a thin egui shell.
 
 use siplot::egui;
 
@@ -18,7 +18,7 @@ use crate::engine::{Engine, EngineError};
 use crate::widgets::base::{ChannelBase, control_range};
 
 /// A writable numeric spin box (PyDM `PyDMSpinbox`).
-pub struct PydmSpinbox {
+pub struct SidmSpinbox {
     base: ChannelBase,
     /// Override the displayed decimals (PyDM `precision`); `None` uses the PV's
     /// precision (or `0`).
@@ -31,7 +31,7 @@ pub struct PydmSpinbox {
     pub step: Option<f64>,
 }
 
-impl PydmSpinbox {
+impl SidmSpinbox {
     /// Connect `address` and wrap it in a spin box.
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
         Ok(Self {
@@ -139,9 +139,9 @@ mod tests {
         }
     }
 
-    fn spinbox(address: &str) -> (Engine, PydmSpinbox) {
+    fn spinbox(address: &str) -> (Engine, SidmSpinbox) {
         let engine = Engine::new();
-        let spin = PydmSpinbox::new(&engine, address).expect("connect");
+        let spin = SidmSpinbox::new(&engine, address).expect("connect");
         (engine, spin)
     }
 

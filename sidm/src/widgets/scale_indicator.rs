@@ -1,4 +1,4 @@
-//! `PydmScaleIndicator` — a value shown as a bar/pointer on a tick scale.
+//! `SidmScaleIndicator` — a value shown as a bar/pointer on a tick scale.
 //!
 //! Ports `pydm/widgets/scale.py` (`QScale` + `PyDMScaleIndicator`) with the alarm
 //! colouring of `pydm/widgets/analog_indicator.py` folded in: the value is mapped
@@ -50,7 +50,7 @@ pub fn division_proportions(num_divisions: u32) -> Vec<f64> {
 }
 
 /// A value indicator on a tick scale (PyDM `PyDMScaleIndicator`).
-pub struct PydmScaleIndicator {
+pub struct SidmScaleIndicator {
     base: ChannelBase,
     user_limits: Option<(f64, f64)>,
     num_divisions: u32,
@@ -64,7 +64,7 @@ pub struct PydmScaleIndicator {
     size: Vec2,
 }
 
-impl PydmScaleIndicator {
+impl SidmScaleIndicator {
     /// Connect `address` and wrap it in a scale indicator (horizontal, pointer
     /// style, value label on — PyDM defaults).
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {

@@ -1,4 +1,4 @@
-//! Headless wgpu readback of [`PydmTimePlot`].
+//! Headless wgpu readback of [`SidmTimePlot`].
 //!
 //! The sample-feeding logic and fixed-rate timing are unit-tested purely in
 //! `widgets/time_plot.rs`; this proves the curve actually reaches the screen.
@@ -20,11 +20,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use sidm::Engine;
-use sidm::widgets::PydmTimePlot;
+use sidm::widgets::SidmTimePlot;
 use siplot::egui;
 
 struct App {
-    plot: PydmTimePlot,
+    plot: SidmTimePlot,
 }
 
 impl App {
@@ -49,12 +49,12 @@ fn count_green(raw: &[u8]) -> u32 {
 
 /// Render a time plot after running `setup` on it (e.g. injecting samples) and
 /// return the green pixel count.
-fn render_with(setup: impl FnOnce(&mut PydmTimePlot, usize)) -> u32 {
+fn render_with(setup: impl FnOnce(&mut SidmTimePlot, usize)) -> u32 {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
 
     let engine = Engine::new();
-    let mut plot = PydmTimePlot::new(&rs, 0).with_time_span(6.0);
+    let mut plot = SidmTimePlot::new(&rs, 0).with_time_span(6.0);
     let idx = plot
         .add_channel(
             &engine,
