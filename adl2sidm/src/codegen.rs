@@ -145,8 +145,9 @@ pub fn generate(screen: &MedmScreen, options: &Options) -> Generated {
     }
 }
 
-/// Dispatch one MEDM widget to its emitter, recording a warning for any symbol
-/// whose emitter has not landed yet (or is an unsupported stub).
+/// Dispatch one MEDM widget to its emitter. Every MEDM widget symbol has a
+/// dedicated emitter; the `_` arm is an unreachable defensive backstop that
+/// warns rather than silently dropping a future, not-yet-handled symbol.
 fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
     let Some(map) = symbols::lookup(&widget.symbol) else {
         b.warnings.push(format!(
@@ -3090,12 +3091,13 @@ composite {
         assert!(g.source.contains("SidmWaveformPlot::new(rs, 1)"));
     }
 
-    // The remaining-gap widgets: the static-file image, the embedded display,
-    // and the deferred nav/shell controls. None has a faithful SiDM mapping, so
-    // each warns; the visible ones emit a placeholder, never a silent drop. The
-    // arc and polyline here DO map (to `DrawingShape::Arc`/`Polyline`) and are
-    // asserted as real drawings.
-    const STUBS: &str = r#"
+    // The formerly-deferred widgets, now all implemented for real: the static
+    // shapes (arc/polyline → `DrawingShape::Arc`/`Polyline`), the static-file
+    // image (`SidmImage`), the embedded display (inlined into a `SidmFrame`), and
+    // the nav/shell controls (live `egui::Button`s). Each is asserted as its real
+    // SiDM target below; degenerate inputs still fall back to a visible marker
+    // rather than a silent drop.
+    const DEFERRED: &str = r#"
 "color map" {
 	colors {
 		ffffff,
@@ -3180,13 +3182,13 @@ image {
 }
 "#;
 
-    fn stubs() -> Generated {
-        generate(&parse(STUBS), &Options::default())
+    fn deferred() -> Generated {
+        generate(&parse(DEFERRED), &Options::default())
     }
 
     #[test]
     fn arc_and_polyline_emit_real_drawings_at_the_background_layer() {
-        let g = stubs();
+        let g = deferred();
         // arc -> SidmDrawing(Arc) with the parsed begin/span degrees (2880/64=45,
         // 5760/64=90), no Qt-style negation, at the Background (decoration) layer.
         assert!(
@@ -3267,7 +3269,7 @@ polygon {
 
     #[test]
     fn image_emits_a_channel_less_sidm_image_sized_to_the_geometry() {
-        let g = stubs();
+        let g = deferred();
         // The MEDM static file image becomes a channel-less SidmImage naming the
         // file, sized to the MEDM geometry (100×73) — never a SidmImageView
         // (which would need an array channel a file image has none of).
@@ -3293,9 +3295,9 @@ polygon {
 
     #[test]
     fn embedded_display_without_a_file_emits_a_no_file_marker() {
-        // The STUBS embedded display is a literal block with no `composite file`,
+        // The DEFERRED embedded display is a literal block with no `composite file`,
         // so there is nothing to inline — a visible marker, not a silent drop.
-        let g = stubs();
+        let g = deferred();
         assert!(
             g.warnings
                 .iter()
@@ -3471,7 +3473,7 @@ composite {
 
     #[test]
     fn shell_command_emits_a_live_menu_spawning_each_command() {
-        let g = stubs();
+        let g = deferred();
         // Two commands and no widget label -> a `menu_button` with the generic
         // title and one item per command. Each item spawns `sh -c "<name>"` and
         // closes the menu — a live control, not a disabled placeholder.
@@ -3554,7 +3556,7 @@ composite {
 
     #[test]
     fn related_display_emits_a_live_navigation_reporting_button() {
-        let g = stubs();
+        let g = deferred();
         // The sole target -> a live, enabled button captioned by the display's
         // label that logs the target on click (SiDM has no runtime loader to
         // actually swap screens), at the control (Foreground) layer.

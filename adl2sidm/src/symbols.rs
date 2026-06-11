@@ -84,61 +84,59 @@ impl Category {
 pub struct WidgetMap {
     /// Draw/role category (z-layer + channel expectation).
     pub category: Category,
-    /// The SiDM widget the emitter targets, e.g. `"SidmLabel"`. For an
-    /// unsupported MEDM widget this names the stub strategy, e.g.
-    /// `"stub: SidmPushButton (disabled)"`.
+    /// The SiDM widget the emitter targets, e.g. `"SidmLabel"`. Every MEDM
+    /// widget now maps to a faithful target — no stubs remain.
     pub sidm_widget: &'static str,
-    /// `false` for the six MEDM widgets with no faithful SiDM target yet
-    /// (`arc`/`polygon`/`polyline`/`related display`/`shell command`/
-    /// `embedded display`); the emitter writes a documented stub + a warning.
-    pub supported: bool,
 }
 
 /// Look up the SiDM mapping for a MEDM widget symbol. Returns `None` for a
 /// symbol that is not a MEDM widget (screen metadata such as `file`/`display`).
 pub fn lookup(symbol: &str) -> Option<WidgetMap> {
     use Category::{Container, Control, Decoration, Monitor};
-    let (category, sidm_widget, supported) = match symbol {
+    let (category, sidm_widget) = match symbol {
         // --- direct: existing SiDM widget ---
-        "text" => (Decoration, "SidmLabel (static text)", true),
-        "text update" => (Monitor, "SidmLabel", true),
-        "text entry" => (Control, "SidmLineEdit", true),
-        "menu" => (Control, "SidmEnumComboBox", true),
-        "choice button" => (Control, "SidmEnumButton", true),
-        "message button" => (Control, "SidmPushButton", true),
-        "valuator" => (Control, "SidmSlider", true),
-        "wheel switch" => (Control, "SidmSpinbox", true),
-        "byte" => (Monitor, "SidmByteIndicator", true),
-        "bar" => (Monitor, "SidmScaleIndicator", true),
-        "indicator" => (Monitor, "SidmScaleIndicator", true),
-        "meter" => (Monitor, "SidmScaleIndicator", true),
-        "composite" => (Container, "SidmFrame", true),
-        "rectangle" => (Decoration, "SidmDrawing(Rectangle)", true),
-        "oval" => (Decoration, "SidmDrawing(Ellipse)", true),
-        "strip chart" => (Monitor, "SidmTimePlot", true),
-        "cartesian plot" => (Monitor, "SidmWaveformPlot", true),
+        "text" => (Decoration, "SidmLabel (static text)"),
+        "text update" => (Monitor, "SidmLabel"),
+        "text entry" => (Control, "SidmLineEdit"),
+        "menu" => (Control, "SidmEnumComboBox"),
+        "choice button" => (Control, "SidmEnumButton"),
+        "message button" => (Control, "SidmPushButton"),
+        "valuator" => (Control, "SidmSlider"),
+        "wheel switch" => (Control, "SidmSpinbox"),
+        "byte" => (Monitor, "SidmByteIndicator"),
+        "bar" => (Monitor, "SidmScaleIndicator"),
+        "indicator" => (Monitor, "SidmScaleIndicator"),
+        "meter" => (Monitor, "SidmScaleIndicator"),
+        "composite" => (Container, "SidmFrame"),
+        "rectangle" => (Decoration, "SidmDrawing(Rectangle)"),
+        "oval" => (Decoration, "SidmDrawing(Ellipse)"),
+        "strip chart" => (Monitor, "SidmTimePlot"),
+        "cartesian plot" => (Monitor, "SidmWaveformPlot"),
+        "arc" => (Decoration, "SidmDrawing(Arc)"),
+        "polygon" => (Decoration, "SidmDrawing(Polygon)"),
+        "polyline" => (Decoration, "SidmDrawing(Polyline)"),
         // Divergence from `symbols.py` (`type="monitor"`): the MEDM `image` is a
         // static GIF/TIFF *file* with no data channel, emitted as a channel-less
         // `SidmImage`. It is decoration, so it belongs in the Background layer with
         // the other static graphics (Qt gives adl2pydm native z-order; our 3-bucket
         // model must bucket it with decorations to keep it behind monitors/controls
         // and preserve its draw order relative to sibling static shapes).
-        "image" => (Decoration, "SidmImage", true),
+        "image" => (Decoration, "SidmImage"),
 
-        // --- unsupported: emit a documented stub + warning ---
-        "arc" => (Decoration, "stub: no DrawingShape::Arc", false),
-        "polygon" => (Decoration, "stub: no DrawingShape::Polygon", false),
-        "polyline" => (Decoration, "stub: no DrawingShape::Polyline", false),
-        "related display" => (Control, "stub: SidmPushButton (disabled, nav)", false),
-        "shell command" => (Control, "stub: SidmPushButton (disabled, shell)", false),
-        "embedded display" => (Container, "stub: skip (no embedded loader)", false),
+        // --- clickable nav/action widgets: `symbols.py` types these `static`,
+        // but they are interactive buttons here, so they sit in the Control
+        // (front) layer where a decoration cannot occlude them ---
+        "related display" => (Control, "egui::Button (related display)"),
+        "shell command" => (Control, "egui::Button (shell command)"),
+        // The MEDM embedded display is inlined at code-gen time: its target
+        // screen is parsed and its widgets re-layered inside a `SidmFrame`.
+        "embedded display" => (Container, "SidmFrame (inlined)"),
 
         _ => return None,
     };
     Some(WidgetMap {
         category,
         sidm_widget,
-        supported,
     })
 }
 
@@ -199,27 +197,21 @@ mod tests {
             let map = lookup(symbol).unwrap();
             assert_eq!(map.category, Category::Control, "{symbol}");
             assert_eq!(map.category.z_layer(), ZLayer::Foreground, "{symbol}");
-            assert!(!map.supported, "{symbol} is a stub");
         }
     }
 
     #[test]
-    fn the_six_unsupported_widgets_are_flagged() {
-        let unsupported: Vec<&str> = ADL_WIDGET_SYMBOLS
-            .iter()
-            .copied()
-            .filter(|s| !lookup(s).unwrap().supported)
-            .collect();
-        assert_eq!(
-            unsupported,
-            vec![
-                "arc",
-                "embedded display",
-                "polygon",
-                "polyline",
-                "related display",
-                "shell command",
-            ]
-        );
+    fn every_widget_maps_to_a_real_target_no_stubs_remain() {
+        // The former stub set (arc/polygon/polyline/related display/shell
+        // command/embedded display) and `image` are all implemented now, so no
+        // mapping may describe a stub strategy.
+        for &symbol in ADL_WIDGET_SYMBOLS {
+            let map = lookup(symbol).unwrap();
+            assert!(
+                !map.sidm_widget.contains("stub"),
+                "{symbol} still maps to a stub: {}",
+                map.sidm_widget
+            );
+        }
     }
 }

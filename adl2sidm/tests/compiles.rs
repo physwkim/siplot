@@ -80,7 +80,7 @@ fn example_screen_matches_the_committed_module() {
 }
 
 #[test]
-fn sample_conversion_only_warns_for_the_known_unsupported_bits() {
+fn sample_conversion_warns_only_with_the_informational_visibility_note() {
     let adl = include_str!("fixtures/sample.adl");
     let generated = generate(&parse(adl), &sample_options());
     // Every widget converts to a real SiDM widget; the one warning is the
