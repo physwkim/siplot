@@ -102,7 +102,15 @@ not silently dropped (SiDM has no rules engine yet).
   to wire a PV. `related display`/`shell command` are typed Control (front) even
   though adl2pydm types them `static`, so a decoration cannot occlude them.
   6 tests (full-coverage of `ADL_WIDGET_SYMBOLS`, z-layer ordering, stub flags).
-- ⬜ B4 — `codegen.rs` scaffold + simplest widgets (text / text update / text entry).
+- ✅ B4 — `codegen.rs` scaffold + simplest widgets (text / text update / text
+  entry). Emits the `Screen` struct + `new(cc)` + `ui()` + the absolute `place`
+  helper; channel address = `control`/`monitor` `chan` with `$(macro)`
+  substitution + protocol prefix; `precDefault` → `.with_precision`; static
+  `text` → a fieldless `ui.label`. The z-order is applied as a stable sort by
+  `ZLayer` AND per-Area `egui::Order`. Imports are conditional so output is
+  warning-clean. 4 codegen tests; the generated screen was smoke-checked to
+  `cargo check` clean against real sidm/siplot/eframe (confirming the forked
+  `eframe::App::ui(ui, frame)` shape the C11 example will wrap).
 - ⬜ B5 — emitter batch: controls (message button, menu, choice button, valuator, wheel switch, byte).
 - ⬜ B6 — emitter batch: indicators + shapes (bar/indicator/meter, composite, rectangle/oval).
 - ⬜ B7 — emitter batch: plots + image (strip chart, cartesian plot, image).

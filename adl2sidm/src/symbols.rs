@@ -19,8 +19,10 @@
 //! "control must not be occluded" case.
 
 /// The back-to-front draw layer a widget is placed in. Maps directly onto
-/// `egui::Order` in the generated code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `egui::Order` in the generated code. The variant order is the draw order, so
+/// `derive(Ord)` gives `Background < Middle < Foreground` — a stable sort by
+/// `ZLayer` lays widgets out back-to-front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ZLayer {
     /// Decoration — drawn first, lowest layer (`egui::Order::Background`).
     Background,
