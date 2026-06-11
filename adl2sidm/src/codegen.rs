@@ -394,6 +394,10 @@ fn emit_static_text(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
     let text = widget.title.clone().unwrap_or_default();
     let color = widget.color.unwrap_or(Color { r: 0, g: 0, b: 0 });
     b.needs_color = true;
+    // MEDM auto-sizes the font to the widget height; render the static text at
+    // that size (egui resolves `RichText` without an explicit size against
+    // `override_font_id` before `TextStyle::Body`).
+    let font_px = font_px_from_height(geom.height);
     let label_call = format!(
         "ui.label(egui::RichText::new({}).color({}));",
         rust_str(&text),
@@ -402,12 +406,16 @@ fn emit_static_text(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
     // MEDM `align` positions the text horizontally. Left (the default) keeps the
     // bare `ui.label`; centre/right wrap it in a top-down layout whose cross-axis
     // alignment moves the text without changing its vertical placement.
-    let body = match text_alignment(widget) {
+    let aligned = match text_alignment(widget) {
         Some((_, align)) => format!(
             "ui.with_layout(egui::Layout::top_down(egui::Align::{align}), |ui| {{ {label_call} }});"
         ),
         None => label_call,
     };
+    let body = format!(
+        "{{\n    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));\n    {aligned}\n}}",
+        float_lit(f64::from(font_px))
+    );
     b.placements.push(Placement::drawn(z, id, geom, body));
 }
 
@@ -433,6 +441,7 @@ fn emit_text_update(b: &mut Builder, widget: &MedmWidget, options: &Options, z: 
             connect_desc: &format!("adl2sidm: connect {addr} (text update)"),
             builders: &builders,
             colors: WidgetColors::from_widget(widget),
+            font_px: Some(font_px_from_height(geom.height)),
         },
     );
 }
@@ -455,6 +464,7 @@ fn emit_text_entry(b: &mut Builder, widget: &MedmWidget, options: &Options, z: Z
             connect_desc: &format!("adl2sidm: connect {addr}"),
             builders: &builders,
             colors: WidgetColors::from_widget(widget),
+            font_px: Some(font_px_from_height(geom.height)),
         },
     );
 }
@@ -491,6 +501,7 @@ fn emit_message_button(b: &mut Builder, widget: &MedmWidget, options: &Options, 
             connect_desc: &format!("adl2sidm: connect {addr} (message button)"),
             builders: &builders,
             colors: WidgetColors::from_widget(widget),
+            font_px: Some(font_px_from_height(geom.height)),
         },
     );
 }
@@ -511,6 +522,7 @@ fn emit_menu(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
             connect_desc: &format!("adl2sidm: connect {addr} (menu)"),
             builders: &[],
             colors: WidgetColors::from_widget(widget),
+            font_px: Some(font_px_from_height(geom.height)),
         },
     );
 }
@@ -548,6 +560,7 @@ fn emit_choice_button(b: &mut Builder, widget: &MedmWidget, options: &Options, z
             connect_desc: &format!("adl2sidm: connect {addr} (choice button)"),
             builders: &builders,
             colors: WidgetColors::from_widget(widget),
+            font_px: Some(font_px_from_height(geom.height)),
         },
     );
 }
@@ -584,6 +597,7 @@ fn emit_valuator(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLa
             connect_desc: &format!("adl2sidm: connect {addr} (valuator)"),
             builders: &builders,
             colors: WidgetColors::default(),
+            font_px: None,
         },
     );
 }
@@ -630,6 +644,9 @@ fn emit_wheel_switch(b: &mut Builder, widget: &MedmWidget, options: &Options, z:
             // and `bclr` fills behind it — the same text/fill semantics as the
             // other value widgets, unlike the slider whose `clr` is a track colour.
             colors: WidgetColors::from_widget(widget),
+            // adl2pydm does not size the wheel-switch font from height; keep the
+            // sidm default so we stay at parity.
+            font_px: None,
         },
     );
 }
@@ -698,6 +715,7 @@ fn emit_byte(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
             connect_desc: &format!("adl2sidm: connect {addr} (byte)"),
             builders: &builders,
             colors: WidgetColors::default(),
+            font_px: None,
         },
     );
 }
@@ -764,6 +782,7 @@ fn emit_scale_indicator(
             connect_desc: &format!("adl2sidm: connect {addr} (scale indicator)"),
             builders: &builders,
             colors: WidgetColors::default(),
+            font_px: None,
         },
     );
 }
@@ -795,6 +814,7 @@ fn emit_drawing(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLay
             connect_desc: &format!("adl2sidm: connect {addr} (drawing)"),
             builders: &builders,
             colors: WidgetColors::default(),
+            font_px: None,
         },
     );
 }
@@ -880,6 +900,7 @@ fn emit_arc(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer) 
             connect_desc: &format!("adl2sidm: connect {addr} (arc)"),
             builders: &builders,
             colors: WidgetColors::default(),
+            font_px: None,
         },
     );
 }
@@ -947,6 +968,7 @@ fn emit_polyshape(
             connect_desc: &format!("adl2sidm: connect {addr} ({kind})"),
             builders: &builders,
             colors: WidgetColors::default(),
+            font_px: None,
         },
     );
 }
@@ -1443,6 +1465,12 @@ fn emit_shell_command(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         body.push_str("\n});");
         body
     };
+    // MEDM auto-sizes the button/menu caption to the widget height; egui resolves
+    // the button text against `override_font_id` before `TextStyle::Body`.
+    let body = format!(
+        "{{\n    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));\n    {body}\n}}",
+        float_lit(f64::from(font_px_from_height(geom.height)))
+    );
     b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
         "line {}: shell command emitted as a live button/menu (spawns via `sh -c`)",
@@ -1703,6 +1731,12 @@ fn emit_related_display(b: &mut Builder, widget: &MedmWidget, options: &Options,
         body.push_str("\n});");
         body
     };
+    // MEDM auto-sizes the button/menu caption to the widget height; egui resolves
+    // the button text against `override_font_id` before `TextStyle::Body`.
+    let body = format!(
+        "{{\n    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));\n    {body}\n}}",
+        float_lit(f64::from(font_px_from_height(geom.height)))
+    );
     b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
         "line {}: related display emitted as a navigation-reporting button/menu \
@@ -1840,18 +1874,41 @@ impl WidgetColors {
     }
 }
 
-/// The draw body for a channel widget, optionally applying static MEDM colours
-/// before `show`. The background is painted as a filled rect behind the widget;
-/// the foreground is set as `override_text_color`, which the widget's text honours
-/// unless it is alarm-driven (alarm colouring sets the text colour explicitly and
-/// so still wins, matching MEDM `clrmod="alarm"` overriding the static `clr`).
-fn colored_show_body(b: &mut Builder, field: &str, colors: WidgetColors) -> String {
-    if !colors.is_set() {
+/// MEDM auto-sizes a widget's font to its geometry; adl2pydm's `write_font_size`
+/// reproduces it as `pointsize = clamp(round(height * 0.6), 6, 20)`. Returns that
+/// size (in egui points, which track the glyph pixel height) for a text-bearing
+/// widget of the given `height`.
+fn font_px_from_height(height: i32) -> f32 {
+    (f64::from(height) * 0.6).round().clamp(6.0, 20.0) as f32
+}
+
+/// The draw body for a channel widget, optionally applying a MEDM-derived font
+/// size and static `clr`/`bclr` colours before `show`. The font is set as
+/// `override_font_id` (egui resolves Label/Button/edit text against it before
+/// falling back to `TextStyle::Body`); the background is painted as a filled rect
+/// behind the widget; the foreground is set as `override_text_color`, which the
+/// widget's text honours unless it is alarm-driven (alarm colouring sets the text
+/// colour explicitly and so still wins, matching MEDM `clrmod="alarm"` overriding
+/// the static `clr`).
+fn styled_show_body(
+    b: &mut Builder,
+    field: &str,
+    colors: WidgetColors,
+    font_px: Option<f32>,
+) -> String {
+    if !colors.is_set() && font_px.is_none() {
         return format!("let _ = {field}.show(ui);");
     }
-    b.needs_color = true;
     let mut body = String::from("{\n");
+    if let Some(px) = font_px {
+        let _ = writeln!(
+            body,
+            "    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));",
+            float_lit(f64::from(px))
+        );
+    }
     if let Some(bg) = colors.bg {
+        b.needs_color = true;
         let _ = writeln!(body, "    let __bg = ui.max_rect();");
         let _ = writeln!(
             body,
@@ -1860,6 +1917,7 @@ fn colored_show_body(b: &mut Builder, field: &str, colors: WidgetColors) -> Stri
         );
     }
     if let Some(fg) = colors.fg {
+        b.needs_color = true;
         let _ = writeln!(
             body,
             "    ui.style_mut().visuals.override_text_color = Some({});",
@@ -1887,6 +1945,9 @@ struct ChannelWidget<'a> {
     /// Static MEDM `clr`/`bclr` colours; `default()` (none) for widgets that
     /// colour themselves or have no text/fill semantics.
     colors: WidgetColors,
+    /// MEDM height-derived font size (`Some` for text-bearing widgets — label,
+    /// line edit, push button, combo box, enum button; `None` for the rest).
+    font_px: Option<f32>,
 }
 
 /// Emit a stateful, channel-bound widget: store it as a `Screen` field, build it
@@ -1900,6 +1961,7 @@ fn push_channel_widget(b: &mut Builder, z: ZLayer, geom: Geometry, w: ChannelWid
         connect_desc,
         builders,
         colors,
+        font_px,
     } = w;
     let id = b.index();
     let field = format!("w{id}");
@@ -1919,7 +1981,7 @@ fn push_channel_widget(b: &mut Builder, z: ZLayer, geom: Geometry, w: ChannelWid
     // The body references the field's `&mut` local (bound by `ui()`'s `let Self {
     // .. }` destructure), not `self.field`, so a container's draw closure can hold
     // disjoint borrows of the frame and its siblings.
-    let body = colored_show_body(b, &field, colors);
+    let body = styled_show_body(b, &field, colors, font_px);
     b.placements.push(Placement::drawn(z, id, geom, body));
 }
 
@@ -2955,6 +3017,88 @@ text {
             g.source.matches("egui::Layout::top_down(").count(),
             1,
             "only the centered static text should wrap in a layout:\n{}",
+            g.source
+        );
+    }
+
+    #[test]
+    fn font_px_from_height_matches_adl2pydm_clamp() {
+        // adl2pydm write_font_size: pointsize = int(max(6, min(20, round(h*0.6)))).
+        assert_eq!(font_px_from_height(20), 12.0);
+        assert_eq!(font_px_from_height(30), 18.0);
+        // Clamp low: round(5*0.6)=3 → 6.0; high: round(100*0.6)=60 → 20.0.
+        assert_eq!(font_px_from_height(5), 6.0);
+        assert_eq!(font_px_from_height(100), 20.0);
+    }
+
+    #[test]
+    fn text_widgets_carry_height_derived_font() {
+        // A static text (height 20 → 12.0), a text update (height 30 → 18.0), and a
+        // rectangle (no text → no font override). MEDM auto-sizes text to height.
+        let adl = r#"
+"color map" {
+	colors {
+		000000,
+	}
+}
+text {
+	object {
+		x=0
+		y=0
+		width=120
+		height=20
+	}
+	"basic attribute" {
+		clr=0
+	}
+	textix="hi"
+}
+"text update" {
+	object {
+		x=0
+		y=30
+		width=120
+		height=30
+	}
+	monitor {
+		chan="RB"
+		clr=0
+	}
+}
+rectangle {
+	object {
+		x=0
+		y=70
+		width=40
+		height=40
+	}
+	"basic attribute" {
+		clr=0
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        // Static text at its height-derived size.
+        assert!(
+            g.source.contains(
+                "ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));"
+            ),
+            "static text missing height-derived font:\n{}",
+            g.source
+        );
+        // Text update (channel widget) at its height-derived size.
+        assert!(
+            g.source.contains(
+                "ui.style_mut().override_font_id = Some(egui::FontId::proportional(18.0));"
+            ),
+            "text update missing height-derived font:\n{}",
+            g.source
+        );
+        // Exactly the two text-bearing widgets set a font; the rectangle does not.
+        assert_eq!(
+            g.source.matches("override_font_id").count(),
+            2,
+            "only text-bearing widgets should set a font override:\n{}",
             g.source
         );
     }

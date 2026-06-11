@@ -90,7 +90,10 @@ impl Screen {
             ui.painter().rect_filled(__sbg, egui::CornerRadius::ZERO, Color32::from_rgb(192, 192, 192));
         });
         place(ui, __origin, egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 200.0, 20.0, |ui| {
-            ui.label(egui::RichText::new("Sample Panel").color(Color32::from_rgb(0, 0, 0)));
+            {
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
+                ui.label(egui::RichText::new("Sample Panel").color(Color32::from_rgb(0, 0, 0)));
+            }
         });
         if gate9.read(|s| s.value.as_ref().and_then(|v| v.as_f64())) != Some(0.0) {
             place(ui, __origin, egui::Order::Background, egui::Id::new(8u64), 210.0, 10.0, 180.0, 120.0, |ui| {
@@ -108,6 +111,7 @@ impl Screen {
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(1u64), 10.0, 40.0, 120.0, 20.0, |ui| {
             {
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
                 ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(255, 255, 255));
                 let _ = w1.show(ui);
             }
@@ -129,6 +133,7 @@ impl Screen {
             let _ = w15.show(ui, |ui| {
                 place(ui, __frame_origin_15, egui::Order::Middle, egui::Id::new(16u64), 0.0, 0.0, 180.0, 24.0, |ui| {
                     {
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(14.0));
                         ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(255, 255, 255));
                         let _ = w16.show(ui);
                     }
@@ -136,13 +141,22 @@ impl Screen {
             });
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(2u64), 10.0, 70.0, 120.0, 20.0, |ui| {
-            let _ = w2.show(ui);
+            {
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
+                let _ = w2.show(ui);
+            }
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(3u64), 10.0, 100.0, 80.0, 24.0, |ui| {
-            let _ = w3.show(ui);
+            {
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(14.0));
+                let _ = w3.show(ui);
+            }
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(4u64), 100.0, 100.0, 100.0, 24.0, |ui| {
-            let _ = w4.show(ui);
+            {
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(14.0));
+                let _ = w4.show(ui);
+            }
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(5u64), 10.0, 140.0, 180.0, 24.0, |ui| {
             let _ = w5.show(ui);
