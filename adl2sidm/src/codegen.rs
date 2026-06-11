@@ -1622,21 +1622,26 @@ fn emit_related_display(b: &mut Builder, widget: &MedmWidget, options: &Options,
     let id = b.index();
     let body = if let [(_, report)] = entries.as_slice() {
         // Exactly one target: a plain button captioned by the widget/target label.
+        // A hover tooltip names the target so it is discoverable in the GUI (the
+        // click only logs to stderr); adl2pydm likewise gives the button a tooltip.
         let label = deferred_button_label(widget, "displays", "Related Display");
         format!(
-            "if ui.button({}).clicked() {{\n    {}\n}}",
+            "if ui.button({}).on_hover_text({}).clicked() {{\n    {}\n}}",
             rust_str(&label),
+            rust_str(report),
             eprintln_literal(report),
         )
     } else {
         // Several targets: a menu whose items each report one target, then close.
+        // Each item carries a hover tooltip naming its target (GUI-discoverable).
         let title = menu_title(widget, "Related Display");
         let mut body = format!("ui.menu_button({}, |ui| {{", rust_str(&title));
         for (caption, report) in &entries {
             let _ = write!(
                 body,
-                "\n    if ui.button({}).clicked() {{\n        {}\n        ui.close();\n    }}",
+                "\n    if ui.button({}).on_hover_text({}).clicked() {{\n        {}\n        ui.close();\n    }}",
                 rust_str(caption),
+                rust_str(report),
                 eprintln_literal(report),
             );
         }
@@ -4267,9 +4272,10 @@ composite {
         // label that logs the target on click (SiDM has no runtime loader to
         // actually swap screens), at the control (Foreground) layer.
         assert!(
-            g.source
-                .contains("if ui.button(\"Open Detail\").clicked() {"),
-            "related-display button not labelled with its target:\n{}",
+            g.source.contains(
+                "if ui.button(\"Open Detail\").on_hover_text(\"related display: open detail.adl\").clicked() {"
+            ),
+            "related-display button not labelled/tooltipped with its target:\n{}",
             g.source
         );
         assert!(
@@ -4336,7 +4342,9 @@ composite {
             g.source
         );
         assert!(
-            g.source.contains("if ui.button(\"A\").clicked() {"),
+            g.source.contains(
+                "if ui.button(\"A\").on_hover_text(\"related display: open a.adl\").clicked() {"
+            ),
             "{}",
             g.source
         );

@@ -134,17 +134,17 @@ impl Screen {
             });
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(11u64), 20.0, 366.0, 130.0, 22.0, |ui| {
-            if ui.button("Detail").clicked() {
+            if ui.button("Detail").on_hover_text("related display: open detail.adl").clicked() {
                 eprintln!("related display: open detail.adl");
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(12u64), 170.0, 366.0, 170.0, 22.0, |ui| {
             ui.menu_button("Screens", |ui| {
-                if ui.button("Overview").clicked() {
+                if ui.button("Overview").on_hover_text("related display: open overview.adl").clicked() {
                     eprintln!("related display: open overview.adl");
                     ui.close();
                 }
-                if ui.button("Tuning").clicked() {
+                if ui.button("Tuning").on_hover_text("related display: open tuning.adl (macros: P=DMM1:)").clicked() {
                     eprintln!("related display: open tuning.adl (macros: P=DMM1:)");
                     ui.close();
                 }
