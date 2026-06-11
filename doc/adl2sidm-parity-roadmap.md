@@ -266,4 +266,19 @@ expression is present; `vis="static"` with only a channel is not a rule.
   `SidmByteIndicator` can represent it; `sidm` gained `with_big_endian` and the
   emitter now applies it. Gate: clippy -p adl2sidm --all-targets clean (lints the
   included generated module too), nextest 55/55.
-- ⬜ C11 — runnable end-to-end example (sample `.adl` + generated `Screen` + tiny `eframe` main).
+- ✅ C11 — runnable end-to-end example. `examples/local_panel.adl` is a MEDM
+  screen whose channels are authored as `loc://`/`fake://` addresses, so the
+  converted display drives itself with NO IOC (the `.adl` analogue of `sidm`'s
+  `sidm_local_panel`); it is converted with `--protocol ""` (the channels already
+  carry their scheme — the default `ca://` would need a live IOC) into the
+  committed `examples/local_panel_screen.rs`. `examples/local_panel.rs` wraps the
+  generated `Screen` (`new(cc)` / `ui(ui)`) in a tiny `eframe::App` and
+  `run_native`s it — `cargo run -p adl2sidm --example local_panel`. The screen is
+  laid out so the grey border `rectangle` (decoration) overlaps the line edit /
+  slider / byte controls, demonstrating the z-order rule live: decoration renders
+  at `Order::Background` behind controls at `Foreground` and never steals their
+  clicks. A drift test (`example_screen_matches_the_committed_module` in
+  `tests/compiles.rs`) keeps the committed example output in lock-step with the
+  converter, and `cargo build --example local_panel` (covered by clippy
+  `--all-targets`) compiles it against the real sidm/siplot/eframe APIs. Gate:
+  clippy -p adl2sidm --all-targets clean, nextest 56/56, example builds.

@@ -54,6 +54,28 @@ fn converter_output_matches_the_committed_module() {
 }
 
 #[test]
+fn example_screen_matches_the_committed_module() {
+    // The runnable example (`examples/local_panel.rs`) `include!`s
+    // `examples/local_panel_screen.rs`; guard it against drift the same way as
+    // the fixture above. The example's channels already carry their
+    // `loc://`/`fake://` scheme, so it is generated with an empty protocol.
+    let adl = include_str!("../examples/local_panel.adl");
+    let options = Options {
+        protocol: String::new(),
+        ..Options::default()
+    };
+    let generated = generate(&parse(adl), &options);
+    let committed = include_str!("../examples/local_panel_screen.rs");
+    assert_eq!(
+        generated.source, committed,
+        "example output drifted from adl2sidm/examples/local_panel_screen.rs — \
+         regenerate it with: cargo run -p adl2sidm -- \
+         adl2sidm/examples/local_panel.adl -o \
+         adl2sidm/examples/local_panel_screen.rs --protocol \"\""
+    );
+}
+
+#[test]
 fn sample_conversion_only_warns_for_the_known_unsupported_bits() {
     let adl = include_str!("fixtures/sample.adl");
     let generated = generate(&parse(adl), &sample_options());

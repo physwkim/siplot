@@ -6,6 +6,12 @@ rust-version = "1.92"
 license = "MIT OR Apache-2.0"
 description = "Convert MEDM .adl screen files to SiDM (Rust) display modules"
 repository = "https://github.com/physwkim/siplot"
+# The `local_panel` example `include!`s its committed generated screen
+# (`examples/local_panel_screen.rs`); that file is converter OUTPUT, not a target.
+# Disable example autodiscovery so Cargo does not treat it as a second example
+# (it has no `main`) and `cargo fmt` does not reflow it out of sync with the
+# converter — only the explicitly declared example below is a target.
+autoexamples = false
 
 # `adl2sidm` mirrors ~/codes/adl2pydm (which converts MEDM `.adl` screens to PyDM
 # `.ui` files) but targets SiDM: it parses `.adl` into a widget tree and EMITS
@@ -22,6 +28,14 @@ path = "src/lib.rs"
 [[bin]]
 name = "adl2sidm"
 path = "src/main.rs"
+
+# The only example (autodiscovery is off above). It wires the committed,
+# converter-generated `Screen` into a tiny eframe app — the runnable end-to-end
+# demo. `examples/local_panel_screen.rs` next to it is its `include!`d generated
+# output, deliberately NOT a target.
+[[example]]
+name = "local_panel"
+path = "examples/local_panel.rs"
 
 [dependencies]
 # The CLI binary parses arguments with clap (a `mod cli` local to `main.rs`).
