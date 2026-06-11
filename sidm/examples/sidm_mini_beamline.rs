@@ -60,10 +60,24 @@ fn pv(suffix: &str) -> String {
     format!("{PREFIX}{suffix}")
 }
 
+/// The screen's sections, shown one at a time via a tab bar (a QTabWidget-style
+/// layout) instead of one tall vertical stack.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    BeamCurrent,
+    Dcm,
+    Detectors,
+    Waveform,
+    Camera,
+}
+
 struct MiniBeamline {
     // The engine owns the tokio runtime and the CA connections; it must outlive
     // the widgets that hold `Channel` handles.
     _engine: Engine,
+
+    // Which section tab is currently shown.
+    tab: Tab,
 
     // Beam current.
     beam_label: SidmLabel,
@@ -202,6 +216,7 @@ impl MiniBeamline {
 
         Self {
             _engine: engine,
+            tab: Tab::BeamCurrent,
             beam_label,
             beam_plot,
             energy_edit,
@@ -221,77 +236,109 @@ impl MiniBeamline {
     }
 }
 
+impl MiniBeamline {
+    /// Beam-current tab: a readout label and the scrolling strip chart.
+    fn beam_current_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label("Beam current (mini:current):");
+        ui.horizontal(|ui| {
+            ui.label("Value:");
+            self.beam_label.show(ui);
+        });
+        ui.allocate_ui(egui::vec2(ui.available_width(), 180.0), |ui| {
+            self.beam_plot.show(ui);
+        });
+    }
+
+    /// DCM monochromator tab: energy entry/slider, read-backs, and mode.
+    fn dcm_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label("DCM monochromator:");
+        ui.horizontal(|ui| {
+            ui.label("Energy setpoint (keV):");
+            self.energy_edit.show(ui);
+        });
+        self.energy_slider.show(ui);
+        egui::Grid::new("dcm_readbacks")
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Energy RBV (keV):");
+                self.energy_rbv.show(ui);
+                ui.end_row();
+                ui.label("Theta RBV (deg):");
+                self.theta_rbv.show(ui);
+                ui.end_row();
+                ui.label("Wavelength RBV (A):");
+                self.lambda_rbv.show(ui);
+                ui.end_row();
+            });
+        ui.horizontal(|ui| {
+            ui.label("Mode:");
+            self.kohzu_mode.show(ui);
+        });
+    }
+
+    /// Point-detectors tab: the three-pen strip chart and PinHole exposure.
+    fn detectors_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label("Point detectors (PinHole / Edge / Slit):");
+        ui.allocate_ui(egui::vec2(ui.available_width(), 200.0), |ui| {
+            self.detectors_plot.show(ui);
+        });
+        ui.horizontal(|ui| {
+            ui.label("PinHole exposure (s):");
+            self.exposure_edit.show(ui);
+        });
+    }
+
+    /// Bulk-waveform tab: the 10k-point array plot.
+    fn waveform_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label("Bulk waveform (mini:wf1, 10000 pts @ 1 Hz):");
+        ui.allocate_ui(egui::vec2(ui.available_width(), 200.0), |ui| {
+            self.waveform_plot.show(ui);
+        });
+    }
+
+    /// Camera tab: acquire controls, image mode, and the image view.
+    fn camera_tab(&mut self, ui: &mut egui::Ui) {
+        ui.label("MovingDot camera (mini:dot:image1:ArrayData, 640x480):");
+        ui.horizontal(|ui| {
+            self.acquire_start.show(ui);
+            self.acquire_stop.show(ui);
+            ui.label("Image mode:");
+            self.image_mode.show(ui);
+        });
+        ui.allocate_ui(egui::vec2(ui.available_width(), 360.0), |ui| {
+            self.image_view.show(ui);
+        });
+    }
+}
+
 impl eframe::App for MiniBeamline {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("SiDM — mini-beamline");
-            ui.label(
-                "Live ca:// PVs from the epics-rs mini-beamline IOC (mini: prefix). \
-                 Disconnected PVs show a dashed border.",
-            );
+        ui.heading("SiDM — mini-beamline");
+        ui.label(
+            "Live ca:// PVs from the epics-rs mini-beamline IOC (mini: prefix). \
+             Disconnected PVs show a dashed border.",
+        );
 
-            ui.separator();
-            ui.label("Beam current (mini:current):");
-            ui.horizontal(|ui| {
-                ui.label("Value:");
-                self.beam_label.show(ui);
-            });
-            ui.allocate_ui(egui::vec2(ui.available_width(), 180.0), |ui| {
-                self.beam_plot.show(ui);
-            });
+        // QTabWidget-style tab bar: show one section at a time instead of
+        // stacking all five down a long scrolling column.
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.tab, Tab::BeamCurrent, "Beam current");
+            ui.selectable_value(&mut self.tab, Tab::Dcm, "DCM monochromator");
+            ui.selectable_value(&mut self.tab, Tab::Detectors, "Point detectors");
+            ui.selectable_value(&mut self.tab, Tab::Waveform, "Bulk waveform");
+            ui.selectable_value(&mut self.tab, Tab::Camera, "Camera");
+        });
+        ui.separator();
 
-            ui.separator();
-            ui.label("DCM monochromator:");
-            ui.horizontal(|ui| {
-                ui.label("Energy setpoint (keV):");
-                self.energy_edit.show(ui);
-            });
-            self.energy_slider.show(ui);
-            egui::Grid::new("dcm_readbacks")
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("Energy RBV (keV):");
-                    self.energy_rbv.show(ui);
-                    ui.end_row();
-                    ui.label("Theta RBV (deg):");
-                    self.theta_rbv.show(ui);
-                    ui.end_row();
-                    ui.label("Wavelength RBV (A):");
-                    self.lambda_rbv.show(ui);
-                    ui.end_row();
-                });
-            ui.horizontal(|ui| {
-                ui.label("Mode:");
-                self.kohzu_mode.show(ui);
-            });
-
-            ui.separator();
-            ui.label("Point detectors (PinHole / Edge / Slit):");
-            ui.allocate_ui(egui::vec2(ui.available_width(), 200.0), |ui| {
-                self.detectors_plot.show(ui);
-            });
-            ui.horizontal(|ui| {
-                ui.label("PinHole exposure (s):");
-                self.exposure_edit.show(ui);
-            });
-
-            ui.separator();
-            ui.label("Bulk waveform (mini:wf1, 10000 pts @ 1 Hz):");
-            ui.allocate_ui(egui::vec2(ui.available_width(), 200.0), |ui| {
-                self.waveform_plot.show(ui);
-            });
-
-            ui.separator();
-            ui.label("MovingDot camera (mini:dot:image1:ArrayData, 640x480):");
-            ui.horizontal(|ui| {
-                self.acquire_start.show(ui);
-                self.acquire_stop.show(ui);
-                ui.label("Image mode:");
-                self.image_mode.show(ui);
-            });
-            ui.allocate_ui(egui::vec2(ui.available_width(), 360.0), |ui| {
-                self.image_view.show(ui);
-            });
+        // Each tab still scrolls on its own when the window is shorter than its
+        // content.
+        egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+            Tab::BeamCurrent => self.beam_current_tab(ui),
+            Tab::Dcm => self.dcm_tab(ui),
+            Tab::Detectors => self.detectors_tab(ui),
+            Tab::Waveform => self.waveform_tab(ui),
+            Tab::Camera => self.camera_tab(ui),
         });
     }
 }
