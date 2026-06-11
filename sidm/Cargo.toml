@@ -92,3 +92,8 @@ required-features = []
 [[example]]
 name = "sidm_ca_panel"
 required-features = ["ca"]
+
+# A full control panel for the epics-rs mini-beamline IOC over live `ca://` PVs.
+[[example]]
+name = "sidm_mini_beamline"
+required-features = ["ca"]
