@@ -11,8 +11,10 @@ readme = "README.md"
 [workspace]
 # siplot is the root package and an implicit member; `sidm` (the PyDM-style
 # EPICS display layer, ported from ~/codes/pydm onto siplot + epics-rs) is the
-# second member. Resolver 3 matches the edition 2024 packages.
-members = ["sidm"]
+# second member; `adl2sidm` (a MEDM `.adl` -> SiDM Rust-source converter,
+# mirroring ~/codes/adl2pydm) is the third. Resolver 3 matches the edition 2024
+# packages.
+members = ["sidm", "adl2sidm"]
 resolver = "3"
 
 # The library itself does not depend on eframe (windowing). It works purely as

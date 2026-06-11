@@ -1,0 +1,28 @@
+[package]
+name = "adl2sidm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+description = "Convert MEDM .adl screen files to SiDM (Rust) display modules"
+repository = "https://github.com/physwkim/siplot"
+
+# `adl2sidm` mirrors ~/codes/adl2pydm (which converts MEDM `.adl` screens to PyDM
+# `.ui` files) but targets SiDM: it parses `.adl` into a widget tree and EMITS
+# RUST SOURCE that builds the equivalent `sidm` widgets. Because the output is
+# Rust text, the converter itself needs no GUI/async/EPICS dependencies — only a
+# CLI parser. The generated source is compile-checked against the real `sidm`
+# crate in `tests/compiles.rs` (a dev-dependency added with that test), which is
+# the project's strongest fidelity signal.
+
+[lib]
+name = "adl2sidm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "adl2sidm"
+path = "src/main.rs"
+
+[dependencies]
+# CLI argument parsing is wired in the CLI commit (Wave C); the parser, symbol
+# map, and code emitter that land first are pure and dependency-free.
