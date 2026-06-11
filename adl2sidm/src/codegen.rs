@@ -613,7 +613,11 @@ fn emit_wheel_switch(b: &mut Builder, widget: &MedmWidget, options: &Options, z:
             new_call: &new_call,
             connect_desc: &format!("adl2sidm: connect {addr} (wheel switch)"),
             builders: &builders,
-            colors: WidgetColors::default(),
+            // The spinbox renders its value as an (uncoloured-RichText) button,
+            // so `clr` reaches the displayed number through `override_text_color`
+            // and `bclr` fills behind it — the same text/fill semantics as the
+            // other value widgets, unlike the slider whose `clr` is a track colour.
+            colors: WidgetColors::from_widget(widget),
         },
     );
 }
@@ -1781,10 +1785,12 @@ fn resolve_channel(
 
 /// A value/control widget's static MEDM colours: `clr` (foreground/text) and
 /// `bclr` (background). Applied for the widgets whose `clr`/`bclr` genuinely mean
-/// "text colour / fill" (label, line edit, push button, combo box, enum button);
-/// NOT for shapes (which colour themselves through drawing builders) or for byte/
-/// scale widgets (whose `clr`/`bclr` are on/off and bar/background colours with
-/// their own rendering).
+/// "text colour / fill" (label, line edit, push button, combo box, enum button,
+/// spinbox — all render their text through `override_text_color`); NOT for shapes
+/// (which colour themselves through drawing builders), the slider (whose `clr` is
+/// a track/handle colour `override_text_color` cannot reach), or byte/scale
+/// widgets (whose `clr`/`bclr` are on/off and bar/background colours with their
+/// own rendering).
 #[derive(Clone, Copy, Default)]
 struct WidgetColors {
     /// MEDM `clr` — the foreground/text colour.
@@ -3079,6 +3085,70 @@ byte {
         assert!(g.source.contains("SidmSpinbox::new(&engine, \"ca://WHL\")"));
         // format="6.2" -> 2 decimals.
         assert!(g.source.contains(".with_precision(2)"));
+    }
+
+    #[test]
+    fn wheel_switch_takes_clr_bclr_but_slider_does_not() {
+        // The spinbox renders its value as an uncoloured-RichText button, so MEDM
+        // `clr` reaches the number via override_text_color and `bclr` fills behind
+        // it. The slider's `clr` is a track/handle colour override_text_color can't
+        // reach, so it is deliberately excluded (a sidm-side gap).
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+		ff0000,
+		0000ff,
+	}
+}
+valuator {
+	object {
+		x=0
+		y=0
+		width=120
+		height=20
+	}
+	control {
+		chan="VAL"
+		clr=1
+	}
+}
+"wheel switch" {
+	object {
+		x=0
+		y=30
+		width=120
+		height=20
+	}
+	control {
+		chan="WHL"
+		clr=1
+		bclr=2
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        assert!(
+            g.source
+                .contains("override_text_color = Some(Color32::from_rgb(255, 0, 0))"),
+            "wheel switch clr must drive override_text_color:\n{}",
+            g.source
+        );
+        assert!(
+            g.source.contains(
+                "rect_filled(__bg, egui::CornerRadius::ZERO, Color32::from_rgb(0, 0, 255))"
+            ),
+            "wheel switch bclr must fill behind it:\n{}",
+            g.source
+        );
+        // Only the wheel switch contributes an override; the slider (also clr=1) is
+        // excluded, so exactly one override_text_color appears.
+        assert_eq!(
+            g.source.matches("override_text_color").count(),
+            1,
+            "only the wheel switch (not the slider) may set override_text_color:\n{}",
+            g.source
+        );
     }
 
     #[test]
