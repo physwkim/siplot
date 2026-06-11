@@ -122,6 +122,10 @@ fn emit_widget(b: &mut Builder, widget: &MedmWidget, options: &Options) {
         "valuator" => emit_valuator(b, widget, options, z),
         "wheel switch" => emit_wheel_switch(b, widget, options, z),
         "byte" => emit_byte(b, widget, options, z),
+        "bar" => emit_scale_indicator(b, widget, options, z, true),
+        // `meter` has no dedicated PyDM/SiDM widget; adl2pydm draws it as an
+        // indicator (a pointer scale), so it shares the indicator emitter.
+        "indicator" | "meter" => emit_scale_indicator(b, widget, options, z, false),
         _ => b.warnings.push(format!(
             "line {}: {:?} -> {} not emitted yet (skipped)",
             widget.line, widget.symbol, map.sidm_widget
@@ -373,19 +377,9 @@ fn emit_byte(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
     if shift != 0 {
         builders.push(format!(".with_shift({shift})"));
     }
-    let direction = widget
-        .assignments
-        .get("direction")
-        .map(String::as_str)
-        .unwrap_or("right");
-    match direction {
-        // `up`/`down` -> Vertical, which is the default, so no builder.
-        "up" | "down" => {}
-        "right" | "left" => builders.push(".with_orientation(Orientation::Horizontal)".to_string()),
-        other => b.warnings.push(format!(
-            "line {}: byte direction {other:?} unsupported, using 'right'",
-            widget.line
-        )),
+    // `SidmByteIndicator` defaults to vertical.
+    if let Some(orient) = direction_orientation(b, widget, true) {
+        builders.push(orient);
     }
     if sbit < ebit && num_bits > 1 {
         b.warnings.push(format!(
@@ -400,6 +394,60 @@ fn emit_byte(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
         "SidmByteIndicator",
         &new_call,
         &format!("adl2sidm: connect {addr} (byte)"),
+        &builders,
+    );
+}
+
+/// `bar` / `indicator` / `meter` — a `SidmScaleIndicator`. `bar` draws a filled
+/// bar (`with_bar_indicator(true)`); `indicator`/`meter` use the default pointer
+/// scale. User-defined limits, `direction`, and `precDefault` map to the
+/// matching builders.
+fn emit_scale_indicator(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    options: &Options,
+    z: ZLayer,
+    bar: bool,
+) {
+    let Some((geom, addr)) = resolve_channel(b, widget, options) else {
+        return;
+    };
+    let new_call = format!("SidmScaleIndicator::new(&engine, {})", rust_str(&addr));
+    let mut builders = Vec::new();
+    if bar {
+        builders.push(".with_bar_indicator(true)".to_string());
+    }
+    if let Some((lo, hi)) = user_defined_limits(widget) {
+        builders.push(format!(
+            ".with_limits({}, {})",
+            float_lit(lo),
+            float_lit(hi)
+        ));
+    }
+    // `SidmScaleIndicator` defaults to horizontal.
+    if let Some(orient) = direction_orientation(b, widget, false) {
+        builders.push(orient);
+    }
+    if let Some(prec) = precision_default_builder(widget) {
+        builders.push(prec);
+    }
+    // A `bar`'s value label follows the MEDM decoration `label`: it shows only
+    // for `limits`/`channel` (adl2pydm's `showValue`), unlike `SidmScaleIndicator`
+    // which shows it by default. `indicator`/`meter` keep the default.
+    if bar {
+        let label = widget.assignments.get("label").map(String::as_str);
+        let show_value = matches!(label, Some("limits") | Some("channel"));
+        if !show_value {
+            builders.push(".with_value_label(false)".to_string());
+        }
+    }
+    push_channel_widget(
+        b,
+        z,
+        geom,
+        "SidmScaleIndicator",
+        &new_call,
+        &format!("adl2sidm: connect {addr} (scale indicator)"),
         &builders,
     );
 }
@@ -486,6 +534,43 @@ fn user_defined_limits(widget: &MedmWidget) -> Option<(f64, f64)> {
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
     Some((lo, hi))
+}
+
+/// A `.with_orientation(...)` builder from a MEDM `direction`, or `None` when the
+/// resolved orientation already equals the widget's own default (so no builder is
+/// needed). `default_vertical` is that default (byte = vertical, scale indicator
+/// = horizontal). MEDM `up`/`down` are vertical, `right`/`left` horizontal; an
+/// unknown direction warns and is treated as `right` (horizontal), as adl2pydm's
+/// `write_direction` default does. The single owner of MEDM direction → sidm
+/// orientation, so byte and the scale indicators map it identically.
+fn direction_orientation(
+    b: &mut Builder,
+    widget: &MedmWidget,
+    default_vertical: bool,
+) -> Option<String> {
+    let direction = widget
+        .assignments
+        .get("direction")
+        .map(String::as_str)
+        .unwrap_or("right");
+    let vertical = match direction {
+        "up" | "down" => true,
+        "right" | "left" => false,
+        other => {
+            b.warnings.push(format!(
+                "line {}: direction {other:?} unsupported, using 'right'",
+                widget.line
+            ));
+            false
+        }
+    };
+    if vertical == default_vertical {
+        None
+    } else if vertical {
+        Some(".with_orientation(Orientation::Vertical)".to_string())
+    } else {
+        Some(".with_orientation(Orientation::Horizontal)".to_string())
+    }
 }
 
 /// Decimals for a wheel-switch `format`: `"integer"` -> 0, `"w.d"` -> `d`,
@@ -811,26 +896,28 @@ text {
 
     #[test]
     fn unimplemented_widgets_warn_but_do_not_panic() {
+        // `polygon` is in the permanently-stubbed set (no SiDM `DrawingShape`),
+        // so it warns through every wave — a stable stand-in for "no emitter".
         let adl = r#"
 "color map" {
 	colors {
 		ffffff,
 	}
 }
-bar {
+polygon {
 	object {
 		x=0
 		y=0
 		width=100
 		height=20
 	}
-	monitor {
-		chan="PV"
+	"basic attribute" {
+		clr=1
 	}
 }
 "#;
         let g = generate(&parse(adl), &Options::default());
-        assert!(g.warnings.iter().any(|w| w.contains("bar")));
+        assert!(g.warnings.iter().any(|w| w.contains("polygon")));
         // Nothing emitted for it yet, but the screen still assembles.
         assert!(g.source.contains("pub struct Screen"));
     }
@@ -1048,5 +1135,135 @@ byte {
         let g = controls();
         assert!(g.source.contains("egui::Order::Foreground"));
         assert!(g.source.contains("egui::Order::Middle"));
+    }
+
+    /// A bar (vertical, user limits, label="limits") plus a meter (default) and
+    /// an indicator — the three scale-indicator widgets.
+    const SCALES: &str = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+	}
+}
+bar {
+	object {
+		x=0
+		y=0
+		width=20
+		height=100
+	}
+	monitor {
+		chan="BAR"
+	}
+	label="limits"
+	direction="up"
+	limits {
+		loprSrc="default"
+		loprDefault=0
+		hoprSrc="default"
+		hoprDefault=100
+		precDefault=1
+	}
+}
+meter {
+	object {
+		x=30
+		y=0
+		width=80
+		height=80
+	}
+	monitor {
+		chan="MTR"
+	}
+}
+indicator {
+	object {
+		x=120
+		y=0
+		width=100
+		height=20
+	}
+	monitor {
+		chan="IND"
+	}
+}
+"#;
+
+    fn scales() -> Generated {
+        generate(&parse(SCALES), &Options::default())
+    }
+
+    #[test]
+    fn bar_is_a_bar_indicator_with_limits_orientation_and_precision() {
+        let g = scales();
+        assert!(
+            g.source
+                .contains("SidmScaleIndicator::new(&engine, \"ca://BAR\")"),
+            "{}",
+            g.source
+        );
+        assert!(g.source.contains(".with_bar_indicator(true)"));
+        assert!(g.source.contains(".with_limits(0.0, 100.0)"));
+        // direction="up" -> vertical (the non-default orientation for a scale).
+        assert!(
+            g.source
+                .contains(".with_orientation(Orientation::Vertical)")
+        );
+        assert!(g.source.contains(".with_precision(1)"));
+        // label="limits" -> value label shown, so NO with_value_label(false).
+        assert!(!g.source.contains(".with_value_label(false)"));
+    }
+
+    #[test]
+    fn meter_and_indicator_are_pointer_scales() {
+        let g = scales();
+        assert!(
+            g.source
+                .contains("SidmScaleIndicator::new(&engine, \"ca://MTR\")")
+        );
+        assert!(
+            g.source
+                .contains("SidmScaleIndicator::new(&engine, \"ca://IND\")")
+        );
+        // Neither is a bar: exactly one `.with_bar_indicator(true)` (the bar).
+        assert_eq!(g.source.matches(".with_bar_indicator(true)").count(), 1);
+    }
+
+    #[test]
+    fn bar_without_value_label_hides_it() {
+        // A bar with no `label` decoration hides the value label (PyDM default),
+        // unlike the SiDM default which shows it.
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+	}
+}
+bar {
+	object {
+		x=0
+		y=0
+		width=20
+		height=100
+	}
+	monitor {
+		chan="B"
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        assert!(
+            g.source.contains(".with_value_label(false)"),
+            "{}",
+            g.source
+        );
+    }
+
+    #[test]
+    fn scale_indicators_are_monitors_in_the_middle_layer() {
+        let g = scales();
+        assert!(g.source.contains("egui::Order::Middle"));
+        assert!(!g.source.contains("egui::Order::Foreground"));
     }
 }

@@ -65,9 +65,9 @@ Category drives the z-layer: `static` = decoration (back), `monitor` = read-only
 | valuator | controller | `SidmSlider` | ✅ |
 | wheel switch | controller | `SidmSpinbox` | ✅ |
 | byte | monitor | `SidmByteIndicator` | ✅ |
-| bar | monitor | `SidmScaleIndicator` | ⬜ |
-| indicator | monitor | `SidmScaleIndicator` | ⬜ |
-| meter | monitor | `SidmScaleIndicator` | ⬜ |
+| bar | monitor | `SidmScaleIndicator` | ✅ |
+| indicator | monitor | `SidmScaleIndicator` | ✅ |
+| meter | monitor | `SidmScaleIndicator` | ✅ |
 | composite | container | `SidmFrame` (children re-layered inside) | ⬜ |
 | rectangle | static | `SidmDrawing(Rectangle)` | ⬜ |
 | oval | static | `SidmDrawing(Ellipse)` | ⬜ |
@@ -127,7 +127,23 @@ not silently dropped (SiDM has no rules engine yet).
   placement, so `let _ = self.wN.show(ui);` and the back-to-front layering are
   uniform. 7 new codegen tests; the full 6-control screen was smoke-checked to
   `cargo check` clean (no warnings) against real sidm.
-- ⬜ B6 — emitter batch: indicators + shapes (bar/indicator/meter, composite, rectangle/oval).
+- 🚧 B6 — emitter batch: indicators + shapes (split into B6a/B6b/B6c for the
+  composite's nested re-layering).
+  - ✅ B6a — scale indicators (`bar`/`indicator`/`meter` → `SidmScaleIndicator`).
+    `bar` → `with_bar_indicator(true)` + the MEDM decoration `label` drives the
+    value label (PyDM `showValue`: shown only for `limits`/`channel`, vs SiDM's
+    show-by-default); `meter` shares the `indicator` (pointer-scale) emitter, as
+    adl2pydm's `write_block_meter` does. User-defined limits, `precDefault`, and
+    `direction` map to `with_limits`/`with_precision`/`with_orientation`. A single
+    `direction_orientation` owner now maps MEDM `direction` → sidm `Orientation`
+    for both the scale indicators and `byte` (byte was re-pointed at it, fixing a
+    latent mismatch where an unknown direction warned "using right" but left the
+    widget vertical). 4 new codegen tests; smoke-checked clean against real sidm.
+  - ⬜ B6b — shapes (`rectangle`/`oval` → `SidmDrawing`): `loc://` placeholder
+    channel when channel-less, dynamic-attribute `chan` when present, fill/border
+    from the `basic attribute` block.
+  - ⬜ B6c — `composite` → `SidmFrame` with children re-layered (back-to-front)
+    and coordinate-translated to the frame interior.
 - ⬜ B7 — emitter batch: plots + image (strip chart, cartesian plot, image).
 - ⬜ B8 — stubs + warnings for the deferred 6 + CALC `// TODO` comments.
 - ⬜ C9 — CLI (`--protocol` / `--macro` / `--out` / `--use-scatterplot`).
