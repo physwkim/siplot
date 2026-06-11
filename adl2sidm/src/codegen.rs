@@ -389,7 +389,8 @@ fn emit_text_update(b: &mut Builder, widget: &MedmWidget, options: &Options, z: 
         return;
     };
     let new_call = format!("SidmLabel::new(&engine, {})", rust_str(&addr));
-    let builders: Vec<String> = precision_default_builder(widget).into_iter().collect();
+    let mut builders: Vec<String> = precision_default_builder(widget).into_iter().collect();
+    builders.extend(string_format_builder(widget, &addr));
     push_channel_widget(
         b,
         z,
@@ -407,7 +408,8 @@ fn emit_text_entry(b: &mut Builder, widget: &MedmWidget, options: &Options, z: Z
         return;
     };
     let new_call = format!("SidmLineEdit::new(&engine, {})", rust_str(&addr));
-    let builders: Vec<String> = precision_default_builder(widget).into_iter().collect();
+    let mut builders: Vec<String> = precision_default_builder(widget).into_iter().collect();
+    builders.extend(string_format_builder(widget, &addr));
     push_channel_widget(
         b,
         z,
@@ -1768,6 +1770,21 @@ fn precision_default_builder(widget: &MedmWidget) -> Option<String> {
     Some(format!(".with_precision({n})"))
 }
 
+/// A `.with_format(DisplayFormat::String)` builder when MEDM asks for string
+/// rendering — either an explicit `format="string"` or a long-string PV (a
+/// `$`-suffixed channel name). Mirrors `adl2pydm`'s `write_display_format`,
+/// which sets PyDM's `displayFormat=String` on exactly these two conditions for
+/// text-update / text-entry widgets. `None` otherwise (the widget keeps its
+/// `DisplayFormat::Default`, the only other format `adl2pydm` emits here).
+fn string_format_builder(widget: &MedmWidget, addr: &str) -> Option<String> {
+    let explicit_string = widget.assignments.get("format").map(String::as_str) == Some("string");
+    if explicit_string || addr.ends_with('$') {
+        Some(".with_format(DisplayFormat::String)".to_string())
+    } else {
+        None
+    }
+}
+
 /// User-defined `(low, high)` limits for a control: present only when MEDM marks
 /// `loprSrc`/`hoprSrc` as `"default"` (otherwise limits come from the channel).
 /// Each missing default reads as `0.0`, matching `adl2pydm`'s `write_limits`.
@@ -2297,6 +2314,78 @@ text {
         );
         // precDefault -> with_precision.
         assert!(g.source.contains(".with_precision(2)"));
+    }
+
+    #[test]
+    fn string_format_maps_to_display_format_string() {
+        // `adl2pydm`'s write_display_format sets displayFormat=String for text
+        // update / text entry on exactly two conditions: an explicit
+        // `format="string"`, or a long-string ($-suffixed) PV. Everything else
+        // keeps the Default format (no builder emitted).
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+	}
+}
+"text update" {
+	object {
+		x=0
+		y=0
+		width=80
+		height=18
+	}
+	monitor {
+		chan="$(P)desc"
+		clr=0
+	}
+	format="string"
+}
+"text entry" {
+	object {
+		x=0
+		y=30
+		width=120
+		height=20
+	}
+	control {
+		chan="$(P)name$"
+	}
+}
+"text update" {
+	object {
+		x=0
+		y=60
+		width=80
+		height=18
+	}
+	monitor {
+		chan="$(P)rbv"
+		clr=0
+	}
+	format="decimal"
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        // The string-format update and the $-suffixed entry both get the builder.
+        assert_eq!(
+            g.source
+                .matches(".with_format(DisplayFormat::String)")
+                .count(),
+            2,
+            "format=string text update + $-suffixed text entry must both map to \
+             DisplayFormat::String:\n{}",
+            g.source
+        );
+        // The `format="decimal"` update must NOT get a string-format builder
+        // (Default is the only other format adl2pydm emits for these widgets).
+        assert!(
+            g.source
+                .contains("SidmLabel::new(&engine, \"ca://$(P)rbv\")"),
+            "decimal text update should still be emitted:\n{}",
+            g.source
+        );
     }
 
     #[test]
