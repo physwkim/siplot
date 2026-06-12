@@ -74,6 +74,7 @@ impl Screen {
             .expect("adl2sidm: connect ca://DMM1:bits (byte)")
             .with_border_mode(BorderMode::DisconnectedOnly)
             .with_num_bits(8)
+            .with_show_labels(false)
             .with_orientation(Orientation::Horizontal)
             .with_big_endian(true);
         let w9 = SidmScaleIndicator::new(&engine, "ca://DMM1:fill")

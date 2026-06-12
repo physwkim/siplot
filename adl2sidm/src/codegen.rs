@@ -780,6 +780,11 @@ fn emit_byte(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
     if shift != 0 {
         builders.push(format!(".with_shift({shift})"));
     }
+    // MEDM bytes are bare segments — no per-bit labels (adl2pydm
+    // write_block_byte_indicator emits `showLabels = False`); SidmByteIndicator
+    // defaults to PyDM's labels-on. Label-less is also what routes the widget
+    // through the exact-share justified division (MEDM xc/Byte.c).
+    builders.push(".with_show_labels(false)".to_string());
     // `SidmByteIndicator` defaults to vertical.
     if let Some(orient) = direction_orientation(b, widget, true) {
         builders.push(orient);

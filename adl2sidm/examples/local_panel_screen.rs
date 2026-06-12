@@ -67,6 +67,7 @@ impl Screen {
             .expect("adl2sidm: connect loc://flags?type=int&init=170 (byte)")
             .with_border_mode(BorderMode::DisconnectedOnly)
             .with_num_bits(8)
+            .with_show_labels(false)
             .with_orientation(Orientation::Horizontal)
             .with_big_endian(true);
         let w8 = SidmLineEdit::new(&engine, "loc://flags?type=int&init=170")
