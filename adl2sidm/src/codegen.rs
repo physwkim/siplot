@@ -1935,9 +1935,13 @@ fn font_px_from_height(height: i32) -> f32 {
 fn style_prelude(b: &mut Builder, colors: WidgetColors, font_px: Option<f32>) -> String {
     let mut lines = String::new();
     if let Some(px) = font_px {
+        // In responsive layout the rects scale by (sx, sy); the font follows the
+        // height scale `sy` — MEDM likewise re-derives fonts from the resized
+        // widget height (`font_px_from_height` is a pure height function).
+        let scale = if b.use_layout { " * sy" } else { "" };
         let _ = writeln!(
             lines,
-            "    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));",
+            "    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}{scale}));",
             float_lit(f64::from(px))
         );
     }
@@ -3674,6 +3678,44 @@ rectangle {
             layout
                 .source
                 .contains("egui::vec2(x * sx, y * sy), egui::vec2(w * sx, h * sy)")
+        );
+    }
+
+    #[test]
+    fn use_layout_scales_fonts_by_the_height_factor() {
+        // MEDM re-derives a widget's font from its resized height, so responsive
+        // mode scales every emitted font by `sy` (rects already scale by sx/sy);
+        // absolute mode keeps the fixed MEDM-height-derived size.
+        let absolute = build(&Options::default());
+        assert!(
+            absolute.source.contains("egui::FontId::proportional(11.0)"),
+            "absolute mode must keep the fixed font size:\n{}",
+            absolute.source
+        );
+        assert!(
+            !absolute.source.contains("* sy)"),
+            "absolute mode must not scale fonts:\n{}",
+            absolute.source
+        );
+
+        let layout = build(&Options {
+            use_layout: true,
+            ..Options::default()
+        });
+        // text update height 18 -> 11px; static text height 100 -> clamped 20px.
+        assert!(
+            layout
+                .source
+                .contains("egui::FontId::proportional(11.0 * sy)"),
+            "layout mode must scale the text-update font by sy:\n{}",
+            layout.source
+        );
+        assert!(
+            layout
+                .source
+                .contains("egui::FontId::proportional(20.0 * sy)"),
+            "layout mode must scale the static-text font by sy:\n{}",
+            layout.source
         );
     }
 

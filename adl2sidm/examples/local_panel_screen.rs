@@ -75,7 +75,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Background, egui::Id::new(0u64), 10.0, 10.0, 320.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 ui.label(egui::RichText::new("SiDM panel from .adl (no IOC)").color(Color32::from_rgb(0, 0, 0)));
             }
         });
@@ -84,7 +84,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(1u64), 10.0, 42.0, 150.0, 20.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0 * sy));
                 ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(0, 0, 0));
                 let _ = w1.show(ui);
             }
@@ -94,7 +94,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(5u64), 170.0, 214.0, 120.0, 20.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0 * sy));
                 ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(0, 0, 0));
                 let _ = w5.show(ui);
             }
@@ -107,13 +107,13 @@ impl Screen {
             let _ = w13.show(ui, |ui| {
                 place(ui, __frame_origin_13, sx, sy, egui::Order::Background, egui::Id::new(14u64), 4.0, 2.0, 152.0, 14.0, |ui| {
                     {
-                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(8.0));
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(8.0 * sy));
                         ui.label(egui::RichText::new("embedded child").color(Color32::from_rgb(0, 0, 0)));
                     }
                 });
                 place(ui, __frame_origin_13, sx, sy, egui::Order::Middle, egui::Id::new(15u64), 4.0, 20.0, 152.0, 16.0, |ui| {
                     {
-                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(10.0));
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(10.0 * sy));
                         let _ = w15.show(ui);
                     }
                 });
@@ -121,7 +121,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(4u64), 20.0, 214.0, 140.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 let _ = w4.show(ui);
             }
         });
@@ -130,13 +130,13 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(8u64), 170.0, 300.0, 120.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 let _ = w8.show(ui);
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(9u64), 20.0, 332.0, 130.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 if ui.button("Echo").clicked() {
                 let _ = std::process::Command::new("sh").arg("-c").arg("echo hello from adl2sidm").spawn();
             }
@@ -144,7 +144,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(10u64), 170.0, 332.0, 170.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 ui.menu_button("Shell Command", |ui| {
                 if ui.button("Date").clicked() {
                     let _ = std::process::Command::new("sh").arg("-c").arg("date").spawn();
@@ -159,7 +159,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(11u64), 20.0, 366.0, 130.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 if ui.button("Detail").on_hover_text("related display: open detail.adl").clicked() {
                 eprintln!("related display: open detail.adl");
             }
@@ -167,7 +167,7 @@ impl Screen {
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(12u64), 170.0, 366.0, 170.0, 22.0, |ui| {
             {
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
                 ui.menu_button("Screens", |ui| {
                 if ui.button("Overview").on_hover_text("related display: open overview.adl").clicked() {
                     eprintln!("related display: open overview.adl");
