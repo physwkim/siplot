@@ -135,8 +135,15 @@ impl SidmEnumButton {
                 let label = options[idx].as_str();
                 let selected = Some(idx) == current;
                 let clicked = match (widget_type, size) {
+                    // Truncate rather than letting a long caption outgrow the
+                    // button's exact share and push later buttons past the
+                    // widget rect (Motif clips at the button bounds).
                     (EnumButtonType::Push, Some(size)) => ui
-                        .add_sized(size, egui::Button::selectable(selected, label))
+                        .add_sized(
+                            size,
+                            egui::Button::selectable(selected, label)
+                                .wrap_mode(egui::TextWrapMode::Truncate),
+                        )
                         .clicked(),
                     (EnumButtonType::Push, None) => ui.selectable_label(selected, label).clicked(),
                     (EnumButtonType::Radio, Some(size)) => ui
@@ -153,15 +160,20 @@ impl SidmEnumButton {
         self.base.framed(ui, &state, true, |ui| {
             // The `vertical`/`horizontal` stack replaces an inherited justified
             // layout, so the buttons would hug their captions inside the bclr
-            // backing. MEDM divides the choice-button rect equally among the
-            // buttons (medmChoiceButtons.c XmNfractionBase), so under a
-            // justified layout size each button to its equal share; a
+            // backing. MEDM divides the choice-button rect EXACTLY among the
+            // buttons, with zero spacing and zero margins (medmChoiceButtons.c
+            // createToggleButtons: XmNspacing=0, XmNmarginWidth=0, usedWidth =
+            // width/numButtons) — fixed gaps and paddings do not scale with the
+            // screen, so anything else overflows a narrow MEDM rect (the
+            // asynRecord 55×18 Off/On toggles clipped their second button). A
             // non-justified axis keeps egui's default interact size.
             let justify = layout_justify(ui);
             let size = (justify.0 || justify.1).then(|| {
                 let n = order.len().max(1) as f32;
                 let d = ui.spacing().interact_size;
-                let gap = ui.spacing().item_spacing;
+                let spacing = ui.spacing_mut();
+                spacing.item_spacing = egui::Vec2::ZERO;
+                spacing.button_padding = egui::Vec2::ZERO;
                 let (w, h) = (
                     if justify.0 { ui.available_width() } else { d.x },
                     if justify.1 {
@@ -171,8 +183,8 @@ impl SidmEnumButton {
                     },
                 );
                 match orientation {
-                    Orientation::Vertical => egui::vec2(w, (h - gap.y * (n - 1.0)) / n),
-                    Orientation::Horizontal => egui::vec2((w - gap.x * (n - 1.0)) / n, h),
+                    Orientation::Vertical => egui::vec2(w, h / n),
+                    Orientation::Horizontal => egui::vec2(w / n, h),
                 }
             });
             match orientation {

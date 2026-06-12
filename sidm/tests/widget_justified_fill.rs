@@ -353,9 +353,16 @@ fn enum_ioc_engine() -> (Engine, tokio::runtime::Runtime) {
         let mut rec = BiRecord::new(0);
         rec.znam = "Off".to_owned();
         rec.onam = "On".to_owned();
+        // The same enum with the SECOND state selected, for the narrow-rect
+        // probe: the button that used to clip is the last one, so the
+        // observable selection paint must sit on it.
+        let mut rec_on = BiRecord::new(1);
+        rec_on.znam = "Off".to_owned();
+        rec_on.onam = "On".to_owned();
         CaServer::builder()
             .port(port)
             .record("sidm:jf:bi", rec)
+            .record("sidm:jf:bi_on", rec_on)
             .build()
             .await
             .expect("build in-process CA server")
@@ -420,6 +427,67 @@ fn justified_enum_button_divides_the_available_rect() {
     assert!(
         justified > 60_000 && plain > 200 && plain < 5_000,
         "justified enum button should fill its equal share: justified={justified} plain={plain}"
+    );
+}
+
+/// MEDM choice buttons divide their rect EXACTLY, with zero spacing and zero
+/// margins (medmChoiceButtons.c createToggleButtons: XmNspacing=0,
+/// XmNmarginWidth=0, usedWidth = width/numButtons). Fixed gaps/paddings do not
+/// scale with the screen, so in a narrow MEDM rect (the asynRecord 55×18
+/// Off/On trace toggles) they grew the row past the rect and the converted
+/// screen's clip cut the last button. The probe mirrors the generated
+/// `place()` (a clipped `Area` pinned to the MEDM rect, content justified);
+/// the selected LAST button ("On") paints the red selection fill, so its
+/// visible area inside the 36×18 rect is the regression observable: pre-fix
+/// it is pushed fully past the clip (red = 0), fixed it gets its full half
+/// (red ≈ 110 — the 18×18 share minus the glyphs).
+#[test]
+#[cfg(feature = "ca")]
+fn justified_enum_button_fits_a_narrow_medm_rect() {
+    let (engine, _server_rt) = enum_ioc_engine();
+    let button = sidm::widgets::SidmEnumButton::new(&engine, "ca://sidm:jf:bi_on")
+        .expect("connect")
+        .with_orientation(sidm::widgets::Orientation::Horizontal);
+    assert!(
+        wait_for(
+            || button.channel().read(|s| s.enum_strings.is_some()),
+            Duration::from_secs(5)
+        ),
+        "enum button never received its enum strings"
+    );
+    let button = RefCell::new(button);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(100.0, 60.0))
+        .with_pixels_per_point(1.0)
+        .renderer(WgpuTestRenderer::from_render_state(create_render_state(
+            default_wgpu_setup(),
+        )))
+        .build_ui(move |ui| {
+            // The adl2sidm `place()` shape: an Area pinned at the MEDM rect,
+            // clipped and capped to it, content justified to fill it.
+            let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(36.0, 18.0));
+            egui::Area::new(ui.id().with("narrow_choice"))
+                .fixed_pos(rect.min)
+                .constrain(false)
+                .show(ui.ctx(), |ui| {
+                    ui.set_clip_rect(rect);
+                    ui.set_max_size(rect.size());
+                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(11.0));
+                    ui.style_mut().visuals.selection.bg_fill = egui::Color32::from_rgb(255, 0, 0);
+                    ui.with_layout(
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| drop(button.borrow_mut().show(ui)),
+                    );
+                });
+        });
+    harness.step();
+    harness.step();
+    let raw = harness.render().expect("headless wgpu render").into_raw();
+    let red = count_red(&raw);
+    eprintln!("narrow enum button: red={red}");
+    assert!(
+        red > 50,
+        "the selected last choice button must render inside the narrow rect: red={red}"
     );
 }
 
