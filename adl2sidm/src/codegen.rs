@@ -428,10 +428,8 @@ fn emit_static_text(b: &mut Builder, widget: &MedmWidget, options: &Options, z: 
         ),
         None => label_call,
     };
-    let body = format!(
-        "{{\n    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));\n{alarm_setup}    {aligned}\n}}",
-        float_lit(f64::from(font_px))
-    );
+    let prelude = style_prelude(b, WidgetColors::default(), Some(font_px));
+    let body = format!("{{\n{prelude}{alarm_setup}    {aligned}\n}}");
     b.placements.push(Placement::drawn(z, id, geom, body));
 }
 
@@ -1504,12 +1502,14 @@ fn emit_shell_command(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         body.push_str("\n});");
         body
     };
-    // MEDM auto-sizes the button/menu caption to the widget height; egui resolves
-    // the button text against `override_font_id` before `TextStyle::Body`.
-    let body = format!(
-        "{{\n    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));\n    {body}\n}}",
-        float_lit(f64::from(font_px_from_height(geom.height)))
+    // MEDM draws the button/menu in the widget's `clr`/`bclr` with a height-sized
+    // caption; the shared prelude applies all three to the scoped egui style.
+    let prelude = style_prelude(
+        b,
+        WidgetColors::from_widget(widget),
+        Some(font_px_from_height(geom.height)),
     );
+    let body = format!("{{\n{prelude}    {body}\n}}");
     b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
         "line {}: shell command emitted as a live button/menu (spawns via `sh -c`)",
@@ -1774,12 +1774,14 @@ fn emit_related_display(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         body.push_str("\n});");
         body
     };
-    // MEDM auto-sizes the button/menu caption to the widget height; egui resolves
-    // the button text against `override_font_id` before `TextStyle::Body`.
-    let body = format!(
-        "{{\n    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));\n    {body}\n}}",
-        float_lit(f64::from(font_px_from_height(geom.height)))
+    // MEDM draws the button/menu in the widget's `clr`/`bclr` with a height-sized
+    // caption; the shared prelude applies all three to the scoped egui style.
+    let prelude = style_prelude(
+        b,
+        WidgetColors::from_widget(widget),
+        Some(font_px_from_height(geom.height)),
     );
+    let body = format!("{{\n{prelude}    {body}\n}}");
     b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
         "line {}: related display emitted as a navigation-reporting button/menu \
@@ -1903,10 +1905,6 @@ impl WidgetColors {
             bg: widget.background_color,
         }
     }
-
-    fn is_set(self) -> bool {
-        self.fg.is_some() || self.bg.is_some()
-    }
 }
 
 /// MEDM auto-sizes a widget's font to its geometry; adl2pydm's `write_font_size`
@@ -1917,51 +1915,78 @@ fn font_px_from_height(height: i32) -> f32 {
     (f64::from(height) * 0.6).round().clamp(6.0, 20.0) as f32
 }
 
-/// The draw body for a channel widget, optionally applying a MEDM-derived font
-/// size and static `clr`/`bclr` colours before `show`. The font is set as
-/// `override_font_id` (egui resolves Label/Button/edit text against it before
-/// falling back to `TextStyle::Body`); the background is painted as a filled rect
-/// behind the widget; the foreground is set as `override_text_color`, which the
-/// widget's text honours unless it is alarm-driven (alarm colouring sets the text
-/// colour explicitly and so still wins, matching MEDM `clrmod="alarm"` overriding
-/// the static `clr`).
-fn styled_show_body(
-    b: &mut Builder,
-    field: &str,
-    colors: WidgetColors,
-    font_px: Option<f32>,
-) -> String {
-    if !colors.is_set() && font_px.is_none() {
-        return format!("let _ = {field}.show(ui);");
-    }
-    let mut body = String::from("{\n");
+/// The scoped style-override lines applying a MEDM-derived font size and static
+/// `clr`/`bclr` colours — the single owner of "how MEDM colours reach an egui
+/// widget", shared by every emitter that styles a drawn body (channel widgets,
+/// static text, related-display/shell-command buttons). Empty when nothing is
+/// set; otherwise each line is indented one level for splicing into a `{ ... }`
+/// block.
+///
+/// The font is set as `override_font_id` (egui resolves Label/Button/edit text
+/// against it before falling back to `TextStyle::Body`). `bclr` is painted as a
+/// filled rect over the widget's full MEDM geometry AND set as the face fill of
+/// every self-painting widget — `weak_bg_fill` per interact state (Button /
+/// DragValue / ComboBox faces) and `text_edit_bg_color` (TextEdit face) — since
+/// those widgets paint their own face over the backing rect (MEDM draws the
+/// whole control in `bclr`). `clr` is set as `override_text_color`, which the
+/// widget's text honours unless it is alarm-driven (alarm colouring sets the
+/// text colour explicitly and so still wins, matching MEDM `clrmod="alarm"`
+/// overriding the static `clr`).
+fn style_prelude(b: &mut Builder, colors: WidgetColors, font_px: Option<f32>) -> String {
+    let mut lines = String::new();
     if let Some(px) = font_px {
         let _ = writeln!(
-            body,
+            lines,
             "    ui.style_mut().override_font_id = Some(egui::FontId::proportional({}));",
             float_lit(f64::from(px))
         );
     }
     if let Some(bg) = colors.bg {
         b.needs_color = true;
-        let _ = writeln!(body, "    let __bg = ui.max_rect();");
+        let bg = color_expr(bg);
+        let _ = writeln!(lines, "    let __bg = ui.max_rect();");
         let _ = writeln!(
-            body,
-            "    ui.painter().rect_filled(__bg, egui::CornerRadius::ZERO, {});",
-            color_expr(bg)
+            lines,
+            "    ui.painter().rect_filled(__bg, egui::CornerRadius::ZERO, {bg});"
         );
-    }
-    if let Some(fg) = colors.fg {
+        let _ = writeln!(lines, "    let __v = &mut ui.style_mut().visuals;");
+        let _ = writeln!(lines, "    __v.widgets.inactive.weak_bg_fill = {bg};");
+        let _ = writeln!(lines, "    __v.widgets.hovered.weak_bg_fill = {bg};");
+        let _ = writeln!(lines, "    __v.widgets.active.weak_bg_fill = {bg};");
+        let _ = writeln!(lines, "    __v.widgets.open.weak_bg_fill = {bg};");
+        let _ = writeln!(lines, "    __v.text_edit_bg_color = Some({bg});");
+        if let Some(fg) = colors.fg {
+            b.needs_color = true;
+            let _ = writeln!(
+                lines,
+                "    __v.override_text_color = Some({});",
+                color_expr(fg)
+            );
+        }
+    } else if let Some(fg) = colors.fg {
         b.needs_color = true;
         let _ = writeln!(
-            body,
+            lines,
             "    ui.style_mut().visuals.override_text_color = Some({});",
             color_expr(fg)
         );
     }
-    let _ = writeln!(body, "    let _ = {field}.show(ui);");
-    body.push('}');
-    body
+    lines
+}
+
+/// The draw body for a channel widget: the [`style_prelude`] overrides (when any)
+/// wrapped around `field.show(ui)`.
+fn styled_show_body(
+    b: &mut Builder,
+    field: &str,
+    colors: WidgetColors,
+    font_px: Option<f32>,
+) -> String {
+    let prelude = style_prelude(b, colors, font_px);
+    if prelude.is_empty() {
+        return format!("let _ = {field}.show(ui);");
+    }
+    format!("{{\n{prelude}    let _ = {field}.show(ui);\n}}")
 }
 
 /// The per-widget inputs to [`push_channel_widget`]: how to name, construct,
@@ -3042,9 +3067,8 @@ rectangle {
         // The text update tints its text (clr=2 -> red) and fills its background
         // (bclr=1 -> black).
         assert!(
-            g.source.contains(
-                "ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(255, 0, 0));"
-            ),
+            g.source
+                .contains("__v.override_text_color = Some(Color32::from_rgb(255, 0, 0));"),
             "text update must tint via override_text_color:\n{}",
             g.source
         );
@@ -3052,6 +3076,21 @@ rectangle {
             g.source
                 .contains("ui.painter().rect_filled(__bg, egui::CornerRadius::ZERO, Color32::from_rgb(0, 0, 0));"),
             "text update must paint its bclr background:\n{}",
+            g.source
+        );
+        // bclr also reaches the faces of self-painting widgets (Button/ComboBox/
+        // DragValue via weak_bg_fill, TextEdit via text_edit_bg_color) so a
+        // button/edit face shows the MEDM colour, not the egui theme's.
+        assert!(
+            g.source
+                .contains("__v.widgets.inactive.weak_bg_fill = Color32::from_rgb(0, 0, 0);"),
+            "bclr must set the widget face fill:\n{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains("__v.text_edit_bg_color = Some(Color32::from_rgb(0, 0, 0));"),
+            "bclr must set the text-edit face fill:\n{}",
             g.source
         );
         // Exactly one override_text_color — the shape must NOT get one (it colours
@@ -5415,6 +5454,50 @@ composite {
         );
         // Channel-less: no Engine widget fabricated.
         assert!(!g.source.contains("SidmPushButton"), "{}", g.source);
+    }
+
+    #[test]
+    fn related_display_button_takes_its_medm_clr_bclr() {
+        // MEDM draws the related-display button in its widget `clr`/`bclr` (the
+        // classic grey-on-cyan); the emitted button must set both on the scoped
+        // style — the face via weak_bg_fill (a raw bg rect would be painted OVER
+        // by the egui button face) and the caption via override_text_color.
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+		73dfff,
+	}
+}
+"related display" {
+	object {
+		x=0
+		y=0
+		width=100
+		height=20
+	}
+	clr=1
+	bclr=2
+	display[0] {
+		label="Detail"
+		name="detail.adl"
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        assert!(
+            g.source
+                .contains("__v.widgets.inactive.weak_bg_fill = Color32::from_rgb(115, 223, 255);"),
+            "related-display bclr must reach the button face:\n{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains("__v.override_text_color = Some(Color32::from_rgb(0, 0, 0));"),
+            "related-display clr must tint the caption:\n{}",
+            g.source
+        );
     }
 
     #[test]

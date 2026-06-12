@@ -86,6 +86,8 @@ text {
 	}
 	control {
 		chan="$(P)go"
+		clr=1
+		bclr=5
 	}
 	press_msg="1"
 	release_msg="0"

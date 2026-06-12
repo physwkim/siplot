@@ -65,8 +65,8 @@ impl Screen {
             .with_alarm_sensitive_border(true)
             .with_size(egui::Vec2::new(180.0, 120.0));
         let gate11 = engine
-            .connect("calc://adl2sidm_vis_146?expr=A!=0&A=ca://DMM1:show_box&update=A")
-            .expect("adl2sidm: connect visibility gate calc://adl2sidm_vis_146?expr=A!=0&A=ca://DMM1:show_box&update=A");
+            .connect("calc://adl2sidm_vis_148?expr=A!=0&A=ca://DMM1:show_box&update=A")
+            .expect("adl2sidm: connect visibility gate calc://adl2sidm_vis_148?expr=A!=0&A=ca://DMM1:show_box&update=A");
         let w12 = SidmDrawing::new(&engine, "loc://adl2sidm_shape_0", DrawingShape::Ellipse)
             .expect("adl2sidm: connect loc://adl2sidm_shape_0 (drawing)")
             .with_fill(Color32::from_rgb(255, 0, 0))
@@ -164,6 +164,15 @@ impl Screen {
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(5u64), 10.0, 100.0, 80.0, 24.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(14.0));
+                let __bg = ui.max_rect();
+                ui.painter().rect_filled(__bg, egui::CornerRadius::ZERO, Color32::from_rgb(192, 192, 192));
+                let __v = &mut ui.style_mut().visuals;
+                __v.widgets.inactive.weak_bg_fill = Color32::from_rgb(192, 192, 192);
+                __v.widgets.hovered.weak_bg_fill = Color32::from_rgb(192, 192, 192);
+                __v.widgets.active.weak_bg_fill = Color32::from_rgb(192, 192, 192);
+                __v.widgets.open.weak_bg_fill = Color32::from_rgb(192, 192, 192);
+                __v.text_edit_bg_color = Some(Color32::from_rgb(192, 192, 192));
+                __v.override_text_color = Some(Color32::from_rgb(0, 0, 0));
                 let _ = w5.show(ui);
             }
         });
