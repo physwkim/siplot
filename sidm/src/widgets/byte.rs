@@ -230,52 +230,90 @@ impl SidmByteIndicator {
         self.base
             .framed(ui, &state, false, |ui| {
                 // `ui.vertical`/`ui.horizontal` reset the layout, so capture
-                // the caller's justify intent first. A justified byte divides
-                // the available extent evenly among its bits along the
-                // stacking axis (MEDM/PyDM segment the widget rect) and fills
-                // it across; labels are not reserved for in the division.
+                // the caller's justify intent first.
                 let (justify_h, justify_v) = layout_justify(ui);
-                let n = order.len() as f32;
-                match self.orientation {
-                    Orientation::Vertical => {
-                        ui.vertical(|ui| {
-                            let gaps = ui.spacing().item_spacing.y * (n - 1.0);
-                            let bit = egui::vec2(
-                                if justify_h {
-                                    ui.available_width()
-                                } else {
-                                    INDICATOR_SIZE
-                                },
-                                if justify_v {
-                                    ((ui.available_height() - gaps) / n).max(0.0)
-                                } else {
-                                    INDICATOR_SIZE
-                                },
-                            );
-                            for &i in &order {
-                                ui.horizontal(|ui| self.draw_bit(ui, &state, i, bits[i], bit));
-                            }
-                        });
+                let n = order.len().max(1) as f32;
+                if (justify_h || justify_v) && !self.show_labels {
+                    // A justified label-less byte is MEDM's: contiguous
+                    // segments dividing the widget rect exactly (xc/Byte.c
+                    // Draw_display: delta = extent/nSeg, separator lines, no
+                    // spacing). Flow layouts cannot honour a fixed rect —
+                    // `ui.horizontal` floors its row at `interact_size.y`
+                    // and the justified parent re-centres the overflow (both
+                    // measured on the choice buttons) — so paint each bit at
+                    // its exact share of the content rect instead. A
+                    // non-justified axis keeps the native indicator size.
+                    let avail = ui.available_rect_before_wrap();
+                    let (along, across) = match self.orientation {
+                        Orientation::Vertical => (justify_v, justify_h),
+                        Orientation::Horizontal => (justify_h, justify_v),
+                    };
+                    let (extent, breadth) = match self.orientation {
+                        Orientation::Vertical => (avail.height(), avail.width()),
+                        Orientation::Horizontal => (avail.width(), avail.height()),
+                    };
+                    let share = if along { extent / n } else { INDICATOR_SIZE };
+                    let cross = if across { breadth } else { INDICATOR_SIZE };
+                    let (bit, step) = match self.orientation {
+                        Orientation::Vertical => (egui::vec2(cross, share), egui::vec2(0.0, share)),
+                        Orientation::Horizontal => {
+                            (egui::vec2(share, cross), egui::vec2(share, 0.0))
+                        }
+                    };
+                    let total = bit + step * (n - 1.0);
+                    let (rect, _) = ui.allocate_exact_size(total, egui::Sense::hover());
+                    if ui.is_rect_visible(rect) {
+                        for (k, &i) in order.iter().enumerate() {
+                            let r = egui::Rect::from_min_size(rect.min + step * k as f32, bit);
+                            self.paint_bit(ui.painter(), r, self.bit_color(&state, bits[i]));
+                        }
                     }
-                    Orientation::Horizontal => {
-                        ui.horizontal(|ui| {
-                            let gaps = ui.spacing().item_spacing.x * (n - 1.0);
-                            let bit = egui::vec2(
-                                if justify_h {
-                                    ((ui.available_width() - gaps) / n).max(0.0)
-                                } else {
-                                    INDICATOR_SIZE
-                                },
-                                if justify_v {
-                                    ui.available_height()
-                                } else {
-                                    INDICATOR_SIZE
-                                },
-                            );
-                            for &i in &order {
-                                ui.vertical(|ui| self.draw_bit(ui, &state, i, bits[i], bit));
-                            }
-                        });
+                } else {
+                    // PyDM flow shape: one indicator (plus optional label)
+                    // per bit, stacked along the orientation. A justified
+                    // labelled byte keeps the flow division (labels are not
+                    // reserved for in the division).
+                    match self.orientation {
+                        Orientation::Vertical => {
+                            ui.vertical(|ui| {
+                                let gaps = ui.spacing().item_spacing.y * (n - 1.0);
+                                let bit = egui::vec2(
+                                    if justify_h {
+                                        ui.available_width()
+                                    } else {
+                                        INDICATOR_SIZE
+                                    },
+                                    if justify_v {
+                                        ((ui.available_height() - gaps) / n).max(0.0)
+                                    } else {
+                                        INDICATOR_SIZE
+                                    },
+                                );
+                                for &i in &order {
+                                    ui.horizontal(|ui| self.draw_bit(ui, &state, i, bits[i], bit));
+                                }
+                            });
+                        }
+                        Orientation::Horizontal => {
+                            ui.horizontal(|ui| {
+                                let gaps = ui.spacing().item_spacing.x * (n - 1.0);
+                                let bit = egui::vec2(
+                                    if justify_h {
+                                        ((ui.available_width() - gaps) / n).max(0.0)
+                                    } else {
+                                        INDICATOR_SIZE
+                                    },
+                                    if justify_v {
+                                        ui.available_height()
+                                    } else {
+                                        INDICATOR_SIZE
+                                    },
+                                );
+                                for &i in &order {
+                                    ui.vertical(|ui| self.draw_bit(ui, &state, i, bits[i], bit));
+                                }
+                            });
+                        }
                     }
                 }
             })
@@ -294,7 +332,15 @@ impl SidmByteIndicator {
     ) {
         let color = self.bit_color(state, bit_on);
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-        let painter = ui.painter();
+        self.paint_bit(ui.painter(), rect, color);
+        if self.show_labels {
+            ui.label(self.label_for(bit_index));
+        }
+    }
+
+    /// Paint one bit indicator into `rect` (the shared painter of the flow
+    /// and exact-rect paths).
+    fn paint_bit(&self, painter: &egui::Painter, rect: egui::Rect, color: Color32) {
         let outline = egui::Stroke::new(1.0, Color32::from_gray(60));
         if self.circles {
             let radius = rect.width().min(rect.height()) / 2.0 - 1.0;
@@ -307,9 +353,6 @@ impl SidmByteIndicator {
                 outline,
                 egui::StrokeKind::Inside,
             );
-        }
-        if self.show_labels {
-            ui.label(self.label_for(bit_index));
         }
     }
 }

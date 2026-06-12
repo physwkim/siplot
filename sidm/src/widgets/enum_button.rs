@@ -130,69 +130,88 @@ impl SidmEnumButton {
         let orientation = self.orientation;
 
         let mut chosen = None;
-        let mut draw = |ui: &mut egui::Ui, size: Option<egui::Vec2>| {
-            for &idx in &order {
-                let label = options[idx].as_str();
-                let selected = Some(idx) == current;
-                let clicked = match (widget_type, size) {
-                    // Truncate rather than letting a long caption outgrow the
-                    // button's exact share and push later buttons past the
-                    // widget rect (Motif clips at the button bounds).
-                    (EnumButtonType::Push, Some(size)) => ui
-                        .add_sized(
-                            size,
-                            egui::Button::selectable(selected, label)
-                                .wrap_mode(egui::TextWrapMode::Truncate),
-                        )
-                        .clicked(),
-                    (EnumButtonType::Push, None) => ui.selectable_label(selected, label).clicked(),
-                    (EnumButtonType::Radio, Some(size)) => ui
-                        .add_sized(size, egui::RadioButton::new(selected, label))
-                        .clicked(),
-                    (EnumButtonType::Radio, None) => ui.radio(selected, label).clicked(),
-                };
-                if clicked {
-                    chosen = Some(idx);
-                }
-            }
-        };
-
         self.base.framed(ui, &state, true, |ui| {
-            // The `vertical`/`horizontal` stack replaces an inherited justified
-            // layout, so the buttons would hug their captions inside the bclr
-            // backing. MEDM divides the choice-button rect EXACTLY among the
-            // buttons, with zero spacing and zero margins (medmChoiceButtons.c
-            // createToggleButtons: XmNspacing=0, XmNmarginWidth=0, usedWidth =
-            // width/numButtons) — fixed gaps and paddings do not scale with the
-            // screen, so anything else overflows a narrow MEDM rect (the
-            // asynRecord 55×18 Off/On toggles clipped their second button). A
-            // non-justified axis keeps egui's default interact size.
             let justify = layout_justify(ui);
-            let size = (justify.0 || justify.1).then(|| {
-                let n = order.len().max(1) as f32;
+            if justify.0 || justify.1 {
+                // MEDM divides the choice-button rect EXACTLY among the
+                // buttons, with zero spacing and zero margins
+                // (medmChoiceButtons.c createToggleButtons: XmNspacing=0,
+                // XmNmarginWidth=0, usedWidth = width/numButtons). Flow
+                // layouts cannot honour a fixed rect: `ui.horizontal` floors
+                // its row at `interact_size.y` and the justified parent
+                // re-centres the overflow (both measured), which displaced
+                // the captions out of narrow MEDM rects (the asynRecord
+                // 55×18 Off/On toggles lost their glyph bottoms). Place each
+                // button at its exact share of the content rect instead;
+                // `put` centres the caption inside that share. Truncate
+                // rather than letting a long caption outgrow its share
+                // (Motif clips at the button bounds).
+                let avail = ui.available_rect_before_wrap();
                 let d = ui.spacing().interact_size;
-                let spacing = ui.spacing_mut();
-                spacing.item_spacing = egui::Vec2::ZERO;
-                spacing.button_padding = egui::Vec2::ZERO;
+                {
+                    let spacing = ui.spacing_mut();
+                    spacing.button_padding = egui::Vec2::ZERO;
+                    // egui buttons floor their height at `interact_size.y`,
+                    // which would inflate a share smaller than it right back
+                    // past the rect — MEDM buttons have no minimum size.
+                    spacing.interact_size = egui::Vec2::ZERO;
+                }
+                let n = order.len().max(1) as f32;
                 let (w, h) = (
-                    if justify.0 { ui.available_width() } else { d.x },
-                    if justify.1 {
-                        ui.available_height()
-                    } else {
-                        d.y
-                    },
+                    if justify.0 { avail.width() } else { d.x },
+                    if justify.1 { avail.height() } else { d.y },
                 );
-                match orientation {
+                let size = match orientation {
                     Orientation::Vertical => egui::vec2(w, h / n),
                     Orientation::Horizontal => egui::vec2(w / n, h),
+                };
+                let step = match orientation {
+                    Orientation::Vertical => egui::vec2(0.0, size.y),
+                    Orientation::Horizontal => egui::vec2(size.x, 0.0),
+                };
+                for (k, &idx) in order.iter().enumerate() {
+                    let rect = egui::Rect::from_min_size(avail.min + step * k as f32, size);
+                    let label = options[idx].as_str();
+                    let selected = Some(idx) == current;
+                    let clicked = match widget_type {
+                        EnumButtonType::Push => ui
+                            .put(
+                                rect,
+                                egui::Button::selectable(selected, label)
+                                    .wrap_mode(egui::TextWrapMode::Truncate),
+                            )
+                            .clicked(),
+                        EnumButtonType::Radio => ui
+                            .put(rect, egui::RadioButton::new(selected, label))
+                            .clicked(),
+                    };
+                    if clicked {
+                        chosen = Some(idx);
+                    }
                 }
-            });
-            match orientation {
-                Orientation::Vertical => {
-                    ui.vertical(|ui| draw(ui, size));
-                }
-                Orientation::Horizontal => {
-                    ui.horizontal(|ui| draw(ui, size));
+            } else {
+                // Plain layout: the PyDM shape — buttons hug their captions
+                // in a flow stack.
+                let mut draw = |ui: &mut egui::Ui| {
+                    for &idx in &order {
+                        let label = options[idx].as_str();
+                        let selected = Some(idx) == current;
+                        let clicked = match widget_type {
+                            EnumButtonType::Push => ui.selectable_label(selected, label).clicked(),
+                            EnumButtonType::Radio => ui.radio(selected, label).clicked(),
+                        };
+                        if clicked {
+                            chosen = Some(idx);
+                        }
+                    }
+                };
+                match orientation {
+                    Orientation::Vertical => {
+                        ui.vertical(|ui| draw(ui));
+                    }
+                    Orientation::Horizontal => {
+                        ui.horizontal(|ui| draw(ui));
+                    }
                 }
             }
         });

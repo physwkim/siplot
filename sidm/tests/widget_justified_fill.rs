@@ -430,17 +430,40 @@ fn justified_enum_button_divides_the_available_rect() {
     );
 }
 
+/// Bounding box (in pixel coordinates) of the pixels matching `is_match` in a
+/// `width`-pixels-wide RGBA image: `(min_x, min_y, max_x, max_y)`.
+fn match_bbox(
+    raw: &[u8],
+    width: usize,
+    is_match: impl Fn(&[u8]) -> bool,
+) -> Option<(usize, usize, usize, usize)> {
+    let mut bbox: Option<(usize, usize, usize, usize)> = None;
+    for (i, px) in raw.chunks_exact(4).enumerate() {
+        if is_match(px) {
+            let (x, y) = (i % width, i / width);
+            bbox = Some(match bbox {
+                None => (x, y, x, y),
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+            });
+        }
+    }
+    bbox
+}
+
 /// MEDM choice buttons divide their rect EXACTLY, with zero spacing and zero
 /// margins (medmChoiceButtons.c createToggleButtons: XmNspacing=0,
-/// XmNmarginWidth=0, usedWidth = width/numButtons). Fixed gaps/paddings do not
-/// scale with the screen, so in a narrow MEDM rect (the asynRecord 55×18
-/// Off/On trace toggles) they grew the row past the rect and the converted
-/// screen's clip cut the last button. The probe mirrors the generated
-/// `place()` (a clipped `Area` pinned to the MEDM rect, content justified);
-/// the selected LAST button ("On") paints the red selection fill, so its
-/// visible area inside the 36×18 rect is the regression observable: pre-fix
-/// it is pushed fully past the clip (red = 0), fixed it gets its full half
-/// (red ≈ 110 — the 18×18 share minus the glyphs).
+/// XmNmarginWidth=0, usedWidth = width/numButtons). Two regressions in one
+/// observable, the red selection fill of the selected LAST button ("On")
+/// inside a 36×18 MEDM rect rendered through the generated `place()` shape (a
+/// clipped `Area`, content justified):
+///
+/// - fixed egui gaps/paddings grew the row past the rect and the clip cut the
+///   last button entirely (red = 0);
+/// - flow layouts (`ui.horizontal` floors its row at `interact_size.y`, the
+///   justified parent re-centres the overflow) displaced the row ~5 px down,
+///   so the fill survived (red ≈ 110) but rode the bottom clip edge and the
+///   caption glyphs lost their bottoms — hence the centering assertion, which
+///   the count alone missed.
 #[test]
 #[cfg(feature = "ca")]
 fn justified_enum_button_fits_a_narrow_medm_rect() {
@@ -455,6 +478,7 @@ fn justified_enum_button_fits_a_narrow_medm_rect() {
         ),
         "enum button never received its enum strings"
     );
+    let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(36.0, 18.0));
     let button = RefCell::new(button);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(100.0, 60.0))
@@ -465,7 +489,6 @@ fn justified_enum_button_fits_a_narrow_medm_rect() {
         .build_ui(move |ui| {
             // The adl2sidm `place()` shape: an Area pinned at the MEDM rect,
             // clipped and capped to it, content justified to fill it.
-            let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(36.0, 18.0));
             egui::Area::new(ui.id().with("narrow_choice"))
                 .fixed_pos(rect.min)
                 .constrain(false)
@@ -484,10 +507,77 @@ fn justified_enum_button_fits_a_narrow_medm_rect() {
     harness.step();
     let raw = harness.render().expect("headless wgpu render").into_raw();
     let red = count_red(&raw);
-    eprintln!("narrow enum button: red={red}");
+    let (_, top, _, bottom) = match_bbox(&raw, 100, |px| px[0] > 200 && px[1] < 80 && px[2] < 80)
+        .expect("the selected last choice button must paint its red fill");
+    // Vertically centred inside the rect: the gap above the fill equals the
+    // gap below it (±2 px for AA), and the fill does not ride the clip edge.
+    let (gap_above, gap_below) = (top as f32 - rect.top(), rect.bottom() - 1.0 - bottom as f32);
+    eprintln!(
+        "narrow enum button: red={red} fill rows {top}..{bottom} gaps {gap_above}/{gap_below}"
+    );
     assert!(
         red > 50,
         "the selected last choice button must render inside the narrow rect: red={red}"
+    );
+    assert!(
+        (gap_above - gap_below).abs() <= 2.0 && gap_below >= 1.0,
+        "the buttons must be vertically centred in the MEDM rect, not displaced \
+         into the clip: fill rows {top}..{bottom}, gaps above/below {gap_above}/{gap_below}"
+    );
+}
+
+/// A justified label-less byte in a short MEDM cell (160×15-ish) paints
+/// contiguous exact-share segments inside the rect (xc/Byte.c Draw_display).
+/// The flow path floored its row at `interact_size.y` (18 > the 9 px content
+/// height), so the bits overflowed and re-centred into the clip edges.
+#[test]
+fn justified_byte_fits_a_short_medm_rect() {
+    let engine = Engine::new();
+    let byte = green_byte(&engine, "loc://short_byte?type=int&init=255")
+        .with_orientation(sidm::widgets::Orientation::Horizontal);
+    let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(80.0, 15.0));
+    let byte = RefCell::new(byte);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(100.0, 40.0))
+        .with_pixels_per_point(1.0)
+        .renderer(WgpuTestRenderer::from_render_state(create_render_state(
+            default_wgpu_setup(),
+        )))
+        .build_ui(move |ui| {
+            egui::Area::new(ui.id().with("short_byte"))
+                .fixed_pos(rect.min)
+                .constrain(false)
+                .show(ui.ctx(), |ui| {
+                    ui.set_clip_rect(rect);
+                    ui.set_max_size(rect.size());
+                    ui.with_layout(
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| drop(byte.borrow_mut().show(ui)),
+                    );
+                });
+        });
+    harness.step();
+    harness.step();
+    let raw = harness.render().expect("headless wgpu render").into_raw();
+    let green = count_green(&raw);
+    let (left, top, right, bottom) =
+        match_bbox(&raw, 100, |px| px[0] < 80 && px[1] > 200 && px[2] < 80)
+            .expect("the lit bits must paint inside the short rect");
+    let (gap_above, gap_below) = (top as f32 - rect.top(), rect.bottom() - 1.0 - bottom as f32);
+    eprintln!(
+        "short byte: green={green} bbox ({left},{top})..({right},{bottom}) gaps {gap_above}/{gap_below}"
+    );
+    // All 8 contiguous segments span the content width and sit centred in the
+    // cell instead of riding the clip edges (the frame reserves 3 px around).
+    assert!(
+        green > 300 && (right - left) as f32 > rect.width() - 10.0,
+        "segments must divide the short rect: green={green} span={}",
+        right - left
+    );
+    assert!(
+        (gap_above - gap_below).abs() <= 2.0 && gap_below >= 1.0,
+        "bits must stay centred inside the short rect, not displaced into the \
+         clip: bbox rows {top}..{bottom}, gaps above/below {gap_above}/{gap_below}"
     );
 }
 
