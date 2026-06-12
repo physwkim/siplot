@@ -134,6 +134,17 @@ struct Builder {
     /// Whether any emitted code references `sidm::Channel` (a dynamic visibility
     /// gate field).
     needs_channel: bool,
+    /// Whether any emitted string still carries a `$(macro)` reference after the
+    /// convert-time `--macro` baking — it then expands at runtime against the
+    /// screen instance's macro table (`__m`), so the `MacroTable` helper and the
+    /// `__m` field are emitted.
+    needs_macros: bool,
+    /// Whether any emitted ctor needs the wgpu render state (plots), so `new_in`
+    /// must unwrap its `render_state` parameter.
+    needs_render_state: bool,
+    /// The convert-time `--macro` table ([`Options::macros`]); cached here so
+    /// `emit_new` can pass it as the root instance's runtime table.
+    macros: Vec<(String, String)>,
     /// Canonical paths of the `.adl` files currently being inlined (embedded
     /// display recursion), newest last. Guards against include cycles; its length
     /// is the current nesting depth (capped at [`MAX_EMBED_DEPTH`]).
@@ -187,6 +198,7 @@ pub fn generate(screen: &MedmScreen, options: &Options) -> Generated {
 
     let mut b = Builder {
         use_layout: options.use_layout,
+        macros: options.macros.clone(),
         ..Default::default()
     };
     for widget in &screen.widgets {
@@ -278,9 +290,9 @@ fn apply_dynamic_visibility(b: &mut Builder, widget: &MedmWidget, options: &Opti
     let id = b.index();
     let field = format!("gate{id}");
     b.needs_channel = true;
+    let gate_addr_expr = medm_str(b, &gate_addr);
     b.ctors.push(format!(
-        "let {field} = engine\n            .connect({})\n            .expect({});",
-        rust_str(&gate_addr),
+        "let {field} = engine\n            .connect({gate_addr_expr})\n            .expect({});",
         rust_str(&format!("adl2sidm: connect visibility gate {gate_addr}"))
     ));
     b.fields.push((field.clone(), "Channel".to_string()));
@@ -430,7 +442,7 @@ fn emit_static_text(b: &mut Builder, widget: &MedmWidget, options: &Options, z: 
     let font_px = font_px_from_height(geom.height);
     let label_call = format!(
         "ui.label(egui::RichText::new({}).color({color_token}));",
-        rust_str(&text),
+        medm_str(b, &text),
     );
     // MEDM `align` positions the text horizontally. Left (the default) keeps the
     // bare `ui.label`; centre/right wrap it in a top-down layout whose cross-axis
@@ -451,7 +463,7 @@ fn emit_text_update(b: &mut Builder, widget: &MedmWidget, options: &Options, z: 
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmLabel::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmLabel::new(&engine, {})", medm_str(b, &addr));
     let mut builders: Vec<String> = precision_default_builder(widget).into_iter().collect();
     builders.extend(string_format_builder(widget, &addr));
     builders.extend(alarm_content_builder(widget));
@@ -478,7 +490,7 @@ fn emit_text_entry(b: &mut Builder, widget: &MedmWidget, options: &Options, z: Z
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmLineEdit::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmLineEdit::new(&engine, {})", medm_str(b, &addr));
     let mut builders: Vec<String> = precision_default_builder(widget).into_iter().collect();
     builders.extend(string_format_builder(widget, &addr));
     push_channel_widget(
@@ -510,13 +522,13 @@ fn emit_message_button(b: &mut Builder, widget: &MedmWidget, options: &Options, 
         .unwrap_or_default();
     let new_call = format!(
         "SidmPushButton::new(&engine, {}, {}, {})",
-        rust_str(&addr),
-        rust_str(&label),
-        rust_str(&press)
+        medm_str(b, &addr),
+        medm_str(b, &label),
+        medm_str(b, &press)
     );
     let mut builders = Vec::new();
-    if let Some(release) = widget.assignments.get("release_msg") {
-        builders.push(format!(".with_release_value({})", rust_str(release)));
+    if let Some(release) = widget.assignments.get("release_msg").cloned() {
+        builders.push(format!(".with_release_value({})", medm_str(b, &release)));
     }
     push_channel_widget(
         b,
@@ -538,7 +550,7 @@ fn emit_menu(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmEnumComboBox::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmEnumComboBox::new(&engine, {})", medm_str(b, &addr));
     push_channel_widget(
         b,
         z,
@@ -561,7 +573,7 @@ fn emit_choice_button(b: &mut Builder, widget: &MedmWidget, options: &Options, z
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmEnumButton::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmEnumButton::new(&engine, {})", medm_str(b, &addr));
     let mut builders = Vec::new();
     let stacking = widget
         .assignments
@@ -598,7 +610,7 @@ fn emit_valuator(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLa
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmSlider::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmSlider::new(&engine, {})", medm_str(b, &addr));
     let mut builders = Vec::new();
     if let Some((lo, hi)) = user_defined_limits(widget) {
         builders.push(format!(
@@ -635,7 +647,7 @@ fn emit_wheel_switch(b: &mut Builder, widget: &MedmWidget, options: &Options, z:
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmSpinbox::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmSpinbox::new(&engine, {})", medm_str(b, &addr));
     let mut builders = Vec::new();
     if let Some((lo, hi)) = user_defined_limits(widget) {
         builders.push(format!(
@@ -699,7 +711,7 @@ fn emit_byte(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
     let num_bits = 1 + (sbit.max(ebit) - sbit.min(ebit));
     let shift = sbit.min(ebit);
 
-    let new_call = format!("SidmByteIndicator::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmByteIndicator::new(&engine, {})", medm_str(b, &addr));
     let mut builders = Vec::new();
     // `SidmByteIndicator` defaults: 1 bit, no shift, vertical.
     if num_bits != 1 {
@@ -761,7 +773,7 @@ fn emit_scale_indicator(
     let Some((geom, addr)) = resolve_channel(b, widget, options) else {
         return;
     };
-    let new_call = format!("SidmScaleIndicator::new(&engine, {})", rust_str(&addr));
+    let new_call = format!("SidmScaleIndicator::new(&engine, {})", medm_str(b, &addr));
     let mut builders = Vec::new();
     if bar {
         builders.push(".with_bar_indicator(true)".to_string());
@@ -828,7 +840,7 @@ fn emit_drawing(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLay
     let addr = dynamic_channel(b, widget, options, "shape");
     let new_call = format!(
         "SidmDrawing::new(&engine, {}, DrawingShape::{shape})",
-        rust_str(&addr)
+        medm_str(b, &addr)
     );
     let mut builders = drawing_brush_builders(b, widget);
     builders.push(drawing_size_builder(geom));
@@ -929,7 +941,7 @@ fn emit_arc(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer) 
     let span = angle_deg(widget, "pathAngle", 360.0);
     let new_call = format!(
         "SidmDrawing::new(&engine, {}, DrawingShape::Arc {{ begin_deg: {}, span_deg: {} }})",
-        rust_str(&addr),
+        medm_str(b, &addr),
         float_lit(begin),
         float_lit(span)
     );
@@ -983,7 +995,7 @@ fn emit_polyshape(
     let shape = if polygon { "Polygon" } else { "Polyline" };
     let new_call = format!(
         "SidmDrawing::new(&engine, {}, DrawingShape::{shape})",
-        rust_str(&addr)
+        medm_str(b, &addr)
     );
     let mut builders = if polygon {
         drawing_brush_builders(b, widget)
@@ -1119,9 +1131,9 @@ fn emit_frame_container(
     let frame_id = b.index();
     let frame_field = format!("w{frame_id}");
     b.needs_widgets = true;
+    let addr_expr = medm_str(b, addr);
     b.ctors.push(format!(
-        "let {frame_field} = SidmFrame::new(&engine, {})\n            .expect({});",
-        rust_str(addr),
+        "let {frame_field} = SidmFrame::new(&engine, {addr_expr})\n            .expect({});",
         rust_str(connect_desc)
     ));
     b.fields
@@ -1184,9 +1196,9 @@ fn emit_strip_chart(b: &mut Builder, widget: &MedmWidget, options: &Options, z: 
         let addr = apply_protocol(chan, options);
         adds.push(format!(
             "add_channel(&engine, {}, {}, {}).expect({});",
-            rust_str(&addr),
+            medm_str(b, &addr),
             record_color(pen.get("color")),
-            rust_str(chan),
+            medm_str(b, chan),
             rust_str(&format!("adl2sidm: add strip-chart curve {chan}")),
         ));
     }
@@ -1262,8 +1274,8 @@ fn emit_cartesian_plot(b: &mut Builder, widget: &MedmWidget, options: &Options, 
             let y = apply_protocol(y, options);
             adds.push(format!(
                 "add_xy_channel(&engine, {}, {}, {}, {}).expect({});",
-                rust_str(x),
-                rust_str(&y),
+                medm_str(b, x),
+                medm_str(b, &y),
                 color,
                 rust_str(&legend),
                 rust_str(&format!("adl2sidm: add scatter {legend}")),
@@ -1282,15 +1294,15 @@ fn emit_cartesian_plot(b: &mut Builder, widget: &MedmWidget, options: &Options, 
             adds.push(match &xdata {
                 Some(x) => format!(
                     "add_xy_channel(&engine, {}, Some({}), {}, {}).expect({});",
-                    rust_str(&y),
-                    rust_str(x),
+                    medm_str(b, &y),
+                    medm_str(b, x),
                     color,
                     rust_str(&legend),
                     rust_str(&format!("adl2sidm: add waveform {legend}")),
                 ),
                 None => format!(
                     "add_channel(&engine, {}, {}, {}).expect({});",
-                    rust_str(&y),
+                    medm_str(b, &y),
                     color,
                     rust_str(&legend),
                     rust_str(&format!("adl2sidm: add waveform {legend}")),
@@ -1380,6 +1392,8 @@ fn push_plot_widget(
     let id = b.index();
     let field = format!("w{id}");
     b.needs_widgets = true;
+    // The plot ctor consumes `rs`, so `new_in` must unwrap its render state.
+    b.needs_render_state = true;
 
     let mut ctor = format!("let mut {field} = {new_call}");
     for bld in with_builders {
@@ -1428,7 +1442,7 @@ fn emit_image(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         );
         return;
     }
-    let new_call = format!("SidmImage::new({})", rust_str(file));
+    let new_call = format!("SidmImage::new({})", medm_str(b, file));
     let builders = vec![format!(
         ".with_size(egui::Vec2::new({}, {}))",
         float_lit(f64::from(geom.width)),
@@ -1506,27 +1520,27 @@ fn emit_shell_command(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         match &caption {
             Some(label) => format!(
                 "if ui.button({}).clicked() {{\n    {}\n}}",
-                rust_str(label),
-                spawn_command_stmt(command),
+                medm_str(b, label),
+                spawn_command_stmt(b, command),
             ),
             None => format!(
                 "let __r = ui.button(\"\");\nshell_command_icon(ui, __r.rect, {icon_fg});\nif __r.clicked() {{\n    {}\n}}",
-                spawn_command_stmt(command),
+                spawn_command_stmt(b, command),
             ),
         }
     } else {
         // Several commands: a menu whose items each run one command, then close;
         // the per-command labels caption only these menu items, never the button.
         let mut body = match &caption {
-            Some(title) => format!("ui.menu_button({}, |ui| {{", rust_str(title)),
+            Some(title) => format!("ui.menu_button({}, |ui| {{", medm_str(b, title)),
             None => "let __m = ui.menu_button(\"\", |ui| {".to_string(),
         };
         for (label, command) in &entries {
             let _ = write!(
                 body,
                 "\n    if ui.button({}).clicked() {{\n        {}\n        ui.close();\n    }}",
-                rust_str(label),
-                spawn_command_stmt(command),
+                medm_str(b, label),
+                spawn_command_stmt(b, command),
             );
         }
         body.push_str("\n});");
@@ -1601,10 +1615,10 @@ fn shell_command_entries(b: &mut Builder, widget: &MedmWidget) -> Vec<(String, S
 /// The statement that runs one command: `sh -c "<command>"`, detached (`spawn`,
 /// not `status`) so the UI thread never blocks, with the child handle discarded
 /// — MEDM's fire-and-forget shell execution.
-fn spawn_command_stmt(command: &str) -> String {
+fn spawn_command_stmt(b: &mut Builder, command: &str) -> String {
     format!(
         "let _ = std::process::Command::new(\"sh\").arg(\"-c\").arg({}).spawn();",
-        rust_str(command)
+        medm_str(b, command)
     )
 }
 
@@ -2270,9 +2284,9 @@ fn static_text_color(
             let id = b.index();
             let field = format!("alarm{id}");
             b.needs_channel = true;
+            let addr_expr = medm_str(b, &addr);
             b.ctors.push(format!(
-                "let {field} = engine\n            .connect({})\n            .expect({});",
-                rust_str(&addr),
+                "let {field} = engine\n            .connect({addr_expr})\n            .expect({});",
                 rust_str(&format!("adl2sidm: connect alarm-colour source {addr}"))
             ));
             b.fields.push((field.clone(), "Channel".to_string()));
@@ -2477,6 +2491,30 @@ fn rust_str(s: &str) -> String {
     format!("{s:?}")
 }
 
+/// Whether `s` still carries a `$(name)` / `${name}` macro reference after the
+/// convert-time baking (a stray unclosed `$(` matches too — harmless, since
+/// runtime expansion leaves it literal exactly like MEDM's lexer).
+fn has_macro_ref(s: &str) -> bool {
+    s.contains("$(") || s.contains("${")
+}
+
+/// The Rust expression for an MEDM string consumed at runtime: a plain literal
+/// when fully grounded, or an expansion against the screen instance's macro
+/// table when a `$(macro)` survived convert-time baking (the related-display
+/// child path, where macro values only exist at runtime — MEDM
+/// `performMacroSubstitutions`). Emitted as `.as_str()` so the expression is a
+/// `&str` in every context a literal fits (`&str` params, `Some(...)`,
+/// `impl Into<String>`/`Into<WidgetText>`, `AsRef<OsStr>`); the expansion
+/// temporary lives to the end of the enclosing statement.
+fn medm_str(b: &mut Builder, s: &str) -> String {
+    if has_macro_ref(s) {
+        b.needs_macros = true;
+        format!("__m.expand({}).as_str()", rust_str(s))
+    } else {
+        rust_str(s)
+    }
+}
+
 /// `Color32::from_rgb(r, g, b)` for a MEDM colour.
 fn color_expr(c: Color) -> String {
     format!("Color32::from_rgb({}, {}, {})", c.r, c.g, c.b)
@@ -2516,6 +2554,9 @@ fn assemble(b: &Builder, screen: &MedmScreen) -> String {
     let _ = writeln!(s, "/// SiDM screen generated from `{title}`.");
     let _ = writeln!(s, "pub struct Screen {{");
     let _ = writeln!(s, "    _engine: Engine,");
+    if b.needs_macros {
+        let _ = writeln!(s, "    __m: MacroTable,");
+    }
     for (name, ty) in &b.fields {
         let _ = writeln!(s, "    {name}: {ty},");
     }
@@ -2529,6 +2570,9 @@ fn assemble(b: &Builder, screen: &MedmScreen) -> String {
     let _ = writeln!(s, "}}\n");
 
     emit_place_helper(&mut s, b.use_layout);
+    if b.needs_macros {
+        s.push_str(MACRO_TABLE_HELPER);
+    }
     if b.needs_rd_icon {
         s.push_str(RELATED_DISPLAY_ICON_HELPER);
     }
@@ -2537,6 +2581,27 @@ fn assemble(b: &Builder, screen: &MedmScreen) -> String {
     }
     s
 }
+
+/// The runtime macro table emitted into screens whose strings still carry
+/// `$(macro)` references after convert-time baking (related-display children,
+/// whose macro values only exist at runtime).
+const MACRO_TABLE_HELPER: &str = r#"
+/// A display instance's macro table (MEDM `performMacroSubstitutions`):
+/// substitutes `$(name)`/`${name}`, leaving unknown references in place
+/// exactly as MEDM's lexer does (medm/medmCommon.c `getToken`).
+pub struct MacroTable(pub Vec<(String, String)>);
+
+impl MacroTable {
+    fn expand(&self, s: &str) -> String {
+        let mut out = s.to_string();
+        for (name, value) in &self.0 {
+            out = out.replace(&format!("$({name})"), value);
+            out = out.replace(&format!("${{{name}}}"), value);
+        }
+        out
+    }
+}
+"#;
 
 /// The icon MEDM renders on a label-less related-display button: a front
 /// display frame overlapping the corner of a back one. Geometry mirrors
@@ -2590,7 +2655,12 @@ fn shell_command_icon(ui: &egui::Ui, rect: egui::Rect, fg: egui::Color32) {
 }
 "#;
 
-/// Emit the `new(cc)` constructor.
+/// Emit the constructors: `new(cc)` — the eframe entry, which installs siplot
+/// and delegates — and `new_in`, which builds the screen on an existing egui
+/// context (the path a related-display child takes, where no
+/// `CreationContext` exists). `macros` is this display instance's runtime
+/// macro table (MEDM `relatedDisplayCreateNewDisplay` `processedArgs`); the
+/// root instance gets the convert-time `--macro` table.
 fn emit_new(s: &mut String, b: &Builder) {
     let _ = writeln!(
         s,
@@ -2601,12 +2671,64 @@ fn emit_new(s: &mut String, b: &Builder) {
         "        let rs = cc.wgpu_render_state.as_ref().expect(\"adl2sidm: a wgpu render state is required\");"
     );
     let _ = writeln!(s, "        siplot::install(rs);");
+    let macros_arg = if b.needs_macros && !b.macros.is_empty() {
+        let pairs: Vec<String> = b
+            .macros
+            .iter()
+            .map(|(n, v)| format!("({}.to_string(), {}.to_string())", rust_str(n), rust_str(v)))
+            .collect();
+        format!("vec![{}]", pairs.join(", "))
+    } else {
+        "Vec::new()".to_string()
+    };
+    let _ = writeln!(
+        s,
+        "        Self::new_in(&cc.egui_ctx, Some(rs), {macros_arg})"
+    );
+    let _ = writeln!(s, "    }}");
+    s.push('\n');
+
+    let rs_param = if b.needs_render_state {
+        "render_state"
+    } else {
+        "_render_state"
+    };
+    let macros_param = if b.needs_macros { "macros" } else { "_macros" };
+    let _ = writeln!(
+        s,
+        "    /// Build the screen on an existing egui context (the related-display child"
+    );
+    let _ = writeln!(
+        s,
+        "    /// path). `macros` is this display instance's macro table (MEDM"
+    );
+    let _ = writeln!(s, "    /// `performMacroSubstitutions`).");
+    let _ = writeln!(s, "    pub fn new_in(");
+    let _ = writeln!(s, "        ctx: &egui::Context,");
+    let _ = writeln!(
+        s,
+        "        {rs_param}: Option<&siplot::egui_wgpu::RenderState>,"
+    );
+    let _ = writeln!(s, "        {macros_param}: Vec<(String, String)>,");
+    let _ = writeln!(s, "    ) -> Self {{");
+    if b.needs_render_state {
+        let _ = writeln!(
+            s,
+            "        let rs = render_state.expect(\"adl2sidm: this screen needs a wgpu render state for its plots\");"
+        );
+    }
+    if b.needs_macros {
+        let _ = writeln!(s, "        let __m = MacroTable(macros);");
+    }
     let _ = writeln!(s, "        let engine = Engine::new();");
-    let _ = writeln!(s, "        engine.attach_repaint(cc.egui_ctx.clone());");
+    let _ = writeln!(s, "        engine.attach_repaint(ctx.clone());");
     for ctor in &b.ctors {
         let _ = writeln!(s, "        {ctor}");
     }
     let _ = write!(s, "        Self {{ _engine: engine");
+    if b.needs_macros {
+        let _ = write!(s, ", __m");
+    }
     for (name, _) in &b.fields {
         let _ = write!(s, ", {name}");
     }
@@ -2633,8 +2755,17 @@ fn emit_ui(s: &mut String, b: &Builder, screen: &MedmScreen) {
     // closure (`SidmFrame::show(ui, |ui| ...)`) needs to touch sibling fields
     // while the frame itself is borrowed by the `show` receiver; going through
     // `self.field` inside the closure would re-borrow all of `self` and conflict.
-    if !b.fields.is_empty() {
+    if !b.fields.is_empty() || b.needs_macros {
         let _ = write!(s, "        let Self {{ _engine: _");
+        if b.needs_macros {
+            // Bind the macro table only when a draw body expands a string;
+            // a table used solely by `new_in` is discarded here so the
+            // generated module stays warning-clean.
+            let ui_uses_macros = b.placements.iter().any(|p| {
+                p.body.contains("__m") || p.gate.as_deref().is_some_and(|g| g.contains("__m"))
+            });
+            let _ = write!(s, ", __m{}", if ui_uses_macros { "" } else { ": _" });
+        }
         for (name, _) in &b.fields {
             let _ = write!(s, ", {name}");
         }
@@ -3101,11 +3232,162 @@ text {
         );
         // The `format="decimal"` update must NOT get a string-format builder
         // (Default is the only other format adl2pydm emits for these widgets).
+        // The unexpanded `$(P)` expands at runtime against the instance table.
         assert!(
             g.source
-                .contains("SidmLabel::new(&engine, \"ca://$(P)rbv\")"),
+                .contains("SidmLabel::new(&engine, __m.expand(\"ca://$(P)rbv\").as_str())"),
             "decimal text update should still be emitted:\n{}",
             g.source
+        );
+    }
+
+    #[test]
+    fn unbound_macros_expand_at_runtime_against_the_instance_table() {
+        // A `$(macro)` that survives convert-time baking (the related-display
+        // child path, where values only exist at runtime) is expanded against
+        // the instance's `MacroTable`; a fully grounded screen carries none of
+        // that machinery.
+        let adl = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+	}
+}
+text {
+	object {
+		x=0
+		y=0
+		width=60
+		height=20
+	}
+	"basic attribute" {
+		clr=0
+	}
+	textix="Unit $(U)"
+}
+"text update" {
+	object {
+		x=0
+		y=30
+		width=80
+		height=18
+	}
+	monitor {
+		chan="$(P)val"
+		clr=0
+	}
+}
+"#;
+        let g = generate(&parse(adl), &Options::default());
+        // The unbound channel and caption expand at runtime...
+        assert!(
+            g.source
+                .contains("SidmLabel::new(&engine, __m.expand(\"ca://$(P)val\").as_str())"),
+            "unbound channel must expand at runtime:\n{}",
+            g.source
+        );
+        assert!(
+            g.source
+                .contains("egui::RichText::new(__m.expand(\"Unit $(U)\").as_str())"),
+            "unbound caption must expand at runtime:\n{}",
+            g.source
+        );
+        // ...so the table machinery is emitted: the helper, the field, the
+        // binding, and the `ui()` destructure (a draw body uses `__m`).
+        assert!(g.source.contains("pub struct MacroTable"), "{}", g.source);
+        assert!(g.source.contains("    __m: MacroTable,"), "{}", g.source);
+        assert!(
+            g.source.contains("let __m = MacroTable(macros);"),
+            "{}",
+            g.source
+        );
+        assert!(
+            g.source.contains("let Self { _engine: _, __m,"),
+            "{}",
+            g.source
+        );
+
+        // A screen whose macros appear only in channel addresses (no draw body
+        // expands anything) discards the table in `ui()`'s destructure so the
+        // generated module stays warning-clean.
+        let ctor_only = generate(
+            &parse(
+                r#"
+"text update" {
+	object {
+		x=0
+		y=0
+		width=80
+		height=18
+	}
+	monitor {
+		chan="$(P)val"
+		clr=0
+	}
+}
+"#,
+            ),
+            &Options::default(),
+        );
+        assert!(
+            ctor_only.source.contains("let Self { _engine: _, __m: _,"),
+            "a new()-only macro table must be discarded in ui():\n{}",
+            ctor_only.source
+        );
+
+        // Partially bound: the `-m` table bakes `$(P)` and is also passed as
+        // the root instance's runtime table (it still owes `$(U)`).
+        let partial = generate(
+            &parse(adl),
+            &Options {
+                macros: vec![("P".to_string(), "X:".to_string())],
+                ..Options::default()
+            },
+        );
+        assert!(
+            partial
+                .source
+                .contains("SidmLabel::new(&engine, \"ca://X:val\")"),
+            "baked channel must stay a literal:\n{}",
+            partial.source
+        );
+        assert!(
+            partial.source.contains(
+                "Self::new_in(&cc.egui_ctx, Some(rs), vec![(\"P\".to_string(), \"X:\".to_string())])"
+            ),
+            "the -m table must be the root instance's runtime table:\n{}",
+            partial.source
+        );
+
+        // Fully grounded: no MacroTable anywhere, and `new_in` ignores its
+        // macros parameter.
+        let grounded = generate(
+            &parse(adl),
+            &Options {
+                macros: vec![
+                    ("P".to_string(), "X:".to_string()),
+                    ("U".to_string(), "mV".to_string()),
+                ],
+                ..Options::default()
+            },
+        );
+        assert!(
+            !grounded.source.contains("MacroTable"),
+            "a grounded screen must not carry the macro table:\n{}",
+            grounded.source
+        );
+        assert!(
+            grounded
+                .source
+                .contains("Self::new_in(&cc.egui_ctx, Some(rs), Vec::new())"),
+            "{}",
+            grounded.source
+        );
+        assert!(
+            grounded.source.contains("_macros: Vec<(String, String)>,"),
+            "{}",
+            grounded.source
         );
     }
 

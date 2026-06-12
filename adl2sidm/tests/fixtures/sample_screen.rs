@@ -31,8 +31,20 @@ impl Screen {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let rs = cc.wgpu_render_state.as_ref().expect("adl2sidm: a wgpu render state is required");
         siplot::install(rs);
+        Self::new_in(&cc.egui_ctx, Some(rs), Vec::new())
+    }
+
+    /// Build the screen on an existing egui context (the related-display child
+    /// path). `macros` is this display instance's macro table (MEDM
+    /// `performMacroSubstitutions`).
+    pub fn new_in(
+        ctx: &egui::Context,
+        render_state: Option<&siplot::egui_wgpu::RenderState>,
+        _macros: Vec<(String, String)>,
+    ) -> Self {
+        let rs = render_state.expect("adl2sidm: this screen needs a wgpu render state for its plots");
         let engine = Engine::new();
-        engine.attach_repaint(cc.egui_ctx.clone());
+        engine.attach_repaint(ctx.clone());
         let alarm2 = engine
             .connect("ca://DMM1:status")
             .expect("adl2sidm: connect alarm-colour source ca://DMM1:status");
