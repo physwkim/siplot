@@ -115,6 +115,31 @@ impl Screen {
                 let _ = w3.show(ui);
             });
         });
+        place(ui, __origin, sx, sy, egui::Order::Background, egui::Id::new(13u64), 20.0, 400.0, 160.0, 40.0, |ui| {
+            let __frame_origin_13 = ui.max_rect().min;
+            let _ = w13.show(ui, |ui| {
+                place(ui, __frame_origin_13, sx, sy, egui::Order::Background, egui::Id::new(14u64), 4.0, 2.0, 152.0, 14.0, |ui| {
+                    {
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(8.0 * sy));
+                        let __font = ui.style().override_font_id.clone().unwrap_or_else(|| egui::TextStyle::Body.resolve(ui.style()));
+                        let __row = ui.fonts_mut(|f| f.row_height(&__font));
+                        ui.add_space(((ui.available_height() - __row) / 2.0).max(0.0));
+                        ui.label(egui::RichText::new("embedded child").color(Color32::from_rgb(0, 0, 0)));
+                    }
+                });
+                place(ui, __frame_origin_13, sx, sy, egui::Order::Middle, egui::Id::new(15u64), 4.0, 20.0, 152.0, 16.0, |ui| {
+                    {
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(10.0 * sy));
+                        ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                            let spacing = ui.spacing_mut();
+                            spacing.interact_size = egui::Vec2::ZERO;
+                            spacing.button_padding = egui::Vec2::ZERO;
+                            let _ = w15.show(ui);
+                        });
+                    }
+                });
+            });
+        });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(1u64), 10.0, 42.0, 150.0, 20.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0 * sy));
@@ -153,31 +178,6 @@ impl Screen {
                 spacing.interact_size = egui::Vec2::ZERO;
                 spacing.button_padding = egui::Vec2::ZERO;
                 let _ = w7.show(ui);
-            });
-        });
-        place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(13u64), 20.0, 400.0, 160.0, 40.0, |ui| {
-            let __frame_origin_13 = ui.max_rect().min;
-            let _ = w13.show(ui, |ui| {
-                place(ui, __frame_origin_13, sx, sy, egui::Order::Background, egui::Id::new(14u64), 4.0, 2.0, 152.0, 14.0, |ui| {
-                    {
-                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(8.0 * sy));
-                        let __font = ui.style().override_font_id.clone().unwrap_or_else(|| egui::TextStyle::Body.resolve(ui.style()));
-                        let __row = ui.fonts_mut(|f| f.row_height(&__font));
-                        ui.add_space(((ui.available_height() - __row) / 2.0).max(0.0));
-                        ui.label(egui::RichText::new("embedded child").color(Color32::from_rgb(0, 0, 0)));
-                    }
-                });
-                place(ui, __frame_origin_13, sx, sy, egui::Order::Middle, egui::Id::new(15u64), 4.0, 20.0, 152.0, 16.0, |ui| {
-                    {
-                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(10.0 * sy));
-                        ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
-                            let spacing = ui.spacing_mut();
-                            spacing.interact_size = egui::Vec2::ZERO;
-                            spacing.button_padding = egui::Vec2::ZERO;
-                            let _ = w15.show(ui);
-                        });
-                    }
-                });
             });
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(4u64), 20.0, 214.0, 140.0, 22.0, |ui| {

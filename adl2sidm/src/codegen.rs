@@ -1237,6 +1237,17 @@ fn emit_frame_container(
     }
     let mut child_placements: Vec<Placement> = b.placements.drain(start..).collect();
     child_placements.sort_by_key(|p| p.z);
+    // MEDM draws strictly in file order with composites transparent (a
+    // composite is a group, not a stacking context): a later sibling paints
+    // over a composite's children on the same layer. Sorting the frame at the
+    // container's own Middle hoisted its children's Areas after every sibling
+    // decoration — ADBuffers.adl's title chip (a rectangle inside a composite)
+    // covered the later "Buffers" text. The frame itself paints nothing, so it
+    // sorts at its children's LOWEST layer, which restores the composite's
+    // file position among the siblings of that layer; children on higher
+    // layers still render above via their own Area `Order`, which is the
+    // z-order guarantee (statement order only ranks Areas within one Order).
+    let sort_z = child_placements.iter().map(|p| p.z).min().unwrap_or(z);
 
     let (dx, dy) = child_origin;
     // Capture the frame's OUTER top-left before `show` insets the interior by
@@ -1251,7 +1262,8 @@ fn emit_frame_container(
     }
     let _ = write!(body, "}});");
 
-    b.placements.push(Placement::drawn(z, frame_id, geom, body));
+    b.placements
+        .push(Placement::drawn(sort_z, frame_id, geom, body));
 }
 
 /// `strip chart` → `SidmTimePlot`: each MEDM `pen` is a time-series curve. A pen
@@ -5451,14 +5463,16 @@ composite {
     #[test]
     fn composite_nests_children_under_a_single_frame_placement() {
         let g = composite();
-        // The frame's Middle place() opens first, then its `show` closure, then
-        // the control child's Foreground place() -- proving the control is nested
-        // inside the frame, not a top-level sibling (ordering, not indentation,
-        // since an 8-space prefix is a substring of a deeper-indented line).
+        // The frame's place() opens first (it sorts at its children's lowest
+        // layer -- Background, from the rectangle child), then its `show`
+        // closure, then the control child's Foreground place() -- proving the
+        // control is nested inside the frame, not a top-level sibling
+        // (ordering, not indentation, since an 8-space prefix is a substring
+        // of a deeper-indented line).
         let frame_place = g
             .source
-            .find("egui::Order::Middle")
-            .expect("frame middle place");
+            .find("egui::Order::Background")
+            .expect("frame background place");
         let frame_show = g.source.find(".show(ui, |ui| {").expect("frame show");
         let control_place = g
             .source
@@ -5478,6 +5492,85 @@ composite {
         assert!(
             g.source.contains("let Self { _engine: _,"),
             "ui() must destructure self so the frame closure can borrow siblings:\n{}",
+            g.source
+        );
+    }
+
+    /// The ADBuffers.adl group-title pattern: a composite holding only a
+    /// decoration rectangle (the title chip) comes BEFORE an overlapping
+    /// static text in the file. MEDM paints in strict file order with
+    /// composites transparent (a group, not a stacking context), so the text
+    /// lands on top of the chip.
+    const DECO_COMPOSITE_UNDER_TEXT: &str = r#"
+"color map" {
+	colors {
+		ffffff,
+		000000,
+	}
+}
+composite {
+	object {
+		x=123
+		y=2
+		width=105
+		height=21
+	}
+	"composite name"=""
+	children {
+		rectangle {
+			object {
+				x=123
+				y=2
+				width=105
+				height=21
+			}
+			"basic attribute" {
+				clr=1
+			}
+		}
+	}
+}
+text {
+	object {
+		x=97
+		y=3
+		width=157
+		height=20
+	}
+	"basic attribute" {
+		clr=0
+	}
+	textix="Buffers"
+	align="horiz. centered"
+}
+"#;
+
+    #[test]
+    fn decoration_only_composite_sorts_at_its_children_layer() {
+        let g = generate(&parse(DECO_COMPOSITE_UNDER_TEXT), &Options::default());
+        let ui_start = g.source.find("pub fn ui").expect("ui fn");
+        let ui_src = &g.source[ui_start..];
+        // The chip frame sorts at Background -- the layer of its only child --
+        // so its Area is created at the composite's file position among the
+        // sibling decorations, not hoisted after them by the container's own
+        // Middle (same-Order Areas stack by creation order: hoisting put the
+        // chip's Area after the title text's and blanked the title).
+        let frame_geom = ui_src
+            .find("123.0, 2.0, 105.0, 21.0")
+            .expect("chip frame placement");
+        let line_start = ui_src[..frame_geom].rfind('\n').unwrap_or(0);
+        assert!(
+            ui_src[line_start..frame_geom].contains("egui::Order::Background"),
+            "a decoration-only composite must place at Background:\n{}",
+            g.source
+        );
+        let text_geom = ui_src
+            .find("97.0, 3.0, 157.0, 20.0")
+            .expect("sibling title text placement");
+        assert!(
+            frame_geom < text_geom,
+            "the chip composite must draw BEFORE the overlapping title text \
+             (MEDM file order within the Background layer):\n{}",
             g.source
         );
     }
@@ -5585,9 +5678,12 @@ composite {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(shows.len(), 2, "two frame closures expected:\n{}", g.source);
+        // The control's own place(), found by its inner-frame-relative rect
+        // (the inner FRAME also places at Foreground -- it sorts at its only
+        // child's layer -- so the Order alone no longer identifies the control).
         let control_place = g
             .source
-            .find("egui::Order::Foreground")
+            .find("20.0, 10.0, 40.0, 18.0")
             .expect("control place");
         assert!(
             shows[1] < control_place,
@@ -6941,8 +7037,13 @@ composite {
             "rule channel leaked onto a widget instead of gating the frame:\n{}",
             g.source
         );
-        // The gated place() is the frame's Middle placement.
-        let mid = g.source.find("egui::Order::Middle").expect("frame place");
+        // The gated place() is the frame's placement (the frame sorts at its
+        // only child's Foreground layer, and the nested child's own place()
+        // comes later inside the closure -- so the first Foreground is it).
+        let mid = g
+            .source
+            .find("egui::Order::Foreground")
+            .expect("frame place");
         assert!(
             g.source[mid.saturating_sub(200)..mid].contains("if gate"),
             "composite gate must wrap the frame placement:\n{}",
