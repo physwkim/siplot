@@ -209,9 +209,10 @@ async fn run_channel(
 
             maybe = writes.recv() => match maybe {
                 Some(value) => {
-                    // CA cannot honour a write on a disconnected channel
-                    // (PyDM logs and discards); drop it. No local echo — the
-                    // value only changes when the IOC confirms via the monitor.
+                    // CA cannot honour a write on a disconnected channel;
+                    // log and discard (PyDM `put_value` logs the failure and
+                    // drops the write). No local echo — the value only
+                    // changes when the IOC confirms via the monitor.
                     //
                     // Fire-and-forget plain write (CA_PROTO_WRITE), matching
                     // pyepics `PV.put` (PyDM), MEDM's `ca_put`, and `caput`. A
@@ -221,10 +222,19 @@ async fn run_channel(
                     // awaiting it here froze this whole select loop: monitor
                     // updates stalled and queued writes (the Stop press)
                     // never reached the wire.
-                    if connected_now
-                        && let Some(ev) = pv_to_epics(&value, native_type, enum_cache.as_deref())
-                    {
-                        let _ = ch.put_nowait(&ev).await;
+                    if !connected_now {
+                        log::warn!("ca://{pv}: unable to put {value:?}: channel disconnected");
+                    } else {
+                        match pv_to_epics(&value, native_type, enum_cache.as_deref()) {
+                            Some(ev) => {
+                                if let Err(e) = ch.put_nowait(&ev).await {
+                                    log::error!("ca://{pv}: unable to put {value:?}: {e}");
+                                }
+                            }
+                            None => log::error!(
+                                "ca://{pv}: unable to put {value:?}: not representable as {native_type:?}"
+                            ),
+                        }
                     }
                 }
                 None => break,  // all Channels dropped

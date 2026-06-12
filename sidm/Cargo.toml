@@ -79,6 +79,10 @@ epics-pva-rs = { version = "0.18", optional = true }
 # Derived-channel expression evaluator (feature `calc`). Pure Rust, no network;
 # evaluates a PyDM-style `calc://` expression over child channels' scalar values.
 evalexpr = { version = "13", optional = true }
+# Failed/discarded channel writes are logged through the standard `log` facade
+# (PyDM's put_value "Unable to put …" logging); egui/eframe already log through
+# the same facade, so the host app's logger picks both up. Dependency-free.
+log = "0.4"
 
 [dev-dependencies]
 # Headless egui renderer for the widget render tests (alarm-border readback),

@@ -192,19 +192,27 @@ async fn run_channel(
                 Some(value) => {
                     // Decide the PUT shape against the cached choices, then drop
                     // the lock before the await. No local echo — the value only
-                    // changes when the server confirms via the monitor.
+                    // changes when the server confirms via the monitor. Failed
+                    // puts are logged and discarded (PyDM's p4p `put_value` logs
+                    // "Unable to put value" and drops the write).
                     let put = {
                         let guard = choices.lock().expect("pva choices cache poisoned");
                         pv_to_pva_put(&value, guard.as_deref())
                     };
                     match put {
                         Some(PvaPut::Value(s)) => {
-                            let _ = client.pvput(&pv, &s).await;
+                            if let Err(e) = client.pvput(&pv, &s).await {
+                                log::error!("pva://{pv}: unable to put {s:?}: {e}");
+                            }
                         }
                         Some(PvaPut::Field { path, value }) => {
-                            let _ = client.pvput_field(&pv, path, &value).await;
+                            if let Err(e) = client.pvput_field(&pv, path, &value).await {
+                                log::error!("pva://{pv}: unable to put {value:?} to {path}: {e}");
+                            }
                         }
-                        None => {}
+                        None => log::error!(
+                            "pva://{pv}: unable to put {value:?}: no PUT shape for this value"
+                        ),
                     }
                 }
                 None => break,  // all Channels dropped
