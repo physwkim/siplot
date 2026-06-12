@@ -64,7 +64,8 @@ impl Screen {
             .with_release_value("0");
         let w6 = SidmEnumComboBox::new(&engine, "ca://DMM1:mode")
             .expect("adl2sidm: connect ca://DMM1:mode (menu)")
-            .with_border_mode(BorderMode::DisconnectedOnly);
+            .with_border_mode(BorderMode::DisconnectedOnly)
+            .with_alignment(TextAlign::Center);
         let w7 = SidmSlider::new(&engine, "ca://DMM1:level")
             .expect("adl2sidm: connect ca://DMM1:level (valuator)")
             .with_border_mode(BorderMode::DisconnectedOnly)

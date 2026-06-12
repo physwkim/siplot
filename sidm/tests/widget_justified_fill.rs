@@ -616,8 +616,12 @@ fn justified_byte_divides_the_available_rect_among_bits() {
 /// Render `show` in an adl2sidm MEDM cell — the generated `place()` shape (a
 /// clipped Area pinned at the rect) with the generated style prelude (MEDM
 /// bclr fill behind + on the widget face, black text, height-derived font) —
-/// and return the row band of the dark text pixels inside the cell.
-fn medm_cell_text_rows(show: impl FnMut(&mut egui::Ui) + 'static) -> (usize, usize) {
+/// and return the (top, bottom, left, right) bounding box of the dark text
+/// pixels inside the cell, scanning only the `x_scan` columns.
+fn medm_cell_text_bbox(
+    show: impl FnMut(&mut egui::Ui) + 'static,
+    x_scan: std::ops::Range<usize>,
+) -> (usize, usize, usize, usize) {
     const BCLR: egui::Color32 = egui::Color32::from_rgb(115, 223, 255);
     let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(90.0, 20.0));
     let show = RefCell::new(show);
@@ -655,20 +659,35 @@ fn medm_cell_text_rows(show: impl FnMut(&mut egui::Ui) + 'static) -> (usize, usi
     let raw = harness.render().expect("headless wgpu render").into_raw();
     // Confine the scan to the cell interior: outside it lies the dark harness
     // panel, which would swallow the band into rows 0..39.
-    let (mut top, mut bottom) = (usize::MAX, 0usize);
+    let (mut top, mut bottom, mut left, mut right) = (usize::MAX, 0usize, usize::MAX, 0usize);
     for (i, px) in raw.chunks_exact(4).enumerate() {
         let (x, y) = (i % 110, i / 110);
-        if (12..98).contains(&x) && (10..30).contains(&y) && px[0] < 70 && px[1] < 70 && px[2] < 70
-        {
+        if x_scan.contains(&x) && (10..30).contains(&y) && px[0] < 70 && px[1] < 70 && px[2] < 70 {
             top = top.min(y);
             bottom = bottom.max(y);
+            left = left.min(x);
+            right = right.max(x);
         }
     }
     assert!(
         top <= bottom,
         "the widget must draw dark text inside the MEDM cell"
     );
+    (top, bottom, left, right)
+}
+
+/// The row band of the dark text pixels inside the MEDM cell.
+fn medm_cell_text_rows(show: impl FnMut(&mut egui::Ui) + 'static) -> (usize, usize) {
+    let (top, bottom, _, _) = medm_cell_text_bbox(show, 12..98);
     (top, bottom)
+}
+
+/// The column band of the dark caption pixels inside the MEDM cell, scanning
+/// only left of the combo's drop-down icon strip (the rightmost ~20 px) so the
+/// icon never registers as caption.
+fn medm_cell_text_cols(show: impl FnMut(&mut egui::Ui) + 'static) -> (usize, usize) {
+    let (_, _, left, right) = medm_cell_text_bbox(show, 12..78);
+    (left, right)
 }
 
 /// The gap above the text band vs the gap below it inside the 20 px cell
@@ -732,6 +751,48 @@ fn justified_label_centres_text_in_a_medm_cell() {
     assert_centred("label", top, bottom);
 }
 
+/// MEDM `align="horiz. centered"` on a text update (the commonPlugins Port
+/// column) → `SidmLabel::with_alignment(Center)` must centre the text
+/// horizontally in the MEDM cell; the builder default keeps the left anchor.
+#[test]
+fn label_centres_horizontally_with_center_alignment() {
+    use sidm::widgets::TextAlign;
+
+    let engine = Engine::new();
+    let mut centred = SidmLabel::new(&engine, "loc://cell_lc?type=str&init=DOT")
+        .expect("connect")
+        .with_alignment(TextAlign::Center);
+    assert!(
+        wait_for(|| centred.channel().is_connected(), Duration::from_secs(2)),
+        "centred label channel never connected"
+    );
+    let (left, right) = medm_cell_text_cols(move |ui| drop(centred.show(ui)));
+    // No icon strip on a label: the text area is the framed cell interior
+    // (x 12..98), middle 55. ±4 px absorbs glyph bearings.
+    let mid = (left + right) as f32 / 2.0;
+    eprintln!("centred label text: cols {left}..{right} mid {mid}");
+    assert!(
+        (mid - 55.0).abs() <= 4.0,
+        "a Center-aligned label must sit at the cell middle: cols {left}..{right} mid {mid}"
+    );
+
+    let mut left_aligned =
+        SidmLabel::new(&engine, "loc://cell_ll?type=str&init=DOT").expect("connect");
+    assert!(
+        wait_for(
+            || left_aligned.channel().is_connected(),
+            Duration::from_secs(2)
+        ),
+        "left label channel never connected"
+    );
+    let (l, r) = medm_cell_text_cols(move |ui| drop(left_aligned.show(ui)));
+    eprintln!("default label text: cols {l}..{r}");
+    assert!(
+        l <= 17 && r < 45,
+        "the default label must keep the left anchor: cols {l}..{r}"
+    );
+}
+
 /// The combo face (an MEDM menu) carries its selected enum string; `loc://`
 /// cannot seed enum strings, so this rides the in-process CA fixture.
 #[test]
@@ -748,4 +809,52 @@ fn justified_combo_centres_face_text_in_a_medm_cell() {
     );
     let (top, bottom) = medm_cell_text_rows(move |ui| drop(combo.show(ui)));
     assert_centred("combo", top, bottom);
+}
+
+/// An MEDM menu centres its caption: the option-menu face is a Motif XmLabel
+/// whose default `XmNalignment` is centred, and medmMenu.c never overrides it
+/// — `with_alignment(TextAlign::Center)` reproduces that. The builder default
+/// keeps PyDM's Qt `QComboBox` left anchor.
+#[test]
+#[cfg(feature = "ca")]
+fn combo_caption_centres_with_center_alignment_and_defaults_left() {
+    use sidm::widgets::TextAlign;
+
+    let (engine, _server_rt) = enum_ioc_engine();
+    let mut centred = SidmEnumComboBox::new(&engine, "ca://sidm:jf:bi")
+        .expect("connect")
+        .with_alignment(TextAlign::Center);
+    assert!(
+        wait_for(
+            || centred.channel().read(|s| s.enum_strings.is_some()),
+            Duration::from_secs(5)
+        ),
+        "centred combo never received its enum strings"
+    );
+    let (left, right) = medm_cell_text_cols(move |ui| drop(centred.show(ui)));
+    // The caption area is the cell (x 10..100, inset 2 by the framed border)
+    // minus the icon strip (icon_width + icon_spacing ≈ 18-20 px) → its middle
+    // sits near x 45-46. ±4 px absorbs glyph bearings and the spacing default.
+    let mid = (left + right) as f32 / 2.0;
+    eprintln!("centred combo caption: cols {left}..{right} mid {mid}");
+    assert!(
+        (mid - 45.5).abs() <= 4.0,
+        "a Center-aligned caption must sit at the caption-area middle: \
+         cols {left}..{right} mid {mid}"
+    );
+
+    let mut left_aligned = SidmEnumComboBox::new(&engine, "ca://sidm:jf:bi").expect("connect");
+    assert!(
+        wait_for(
+            || left_aligned.channel().read(|s| s.enum_strings.is_some()),
+            Duration::from_secs(5)
+        ),
+        "left combo never received its enum strings"
+    );
+    let (l, r) = medm_cell_text_cols(move |ui| drop(left_aligned.show(ui)));
+    eprintln!("default combo caption: cols {l}..{r}");
+    assert!(
+        l <= 17 && r < 40,
+        "the default caption must keep the Qt/PyDM left anchor: cols {l}..{r}"
+    );
 }

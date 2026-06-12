@@ -625,7 +625,10 @@ fn emit_menu(b: &mut Builder, widget: &MedmWidget, options: &Options, z: ZLayer)
             ty: "SidmEnumComboBox",
             new_call: &new_call,
             connect_desc: &format!("adl2sidm: connect {addr} (menu)"),
-            builders: &[],
+            // An MEDM menu is a Motif option menu whose caption is centred
+            // (XmLabel's default XmNalignment; medmMenu.c never overrides it),
+            // so every converted menu centres — there is no per-widget `align`.
+            builders: &[".with_alignment(TextAlign::Center)".to_string()],
             colors: WidgetColors::from_widget(widget),
             font_px: Some(font_px_from_height(geom.height)),
         },
@@ -4829,6 +4832,23 @@ byte {
         assert!(
             g.source
                 .contains(".with_orientation(Orientation::Horizontal)")
+        );
+    }
+
+    #[test]
+    fn menu_centres_its_caption() {
+        // A Motif option menu centres its caption (XmLabel's default
+        // XmNalignment, never overridden by medmMenu.c), so every converted
+        // menu carries the Center alignment — MEDM has no per-menu `align`.
+        let g = controls();
+        let combo = g
+            .source
+            .find("SidmEnumComboBox::new(&engine, \"ca://MENU\")")
+            .expect("menu ctor");
+        assert!(
+            g.source[combo..combo + 300].contains(".with_alignment(TextAlign::Center)"),
+            "menu must centre its caption:\n{}",
+            g.source
         );
     }
 

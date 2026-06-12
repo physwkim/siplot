@@ -12,15 +12,22 @@
 //! shell over [`SidmEnumComboBox::select`].
 
 use siplot::egui;
+use siplot::egui::NumExt as _;
 
 use crate::channel::{Channel, ChannelState, PvValue};
 use crate::engine::{Engine, EngineError};
 use crate::widgets::base::{BorderMode, ChannelBase, layout_justify};
 use crate::widgets::enum_choice::{enum_current_index, enum_index_value, enum_options};
+use crate::widgets::label::TextAlign;
 
 /// A drop-down bound to a PV's enum strings (PyDM `PyDMEnumComboBox`).
 pub struct SidmEnumComboBox {
     base: ChannelBase,
+    /// Horizontal alignment of the face caption. `Left` is the Qt
+    /// `QComboBox` default PyDM inherits; converted MEDM screens use `Center`
+    /// (a Motif option menu centres its caption — `XmLabel`'s default
+    /// `XmNalignment`, which medmMenu.c never overrides).
+    alignment: TextAlign,
 }
 
 impl SidmEnumComboBox {
@@ -28,6 +35,7 @@ impl SidmEnumComboBox {
     pub fn new(engine: &Engine, address: &str) -> Result<Self, EngineError> {
         Ok(Self {
             base: ChannelBase::new(engine.connect(address)?),
+            alignment: TextAlign::Left,
         })
     }
 
@@ -36,6 +44,14 @@ impl SidmEnumComboBox {
     /// border, the dash is the SiDM disconnect marker).
     pub fn with_border_mode(mut self, mode: BorderMode) -> Self {
         self.base.border_mode = mode;
+        self
+    }
+
+    /// Align the face caption (builder style). `Center` for converted MEDM
+    /// screens (Motif option-menu captions are centred); the default `Left`
+    /// matches PyDM's `QComboBox`.
+    pub fn with_alignment(mut self, alignment: TextAlign) -> Self {
+        self.alignment = alignment;
         self
     }
 
@@ -79,22 +95,112 @@ impl SidmEnumComboBox {
                 .map(String::as_str)
                 .unwrap_or("");
             let id = egui::Id::new(("pydm_enum_combo", self.base.channel().address().raw()));
-            let mut combo = egui::ComboBox::from_id_salt(id).selected_text(selected_text);
-            // egui's `ComboBox` face never widens under a justified layout — its
-            // width is `content.at_least(width-or-combo_width)` regardless (only
-            // the height tracks the justified expansion) — so a justified axis
-            // must be filled explicitly, like the fixed-size painters do via
-            // `justified_size`.
-            if layout_justify(ui).0 {
-                combo = combo.width(ui.available_width());
+            // Stock `egui::ComboBox` pins the caption to the face's left edge
+            // (`Align2::LEFT_CENTER`, with no alignment hook — a pre-aligned
+            // galley would centre around that left anchor instead), so the
+            // face is drawn here with the stock geometry — caption + icon
+            // content, the `combo_width` floor, margins from `button_padding`
+            // — and the caption aligned per `self.alignment`. The popup wiring
+            // below also mirrors stock `combo_box_dyn`.
+            let popup_id = id.with("popup");
+            let is_popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+            let margin = ui.spacing().button_padding;
+            let icon_spacing = ui.spacing().icon_spacing;
+            let icon_size = egui::Vec2::splat(ui.spacing().icon_width);
+            let max_popup_height = ui.spacing().combo_height;
+
+            let wrap_width = ui.available_width() - 2.0 * margin.x - icon_spacing - icon_size.x;
+            let galley = egui::WidgetText::from(selected_text).into_galley(
+                ui,
+                None,
+                wrap_width,
+                egui::TextStyle::Button,
+            );
+
+            // egui's `ComboBox` face never widens under a justified layout —
+            // its width is `content.at_least(width-or-combo_width)` regardless
+            // — so a justified axis must be filled explicitly, like the
+            // fixed-size painters do via `justified_size`. The height fills
+            // too: a Motif option menu spans its full MEDM rect, and the
+            // caption stays vertically centred in the face either way.
+            let justify = layout_justify(ui);
+            let content_width = if justify.0 {
+                ui.available_width() - 2.0 * margin.x
+            } else {
+                (galley.size().x + icon_spacing + icon_size.x)
+                    .at_least(ui.spacing().combo_width - 2.0 * margin.x)
+            };
+            let content_height = if justify.1 {
+                ui.available_height() - 2.0 * margin.y
+            } else {
+                galley.size().y.max(icon_size.y)
+            };
+            let outer = egui::vec2(
+                content_width + 2.0 * margin.x,
+                (content_height + 2.0 * margin.y).at_least(ui.spacing().interact_size.y),
+            );
+            let (rect, response) = ui.allocate_exact_size(outer, egui::Sense::click());
+
+            if ui.is_rect_visible(rect) {
+                let visuals = if is_popup_open {
+                    &ui.visuals().widgets.open
+                } else {
+                    ui.style().interact(&response)
+                };
+                ui.painter().rect(
+                    rect.expand(visuals.expansion),
+                    visuals.corner_radius,
+                    visuals.weak_bg_fill,
+                    visuals.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+                let content = rect.shrink2(margin);
+                let icon_rect = egui::Align2::RIGHT_CENTER
+                    .align_size_within_rect(icon_size, content)
+                    .expand(visuals.expansion);
+                // Stock `paint_default_icon`: a downward-pointing triangle.
+                let tri = egui::Rect::from_center_size(
+                    icon_rect.center(),
+                    egui::vec2(icon_rect.width() * 0.7, icon_rect.height() * 0.45),
+                );
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![tri.left_top(), tri.right_top(), tri.center_bottom()],
+                    visuals.fg_stroke.color,
+                    egui::Stroke::NONE,
+                ));
+                let text_area = egui::Rect::from_min_max(
+                    content.min,
+                    egui::pos2(content.max.x - icon_size.x - icon_spacing, content.max.y),
+                );
+                let align2 = match self.alignment {
+                    TextAlign::Left => egui::Align2::LEFT_CENTER,
+                    TextAlign::Center => egui::Align2::CENTER_CENTER,
+                    TextAlign::Right => egui::Align2::RIGHT_CENTER,
+                };
+                let text_rect = align2.align_size_within_rect(galley.size(), text_area);
+                ui.painter()
+                    .galley(text_rect.min, galley, visuals.text_color());
             }
-            combo.show_ui(ui, |ui| {
-                for (i, opt) in options.iter().enumerate() {
-                    if ui.selectable_label(Some(i) == current, opt).clicked() {
-                        chosen = Some(i);
-                    }
-                }
-            });
+
+            egui::Popup::menu(&response)
+                .id(popup_id)
+                .width(response.rect.width())
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                .show(|ui| {
+                    ui.set_min_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(max_popup_height)
+                        .show(ui, |ui| {
+                            // Stock turns wrapping off so item labels expand
+                            // the (often narrow) menu instead of wrapping.
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            for (i, opt) in options.iter().enumerate() {
+                                if ui.selectable_label(Some(i) == current, opt).clicked() {
+                                    chosen = Some(i);
+                                }
+                            }
+                        });
+                });
         });
 
         chosen
