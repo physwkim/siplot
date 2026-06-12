@@ -13,7 +13,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use siplot::egui;
 
-// `dead_code`: the generated module also carries the eframe entry point
+// `dead_code`: the root screen also carries the eframe entry point
 // (`Screen::new(cc)`), which a headless test never calls.
 #[allow(dead_code)]
 mod rd_screen {

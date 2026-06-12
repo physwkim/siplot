@@ -241,12 +241,6 @@ pub mod __rd_rd_child {
     }
 
     impl Screen {
-        pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-            let rs = cc.wgpu_render_state.as_ref().expect("adl2sidm: a wgpu render state is required");
-            siplot::install(rs);
-            Self::new_in(&cc.egui_ctx, Some(rs), Vec::new())
-        }
-
         /// Build the screen on an existing egui context (the related-display child
         /// path). `macros` is this display instance's macro table (MEDM
         /// `performMacroSubstitutions`).

@@ -2954,33 +2954,37 @@ fn shell_command_icon(ui: &egui::Ui, rect: egui::Rect, fg: egui::Color32) {
 /// context (the path a related-display child takes, where no
 /// `CreationContext` exists). `macros` is this display instance's runtime
 /// macro table (MEDM `relatedDisplayCreateNewDisplay` `processedArgs`); the
-/// root instance gets the convert-time `--macro` table.
+/// root instance gets the convert-time `--macro` table. A child module emits
+/// `new_in` only — a child is never an eframe app root, and the dead entry
+/// point would warn in every consuming crate.
 fn emit_new(s: &mut String, b: &Builder) {
-    let _ = writeln!(
-        s,
-        "    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {{"
-    );
-    let _ = writeln!(
-        s,
-        "        let rs = cc.wgpu_render_state.as_ref().expect(\"adl2sidm: a wgpu render state is required\");"
-    );
-    let _ = writeln!(s, "        siplot::install(rs);");
-    let macros_arg = if b.needs_macros && !b.macros.is_empty() {
-        let pairs: Vec<String> = b
-            .macros
-            .iter()
-            .map(|(n, v)| format!("({}.to_string(), {}.to_string())", rust_str(n), rust_str(v)))
-            .collect();
-        format!("vec![{}]", pairs.join(", "))
-    } else {
-        "Vec::new()".to_string()
-    };
-    let _ = writeln!(
-        s,
-        "        Self::new_in(&cc.egui_ctx, Some(rs), {macros_arg})"
-    );
-    let _ = writeln!(s, "    }}");
-    s.push('\n');
+    if !b.child_module {
+        let _ = writeln!(
+            s,
+            "    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {{"
+        );
+        let _ = writeln!(
+            s,
+            "        let rs = cc.wgpu_render_state.as_ref().expect(\"adl2sidm: a wgpu render state is required\");"
+        );
+        let _ = writeln!(s, "        siplot::install(rs);");
+        let macros_arg = if b.needs_macros && !b.macros.is_empty() {
+            let pairs: Vec<String> = b
+                .macros
+                .iter()
+                .map(|(n, v)| format!("({}.to_string(), {}.to_string())", rust_str(n), rust_str(v)))
+                .collect();
+            format!("vec![{}]", pairs.join(", "))
+        } else {
+            "Vec::new()".to_string()
+        };
+        let _ = writeln!(
+            s,
+            "        Self::new_in(&cc.egui_ctx, Some(rs), {macros_arg})"
+        );
+        let _ = writeln!(s, "    }}");
+        s.push('\n');
+    }
 
     // `render_state` is read when plot ctors unwrap it AND when child screens
     // opened from related displays inherit it (`__rs`).
@@ -6643,6 +6647,13 @@ composite {
         // The shared runtime lives once at the file's top level, never inside
         // a child module.
         assert!(!g.source.contains("pub trait SidmDisplay"), "{}", g.source);
+        // A child is never an eframe app root: no `new(cc)` entry point (it
+        // would be dead code in every consuming crate).
+        assert!(
+            !g.source.contains("eframe::CreationContext"),
+            "{}",
+            g.source
+        );
     }
 
     // A MEDM `dynamic attribute` CALC/visibility rule on otherwise-supported
