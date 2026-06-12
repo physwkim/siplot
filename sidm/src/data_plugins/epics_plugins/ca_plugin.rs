@@ -25,7 +25,10 @@
 //! **Write path:** `pv_to_epics` coerces a queued [`PvValue`] to the record's
 //! native field type (string→enum label resolution, float→long, number→string),
 //! writes are dropped while disconnected, and there is no local echo — the value
-//! only changes when the IOC confirms through the monitor.
+//! only changes when the IOC confirms through the monitor. Writes go out as
+//! plain `CA_PROTO_WRITE` (`put_nowait`) — the pyepics `PV.put` / MEDM `ca_put`
+//! model — never as `WRITE_NOTIFY`, whose completion can be held by the record
+//! (busy records hold it until they leave busy) and must not stall this task.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -209,10 +212,19 @@ async fn run_channel(
                     // CA cannot honour a write on a disconnected channel
                     // (PyDM logs and discards); drop it. No local echo — the
                     // value only changes when the IOC confirms via the monitor.
+                    //
+                    // Fire-and-forget plain write (CA_PROTO_WRITE), matching
+                    // pyepics `PV.put` (PyDM), MEDM's `ca_put`, and `caput`. A
+                    // WRITE_NOTIFY (`put`) completes only when the record
+                    // finishes processing — a busy record (areaDetector
+                    // `Acquire`) holds that until acquisition ends, and
+                    // awaiting it here froze this whole select loop: monitor
+                    // updates stalled and queued writes (the Stop press)
+                    // never reached the wire.
                     if connected_now
                         && let Some(ev) = pv_to_epics(&value, native_type, enum_cache.as_deref())
                     {
-                        let _ = ch.put(&ev).await;
+                        let _ = ch.put_nowait(&ev).await;
                     }
                 }
                 None => break,  // all Channels dropped
