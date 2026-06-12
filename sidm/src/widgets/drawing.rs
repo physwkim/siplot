@@ -27,7 +27,7 @@ use siplot::egui::{self, Color32, Pos2, Stroke, Vec2};
 
 use crate::channel::{AlarmSeverity, Channel};
 use crate::engine::{Engine, EngineError};
-use crate::widgets::base::{ChannelBase, severity_color};
+use crate::widgets::base::{ChannelBase, justified_size, layout_justify, severity_color};
 
 /// The shape drawn by a [`SidmDrawing`] (PyDM `PyDMDrawing*` subclasses, plus
 /// the MEDM `arc`/`polyline`/`polygon` shapes the `adl2sidm` converter targets).
@@ -269,7 +269,8 @@ impl SidmDrawing {
             self.base.alarm_sensitive_border,
         );
 
-        let (rect, response) = ui.allocate_exact_size(self.size, egui::Sense::hover());
+        let size = justified_size(layout_justify(ui), ui, self.size);
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
         if ui.is_rect_visible(rect) {
             self.paint(ui.painter(), rect, fill, border);
         }

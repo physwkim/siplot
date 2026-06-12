@@ -83,6 +83,11 @@ impl SidmImage {
                 .map(TextureHandle::size_vec2)
                 .unwrap_or(DEFAULT_SIZE)
         });
+        let size = crate::widgets::base::justified_size(
+            crate::widgets::base::layout_justify(ui),
+            ui,
+            size,
+        );
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
         if !ui.is_rect_visible(rect) {
             return response;

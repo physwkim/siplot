@@ -23,7 +23,9 @@ use siplot::egui::{self, Color32, Stroke, Vec2};
 
 use crate::channel::{Channel, PvValue};
 use crate::engine::{Engine, EngineError};
-use crate::widgets::base::{ChannelBase, control_range, severity_color};
+use crate::widgets::base::{
+    ChannelBase, control_range, justified_size, layout_justify, severity_color,
+};
 use crate::widgets::byte::Orientation;
 use crate::widgets::display_format::{DisplayFormat, FormatSpec, format_value};
 
@@ -181,11 +183,16 @@ impl SidmScaleIndicator {
 
         self.base
             .framed(ui, &state, false, |ui| {
+                // `ui.vertical` resets the layout, so capture the caller's
+                // justify intent first; the bar then fills the space left
+                // after the optional value label.
+                let justify = layout_justify(ui);
                 ui.vertical(|ui| {
                     if self.show_value_label {
                         ui.label(label_text);
                     }
-                    let (rect, _) = ui.allocate_exact_size(self.size, egui::Sense::hover());
+                    let size = justified_size(justify, ui, self.size);
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                     if ui.is_rect_visible(rect) {
                         self.paint(ui.painter(), rect, proportion, bar_color);
                     }

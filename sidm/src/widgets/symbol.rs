@@ -20,7 +20,7 @@ use siplot::egui::{self, Color32, Vec2};
 
 use crate::channel::{Channel, PvValue};
 use crate::engine::{Engine, EngineError};
-use crate::widgets::base::ChannelBase;
+use crate::widgets::base::{ChannelBase, justified_size, layout_justify};
 use crate::widgets::drawing::{DrawingShape, shape_points};
 
 /// Default symbol size in points (PyDM `minimumSizeHint` is `10×10`; this is a
@@ -109,7 +109,8 @@ impl SidmSymbol {
 
         self.base
             .framed(ui, &state, false, |ui| {
-                let (rect, _) = ui.allocate_exact_size(self.size, egui::Sense::hover());
+                let size = justified_size(layout_justify(ui), ui, self.size);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 if let Some(symbol) = selected
                     && ui.is_rect_visible(rect)
                 {

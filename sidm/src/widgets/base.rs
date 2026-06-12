@@ -63,6 +63,43 @@ pub fn control_range(state: &ChannelState, user_limits: Option<(f64, f64)>) -> O
     user_limits.or(state.ctrl_limits)
 }
 
+/// The justify flags of `ui`'s layout, captured for [`justified_size`]. Capture
+/// them *before* entering a nested `ui.vertical`/`ui.horizontal`, which resets
+/// the layout and would hide the caller's justify intent.
+pub(crate) fn layout_justify(ui: &egui::Ui) -> (bool, bool) {
+    (
+        ui.layout().horizontal_justify(),
+        ui.layout().vertical_justify(),
+    )
+}
+
+/// The size a fixed-size widget should allocate: a justified axis fills the
+/// available space — growing *or* shrinking, the stock-egui rule (e.g.
+/// `ProgressBar` reads `available_width` when justified) — while a
+/// non-justified axis keeps `desired`. egui's own justification only ever
+/// *expands* the response rect around an exact allocation
+/// (`allocate_exact_size` returns the desired size aligned inside it), so a
+/// widget that paints a fixed `size` must consult the layout itself or it
+/// stays at its native size inside justified containers.
+pub(crate) fn justified_size(
+    (justify_h, justify_v): (bool, bool),
+    ui: &egui::Ui,
+    desired: egui::Vec2,
+) -> egui::Vec2 {
+    egui::vec2(
+        if justify_h {
+            ui.available_width()
+        } else {
+            desired.x
+        },
+        if justify_v {
+            ui.available_height()
+        } else {
+            desired.y
+        },
+    )
+}
+
 /// Border stroke width (PyDM `2px`).
 const BORDER_WIDTH: f32 = 2.0;
 /// Uniform inset reserved around content so the border has room and the content

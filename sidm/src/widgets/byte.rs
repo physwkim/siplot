@@ -14,7 +14,7 @@ use siplot::egui::{self, Color32};
 
 use crate::channel::{AlarmSeverity, Channel, ChannelState, PvValue};
 use crate::engine::{Engine, EngineError};
-use crate::widgets::base::{ChannelBase, severity_color};
+use crate::widgets::base::{ChannelBase, layout_justify, severity_color};
 
 /// Layout direction for the row/column of bit indicators.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -216,29 +216,71 @@ impl SidmByteIndicator {
         };
 
         self.base
-            .framed(ui, &state, false, |ui| match self.orientation {
-                Orientation::Vertical => {
-                    ui.vertical(|ui| {
-                        for &i in &order {
-                            ui.horizontal(|ui| self.draw_bit(ui, &state, i, bits[i]));
-                        }
-                    });
-                }
-                Orientation::Horizontal => {
-                    ui.horizontal(|ui| {
-                        for &i in &order {
-                            ui.vertical(|ui| self.draw_bit(ui, &state, i, bits[i]));
-                        }
-                    });
+            .framed(ui, &state, false, |ui| {
+                // `ui.vertical`/`ui.horizontal` reset the layout, so capture
+                // the caller's justify intent first. A justified byte divides
+                // the available extent evenly among its bits along the
+                // stacking axis (MEDM/PyDM segment the widget rect) and fills
+                // it across; labels are not reserved for in the division.
+                let (justify_h, justify_v) = layout_justify(ui);
+                let n = order.len() as f32;
+                match self.orientation {
+                    Orientation::Vertical => {
+                        ui.vertical(|ui| {
+                            let gaps = ui.spacing().item_spacing.y * (n - 1.0);
+                            let bit = egui::vec2(
+                                if justify_h {
+                                    ui.available_width()
+                                } else {
+                                    INDICATOR_SIZE
+                                },
+                                if justify_v {
+                                    ((ui.available_height() - gaps) / n).max(0.0)
+                                } else {
+                                    INDICATOR_SIZE
+                                },
+                            );
+                            for &i in &order {
+                                ui.horizontal(|ui| self.draw_bit(ui, &state, i, bits[i], bit));
+                            }
+                        });
+                    }
+                    Orientation::Horizontal => {
+                        ui.horizontal(|ui| {
+                            let gaps = ui.spacing().item_spacing.x * (n - 1.0);
+                            let bit = egui::vec2(
+                                if justify_h {
+                                    ((ui.available_width() - gaps) / n).max(0.0)
+                                } else {
+                                    INDICATOR_SIZE
+                                },
+                                if justify_v {
+                                    ui.available_height()
+                                } else {
+                                    INDICATOR_SIZE
+                                },
+                            );
+                            for &i in &order {
+                                ui.vertical(|ui| self.draw_bit(ui, &state, i, bits[i], bit));
+                            }
+                        });
+                    }
                 }
             })
             .response
     }
 
-    /// Draw a single bit: the coloured indicator and, optionally, its label.
-    fn draw_bit(&self, ui: &mut egui::Ui, state: &ChannelState, bit_index: usize, bit_on: bool) {
+    /// Draw a single bit at `size`: the coloured indicator and, optionally, its
+    /// label.
+    fn draw_bit(
+        &self,
+        ui: &mut egui::Ui,
+        state: &ChannelState,
+        bit_index: usize,
+        bit_on: bool,
+        size: egui::Vec2,
+    ) {
         let color = self.bit_color(state, bit_on);
-        let size = egui::vec2(INDICATOR_SIZE, INDICATOR_SIZE);
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter();
         let outline = egui::Stroke::new(1.0, Color32::from_gray(60));
