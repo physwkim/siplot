@@ -112,36 +112,54 @@ impl Screen {
         });
         if gate11.read(|s| s.value.as_ref().and_then(|v| v.as_f64())) != Some(0.0) {
             place(ui, __origin, egui::Order::Background, egui::Id::new(10u64), 210.0, 10.0, 180.0, 120.0, |ui| {
-                let _ = w10.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w10.show(ui);
+                });
             });
         }
         place(ui, __origin, egui::Order::Background, egui::Id::new(12u64), 210.0, 140.0, 60.0, 60.0, |ui| {
-            let _ = w12.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w12.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Background, egui::Id::new(13u64), 290.0, 140.0, 60.0, 60.0, |ui| {
-            let _ = w13.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w13.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Background, egui::Id::new(14u64), 210.0, 210.0, 80.0, 24.0, |ui| {
-            let _ = w14.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w14.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(3u64), 10.0, 40.0, 120.0, 20.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
                 ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(255, 255, 255));
-                let _ = w3.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w3.show(ui);
+                });
             }
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(8u64), 10.0, 170.0, 120.0, 20.0, |ui| {
-            let _ = w8.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w8.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(9u64), 10.0, 200.0, 180.0, 24.0, |ui| {
-            let _ = w9.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w9.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(15u64), 10.0, 240.0, 380.0, 110.0, |ui| {
-            let _ = w15.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w15.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(16u64), 10.0, 360.0, 380.0, 110.0, |ui| {
-            let _ = w16.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w16.show(ui);
+            });
         });
         place(ui, __origin, egui::Order::Middle, egui::Id::new(17u64), 210.0, 210.0, 180.0, 24.0, |ui| {
             let __frame_origin_17 = ui.max_rect().min;
@@ -150,7 +168,9 @@ impl Screen {
                     {
                         ui.style_mut().override_font_id = Some(egui::FontId::proportional(14.0));
                         ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(255, 255, 255));
-                        let _ = w18.show(ui);
+                        ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                            let _ = w18.show(ui);
+                        });
                     }
                 });
             });
@@ -158,7 +178,9 @@ impl Screen {
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(4u64), 10.0, 70.0, 120.0, 20.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
-                let _ = w4.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w4.show(ui);
+                });
             }
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(5u64), 10.0, 100.0, 80.0, 24.0, |ui| {
@@ -173,17 +195,23 @@ impl Screen {
                 __v.widgets.open.weak_bg_fill = Color32::from_rgb(192, 192, 192);
                 __v.text_edit_bg_color = Some(Color32::from_rgb(192, 192, 192));
                 __v.override_text_color = Some(Color32::from_rgb(0, 0, 0));
-                let _ = w5.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w5.show(ui);
+                });
             }
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(6u64), 100.0, 100.0, 100.0, 24.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(14.0));
-                let _ = w6.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w6.show(ui);
+                });
             }
         });
         place(ui, __origin, egui::Order::Foreground, egui::Id::new(7u64), 10.0, 140.0, 180.0, 24.0, |ui| {
-            let _ = w7.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w7.show(ui);
+            });
         });
     }
 }

@@ -1384,7 +1384,7 @@ fn push_plot_widget(
         z,
         id,
         geom,
-        format!("let _ = {field}.show(ui);"),
+        justified_body(&format!("let _ = {field}.show(ui);")),
     ));
 }
 
@@ -1503,13 +1503,15 @@ fn emit_shell_command(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         body
     };
     // MEDM draws the button/menu in the widget's `clr`/`bclr` with a height-sized
-    // caption; the shared prelude applies all three to the scoped egui style.
+    // caption, filling its whole rect; the shared prelude applies the colours and
+    // font to the scoped egui style and the justified wrap fills the geometry.
     let prelude = style_prelude(
         b,
         WidgetColors::from_widget(widget),
         Some(font_px_from_height(geom.height)),
     );
-    let body = format!("{{\n{prelude}    {body}\n}}");
+    let body = justified_body(&body);
+    let body = format!("{{\n{prelude}    {}\n}}", body.replace('\n', "\n    "));
     b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
         "line {}: shell command emitted as a live button/menu (spawns via `sh -c`)",
@@ -1775,13 +1777,15 @@ fn emit_related_display(b: &mut Builder, widget: &MedmWidget, z: ZLayer) {
         body
     };
     // MEDM draws the button/menu in the widget's `clr`/`bclr` with a height-sized
-    // caption; the shared prelude applies all three to the scoped egui style.
+    // caption, filling its whole rect; the shared prelude applies the colours and
+    // font to the scoped egui style and the justified wrap fills the geometry.
     let prelude = style_prelude(
         b,
         WidgetColors::from_widget(widget),
         Some(font_px_from_height(geom.height)),
     );
-    let body = format!("{{\n{prelude}    {body}\n}}");
+    let body = justified_body(&body);
+    let body = format!("{{\n{prelude}    {}\n}}", body.replace('\n', "\n    "));
     b.placements.push(Placement::drawn(z, id, geom, body));
     b.warnings.push(format!(
         "line {}: related display emitted as a navigation-reporting button/menu \
@@ -1978,8 +1982,25 @@ fn style_prelude(b: &mut Builder, colors: WidgetColors, font_px: Option<f32>) ->
     lines
 }
 
+/// Wrap a widget draw in a centered-and-justified layout so it fills the whole
+/// `place()` rect — MEDM semantics, where a widget IS its geometry. egui widgets
+/// otherwise size to content: a 59x20 message button renders as a small
+/// content-sized button inside the rect, leaving dead (unclickable) zones around
+/// it and a visible face-vs-background seam. Justified allocation expands every
+/// widget — buttons/edits/combos via `allocate_space`, drawings/byte/scale via
+/// `allocate_exact_size` — to the full rect, which also makes them track the
+/// responsive (`--use-layout`) scale; child uis (e.g. the alarm-border frame
+/// inside each sidm widget) inherit the layout, so the fill reaches the inner
+/// widget.
+fn justified_body(stmt: &str) -> String {
+    format!(
+        "ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {{\n    {}\n}});",
+        stmt.replace('\n', "\n    ")
+    )
+}
+
 /// The draw body for a channel widget: the [`style_prelude`] overrides (when any)
-/// wrapped around `field.show(ui)`.
+/// wrapped around a rect-filling `field.show(ui)`.
 fn styled_show_body(
     b: &mut Builder,
     field: &str,
@@ -1987,10 +2008,11 @@ fn styled_show_body(
     font_px: Option<f32>,
 ) -> String {
     let prelude = style_prelude(b, colors, font_px);
+    let show = justified_body(&format!("let _ = {field}.show(ui);"));
     if prelude.is_empty() {
-        return format!("let _ = {field}.show(ui);");
+        return show;
     }
-    format!("{{\n{prelude}    let _ = {field}.show(ui);\n}}")
+    format!("{{\n{prelude}    {}\n}}", show.replace('\n', "\n    "))
 }
 
 /// The per-widget inputs to [`push_channel_widget`]: how to name, construct,
@@ -2076,7 +2098,7 @@ fn push_value_widget(
         z,
         id,
         geom,
-        format!("let _ = {field}.show(ui);"),
+        justified_body(&format!("let _ = {field}.show(ui);")),
     ));
 }
 

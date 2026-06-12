@@ -80,27 +80,37 @@ impl Screen {
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Background, egui::Id::new(3u64), 6.0, 200.0, 348.0, 160.0, |ui| {
-            let _ = w3.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w3.show(ui);
+            });
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(1u64), 10.0, 42.0, 150.0, 20.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0 * sy));
                 ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(0, 0, 0));
-                let _ = w1.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w1.show(ui);
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(2u64), 10.0, 70.0, 340.0, 120.0, |ui| {
-            let _ = w2.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w2.show(ui);
+            });
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(5u64), 170.0, 214.0, 120.0, 20.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0 * sy));
                 ui.style_mut().visuals.override_text_color = Some(Color32::from_rgb(0, 0, 0));
-                let _ = w5.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w5.show(ui);
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(7u64), 20.0, 300.0, 140.0, 20.0, |ui| {
-            let _ = w7.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w7.show(ui);
+            });
         });
         place(ui, __origin, sx, sy, egui::Order::Middle, egui::Id::new(13u64), 20.0, 400.0, 160.0, 40.0, |ui| {
             let __frame_origin_13 = ui.max_rect().min;
@@ -114,7 +124,9 @@ impl Screen {
                 place(ui, __frame_origin_13, sx, sy, egui::Order::Middle, egui::Id::new(15u64), 4.0, 20.0, 152.0, 16.0, |ui| {
                     {
                         ui.style_mut().override_font_id = Some(egui::FontId::proportional(10.0 * sy));
-                        let _ = w15.show(ui);
+                        ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                            let _ = w15.show(ui);
+                        });
                     }
                 });
             });
@@ -122,62 +134,76 @@ impl Screen {
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(4u64), 20.0, 214.0, 140.0, 22.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
-                let _ = w4.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w4.show(ui);
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(6u64), 20.0, 246.0, 320.0, 24.0, |ui| {
-            let _ = w6.show(ui);
+            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                let _ = w6.show(ui);
+            });
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(8u64), 170.0, 300.0, 120.0, 22.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
-                let _ = w8.show(ui);
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    let _ = w8.show(ui);
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(9u64), 20.0, 332.0, 130.0, 22.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
-                if ui.button("Echo").clicked() {
-                let _ = std::process::Command::new("sh").arg("-c").arg("echo hello from adl2sidm").spawn();
-            }
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    if ui.button("Echo").clicked() {
+                        let _ = std::process::Command::new("sh").arg("-c").arg("echo hello from adl2sidm").spawn();
+                    }
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(10u64), 170.0, 332.0, 170.0, 22.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
-                ui.menu_button("Shell Command", |ui| {
-                if ui.button("Date").clicked() {
-                    let _ = std::process::Command::new("sh").arg("-c").arg("date").spawn();
-                    ui.close();
-                }
-                if ui.button("Uptime").clicked() {
-                    let _ = std::process::Command::new("sh").arg("-c").arg("uptime").spawn();
-                    ui.close();
-                }
-            });
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    ui.menu_button("Shell Command", |ui| {
+                        if ui.button("Date").clicked() {
+                            let _ = std::process::Command::new("sh").arg("-c").arg("date").spawn();
+                            ui.close();
+                        }
+                        if ui.button("Uptime").clicked() {
+                            let _ = std::process::Command::new("sh").arg("-c").arg("uptime").spawn();
+                            ui.close();
+                        }
+                    });
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(11u64), 20.0, 366.0, 130.0, 22.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
-                if ui.button("Detail").on_hover_text("related display: open detail.adl").clicked() {
-                eprintln!("related display: open detail.adl");
-            }
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    if ui.button("Detail").on_hover_text("related display: open detail.adl").clicked() {
+                        eprintln!("related display: open detail.adl");
+                    }
+                });
             }
         });
         place(ui, __origin, sx, sy, egui::Order::Foreground, egui::Id::new(12u64), 170.0, 366.0, 170.0, 22.0, |ui| {
             {
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0 * sy));
-                ui.menu_button("Screens", |ui| {
-                if ui.button("Overview").on_hover_text("related display: open overview.adl").clicked() {
-                    eprintln!("related display: open overview.adl");
-                    ui.close();
-                }
-                if ui.button("Tuning").on_hover_text("related display: open tuning.adl (macros: P=DMM1:)").clicked() {
-                    eprintln!("related display: open tuning.adl (macros: P=DMM1:)");
-                    ui.close();
-                }
-            });
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                    ui.menu_button("Screens", |ui| {
+                        if ui.button("Overview").on_hover_text("related display: open overview.adl").clicked() {
+                            eprintln!("related display: open overview.adl");
+                            ui.close();
+                        }
+                        if ui.button("Tuning").on_hover_text("related display: open tuning.adl (macros: P=DMM1:)").clicked() {
+                            eprintln!("related display: open tuning.adl (macros: P=DMM1:)");
+                            ui.close();
+                        }
+                    });
+                });
             }
         });
     }
