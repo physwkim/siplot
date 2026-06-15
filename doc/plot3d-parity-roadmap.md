@@ -182,7 +182,7 @@ uses the baked-in viewport defaults (as P1.2).
 |---|---|---|---|
 | P3.1 | Viewpoint presets (+ PositionInfo deferred-with-picking; GroupProperties → P3.2) | actions/viewpoint.py, tools/ViewpointTools.py | ◐ |
 | P3.2 | 3D colorbar + egui parameter panel (GroupProperties) | tools/GroupPropertiesWidget.py | ✅ |
-| P3.3 | SceneWindow composition + io snapshot + roadmap reconcile | SceneWindow.py, actions/io.py | ☐ |
+| P3.3 | SceneWindow composition + io snapshot + roadmap reconcile | SceneWindow.py, actions/io.py | ✅ |
 
 P3.2 notes: ports silx `tools.GroupPropertiesWidget` as `ScalarFieldProperties`
 (`widget::scalar_field_properties`) — an egui form that sets a `ScalarFieldView`'s
@@ -204,6 +204,39 @@ generic `plot3d._model` (`core.py`/`items.py`/`model.py` — a `QAbstractItemMod
 tree editor of the whole scene graph) is not ported; it is a generic scene-graph
 editor whose faithful port would be speculative for the current item set, and the
 concrete per-field form covers a `ScalarFieldView`'s editable properties.
+
+P3.3 notes: shipped in two waves. **P3.3a** ports silx `SceneWindow.SceneWindow`
+(a `QMainWindow` composing a `SceneWidget` central widget, a viewpoint toolbar,
+an interactive-mode toolbar, a `GroupPropertiesWidget` dock, a `ParamTreeView`
+dock, and a `PositionInfoWidget`) as `SceneWindow` (`widget::scene_window`): the
+parts that are ported — the `viewpoint_menu` drop-down (P3.1), a
+`ScalarFieldView` scene (P2.3c), and a toggleable `ScalarFieldProperties` panel
+(P3.2) — composed with the established `show_inside` panel idiom (`Panel::top`
+toolbar + `Panel::left` properties + `CentralPanel` scene) so the scene gets a
+real pixel rect. Not composed (deferred upstream, documented): the
+`PositionInfoWidget` (needs 3D picking, see P3.1/P2.1) and the generic
+`ParamTreeView` (`plot3d._model`, see P3.2 / the N/A list). **P3.3b** ports the
+save-snapshot capability behind silx `actions/io.py` (`CopyAction`/`SaveAction`/
+`PrintAction`, all built on `Plot3DWidget.grabGL()` → a `QImage` saved as
+PNG/JPEG): `SceneWidget::snapshot(render_state, size_px)` and the underlying
+`snapshot_scene3d` (`render::gpu_scene3d`) render the current scene synchronously
+off the egui frame loop into a transient `RENDER_ATTACHMENT | COPY_SRC` target
+and read it back as tightly packed RGBA8 — the 3D analogue of the 2D
+`WgpuBackend::render_to_rgba`, reusing the same `save.rs` readback helpers
+(`padded_bytes_per_row` / `rows_to_rgba8`); pair with `encode_png` for the
+grab-then-save flow. Structural (not duplicated): `encode_offscreen` now takes
+the color/depth views as parameters, so the on-screen `prepare` path and the
+snapshot path share one draw sequence (the snapshot is pixel-for-pixel the
+rendered scene); the persistent blit target stays `TEXTURE_BINDING`-only and the
+snapshot uses its own copyable target. Verified by headless readback
+(`tests/scene_window_render.rs`: the iso-surface renders through the composed
+window, the View toolbar + properties controls are present, and the Properties
+toggle hides the panel; `tests/scene_snapshot_render.rs`: a snapshot captures the
+iso colour and encodes to a valid PNG, and a non-square size returns a
+`width*height*4` buffer). **N/A (Qt chrome):** the `QFileDialog` save/print
+dialogs, clipboard copy, and the `VideoAction` PNG-serie/MNG export are Qt-shell
+plumbing around the same `grabGL` primitive — the snapshot primitive is the
+ported piece; wiring it to a file/clipboard/print sink is application-side.
 
 P3.1 notes: ports silx's **viewpoint presets** in full. `SceneWidget::set_viewpoint`
 mirrors `actions/viewpoint.py._SetViewpointAction` — `camera.extrinsic.reset(face)`

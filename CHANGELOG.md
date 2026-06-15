@@ -9,6 +9,43 @@ This is a workspace of three crates released together: **siplot** (the plotting
 library), **sidm** (a PyDM-style EPICS display layer built on siplot), and
 **adl2sidm** (a MEDM `.adl` → SiDM-Rust-source converter).
 
+## [Unreleased]
+
+### Added — `siplot` 3D scene subsystem (`silx.gui.plot3d` port)
+
+A full true-3D scene stack ported from `silx.gui.plot3d` onto siplot's
+wgpu/egui infrastructure, rendered through an offscreen depth-tested pass that
+blits into egui's color-only render pass. Tracked wave by wave in
+`doc/plot3d-parity-roadmap.md`.
+
+- **Scene foundation**: a row-major `Mat4`/`Vec3` + `Camera` math layer (look-at,
+  perspective/orthographic projection, orbit/pan/zoom, `resetCamera`) ported
+  line-for-line from silx and unit-tested against its values; an interactive
+  **`SceneWidget`** (left-drag orbit, right-drag pan, wheel zoom) with a bounding
+  box + RGB axes chrome.
+- **3D items**: `Scatter3D` (billboarded point markers), `Mesh3D` /
+  `ColormapMesh3D` with silx's camera-fixed headlight shading, the
+  `Box3D` / `Cylinder3D` / `Hexagon3D` cylindrical-volume primitives, and 3D
+  `ImageData` / `ImageRgba` / `HeightMap` textured-quad items.
+- **`ScalarFieldView` flagship**: a marching-cubes iso-surface extractor (silx's
+  256-case lookup ported verbatim) plus a colormapped cut plane through a
+  `ScalarField3D` volume, and `ComplexField3D` (a complex field projected to a
+  real scalar through a shared `ComplexMode`). `setData` frames the camera only
+  on first data, matching silx `centerScene`-once.
+- **Tools / window**: the seven silx **viewpoint presets** with a "View"
+  drop-down (`viewpoint_menu`) and a `rotate_scene` orbit primitive; a
+  `ScalarFieldProperties` egui panel (port of `GroupPropertiesWidget`:
+  cut-plane visibility, colormap, value range, autoscale, per-iso level/colour/
+  add/remove) with a colorbar reusing the 2D `ColorBarWidget`; a composed
+  **`SceneWindow`** (toolbar + scene + toggleable properties panel); and an
+  off-screen **scene snapshot** (`SceneWidget::snapshot` / `snapshot_scene3d`)
+  reading the rendered scene back as RGBA8 for `encode_png` (the analogue of
+  silx `grabGL` + save-as-PNG).
+- **Documented simplifications**: colormaps are applied on the CPU at
+  geometry-build time (not via a GPU colormap texture); 3D scene picking
+  (`_pickFull` / `PositionInfoWidget`) and silx's generic `plot3d._model`
+  scene-graph tree editor are deferred, noted in the roadmap rather than stubbed.
+
 ## [0.2.0] - 2026-06-13
 
 The headline of this release is two new crates — **sidm** and **adl2sidm** —
@@ -95,5 +132,6 @@ instead of Qt `.ui` XML.
 - siplot is now the root of a three-crate workspace; `sidm` reaches egui/wgpu
   through `siplot::egui` to keep a single egui/wgpu in the tree.
 
+[Unreleased]: https://github.com/physwkim/siplot/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/physwkim/siplot/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/physwkim/siplot/releases/tag/v0.1.0
