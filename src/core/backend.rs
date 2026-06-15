@@ -119,6 +119,11 @@ pub struct ImageSpec<'a> {
     ///
     /// [`aggregation`]: ImageSpec::aggregation
     pub aggregation_block: (u32, u32),
+    /// Optional per-pixel alpha map (silx `ImageData.setAlphaData`), row-major
+    /// and length `width * height`, each in `[0, 1]`, multiplied into the global
+    /// [`alpha`](Self::alpha) per pixel. `None` (the default) is a uniform global
+    /// alpha. Only meaningful for a scalar image; ignored for RGBA.
+    pub alpha_map: Option<&'a [f32]>,
 }
 
 impl<'a> ImageSpec<'a> {
@@ -137,6 +142,7 @@ impl<'a> ImageSpec<'a> {
             interpolation: InterpolationMode::default(),
             aggregation: AggregationMode::default(),
             aggregation_block: (1, 1),
+            alpha_map: None,
         }
     }
 
@@ -154,6 +160,7 @@ impl<'a> ImageSpec<'a> {
             interpolation: InterpolationMode::default(),
             aggregation: AggregationMode::default(),
             aggregation_block: (1, 1),
+            alpha_map: None,
         }
     }
 
@@ -168,6 +175,14 @@ impl<'a> ImageSpec<'a> {
     pub fn with_aggregation(mut self, mode: AggregationMode, block: (u32, u32)) -> Self {
         self.aggregation = mode;
         self.aggregation_block = block;
+        self
+    }
+
+    /// Set the per-pixel alpha map (silx `ImageData.setAlphaData`); see
+    /// [`alpha_map`](Self::alpha_map). The slice must outlive the spec and have
+    /// length `width * height` (validated downstream at upload). No effect on RGBA.
+    pub fn with_alpha_map(mut self, alpha_map: &'a [f32]) -> Self {
+        self.alpha_map = Some(alpha_map);
         self
     }
 }

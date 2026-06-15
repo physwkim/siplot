@@ -2309,6 +2309,9 @@ fn image_spec_from_data(image: &ImageData) -> ImageSpec<'_> {
             // round-tripped spec must not re-aggregate.
             aggregation: AggregationMode::None,
             aggregation_block: (1, 1),
+            // The alpha map (if any) is already at the displayed resolution on
+            // the `ImageData`, so it carries through 1:1 with the data.
+            alpha_map: image.alpha_map.as_deref(),
         },
         ImagePixels::Rgba { data } => ImageSpec {
             pixels: ImagePixelsSpec::Rgba {
@@ -2322,6 +2325,8 @@ fn image_spec_from_data(image: &ImageData) -> ImageSpec<'_> {
             interpolation: image.interpolation,
             aggregation: AggregationMode::None,
             aggregation_block: (1, 1),
+            // Per-pixel alpha is scalar-only (silx `ImageData.setAlphaData`).
+            alpha_map: None,
         },
     }
 }

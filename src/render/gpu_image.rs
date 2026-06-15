@@ -170,8 +170,8 @@ fn srgb_u8_to_linear_rgba(c: [u8; 4]) -> [f32; 4] {
 
 /// Uniform block for the image shader. Field order keeps `repr(C)` offsets
 /// std140-aligned: mat4 @0, vec4 @64, vec2 @80, then scalars f32 @88/92/96/100,
-/// u32 @104/108, then vec4 @112 (16-aligned); total 128. Matches `Params` in
-/// `image.wgsl`.
+/// u32 @104/108/112, explicit pad @116, then vec4 @128 (16-aligned); total 144.
+/// Matches `Params` in `image.wgsl` (where WGSL auto-pads the vec4 to 128).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ImageParams {
@@ -190,8 +190,15 @@ struct ImageParams {
     norm: u32,
     /// Interpolation code; see [`InterpolationMode::code`]: nearest 0, linear 1.
     interp: u32,
+    /// 1 if a per-pixel alpha map is bound at binding 5 (silx
+    /// `ImageData.getAlphaData`), else 0 — when 0 the shader skips the alpha
+    /// texture sample and a shared 1×1 dummy is bound for layout validity.
+    has_alpha_map: u32,
+    /// Padding so `nan_color` (a vec4) lands at the 16-aligned offset 128, where
+    /// WGSL auto-places it after the three trailing u32s.
+    _pad: [u32; 3],
     /// Linear RGBA used for non-finite (NaN / +/-inf) samples (silx
-    /// `Colormap.nan_color`). vec4 at offset 112, 16-byte aligned.
+    /// `Colormap.nan_color`). vec4 at offset 128, 16-byte aligned.
     nan_color: [f32; 4],
 }
 
@@ -242,6 +249,15 @@ pub struct ImageData {
     /// How the data is resampled to screen pixels (silx `interpolation`),
     /// defaulting to [`Nearest`](InterpolationMode::Nearest).
     pub interpolation: InterpolationMode,
+    /// Optional per-pixel alpha map (silx `ImageData.setAlphaData`), row-major
+    /// and length `width * height`, each in `[0, 1]`. Multiplied into the global
+    /// [`alpha`](Self::alpha) per pixel, so a value of `0` makes that pixel fully
+    /// transparent (the layers below show through) and `1` leaves it at the
+    /// global opacity. `None` (the default) means a uniform global alpha — every
+    /// pixel renders identically to before, with the per-pixel multiply gated off
+    /// in the shader. Only meaningful for a [`ImagePixels::Scalar`] image (silx
+    /// exposes alpha data only on the colormapped `ImageData`); ignored for RGBA.
+    pub alpha_map: Option<Vec<f32>>,
 }
 
 impl ImageData {
@@ -264,6 +280,7 @@ impl ImageData {
             scale: (1.0, 1.0),
             alpha: 1.0,
             interpolation: InterpolationMode::default(),
+            alpha_map: None,
         }
     }
 
@@ -284,6 +301,7 @@ impl ImageData {
             scale: (1.0, 1.0),
             alpha: 1.0,
             interpolation: InterpolationMode::default(),
+            alpha_map: None,
         }
     }
 
@@ -301,6 +319,19 @@ impl ImageData {
         self.interpolation = interpolation;
         self
     }
+
+    /// Set the per-pixel alpha map (silx `ImageData.setAlphaData`); see
+    /// [`alpha_map`](Self::alpha_map). Panics if `alpha_map.len()` does not equal
+    /// `width * height`. Has no effect on an RGBA image.
+    pub fn with_alpha_map(mut self, alpha_map: Vec<f32>) -> Self {
+        assert_eq!(
+            alpha_map.len(),
+            (self.width as usize) * (self.height as usize),
+            "alpha_map length must equal width * height"
+        );
+        self.alpha_map = Some(alpha_map);
+        self
+    }
 }
 
 /// The render pipelines and samplers shared by all images: the scalar
@@ -314,6 +345,10 @@ pub struct ImagePipeline {
     rgba_bind_group_layout: wgpu::BindGroupLayout,
     data_sampler: wgpu::Sampler,
     lut_sampler: wgpu::Sampler,
+    /// A 1×1 `R32Float` texture of value `1.0`, bound at scalar binding 5 for
+    /// images without a per-pixel alpha map so the bind group stays valid; the
+    /// shader never samples it (its `has_alpha_map` flag is 0).
+    dummy_alpha_view: wgpu::TextureView,
 }
 
 impl ImagePipeline {
@@ -378,6 +413,18 @@ impl ImagePipeline {
                         binding: 4,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // 5: per-pixel alpha texture (unfilterable float, like the
+                    // data texture); a 1×1 dummy when the image has no alpha map.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
                         count: None,
                     },
                 ],
@@ -501,6 +548,26 @@ impl ImagePipeline {
             ..Default::default()
         });
 
+        // 1×1 R32Float texture of 1.0, bound at scalar binding 5 for images
+        // without a per-pixel alpha map (the shader gates it off via
+        // `has_alpha_map == 0`, so its value is never actually read).
+        let dummy_alpha = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("siplot image dummy alpha"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        // (no queue write needed: the dummy is never sampled, only bound)
+        let dummy_alpha_view = dummy_alpha.create_view(&wgpu::TextureViewDescriptor::default());
+
         Self {
             pipeline,
             rgba_pipeline,
@@ -508,6 +575,7 @@ impl ImagePipeline {
             rgba_bind_group_layout,
             data_sampler,
             lut_sampler,
+            dummy_alpha_view,
         }
     }
 }
@@ -581,6 +649,8 @@ enum GpuImageKind {
         norm: u32,
         /// Interpolation code; see [`InterpolationMode::code`].
         interp: u32,
+        /// 1 if a per-pixel alpha map is bound at binding 5, else 0.
+        has_alpha_map: u32,
         /// Linear RGBA for non-finite samples (silx `Colormap.nan_color`),
         /// pre-converted from the colormap's sRGB bytes.
         nan_color: [f32; 4],
@@ -699,6 +769,44 @@ impl GpuImage {
                         let data_view =
                             data_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+                        // Per-pixel alpha: when the image carries an alpha map,
+                        // upload this tile's slice of it to its own R32Float
+                        // texture; otherwise bind the pipeline's 1×1 dummy. The
+                        // bind group retains the texture (like the LUT), so the
+                        // local view need not outlive this closure.
+                        let alpha_view = image.alpha_map.as_ref().map(|alpha| {
+                            let alpha_texture = device.create_texture(&wgpu::TextureDescriptor {
+                                label: Some("siplot image tile alpha"),
+                                size: tile_size,
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::R32Float,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                    | wgpu::TextureUsages::COPY_DST,
+                                view_formats: &[],
+                            });
+                            let sub = extract_subgrid(alpha, image.width, x0, y0, w, h);
+                            queue.write_texture(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &alpha_texture,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                bytemuck::cast_slice(&sub),
+                                wgpu::TexelCopyBufferLayout {
+                                    offset: 0,
+                                    bytes_per_row: Some(4 * w),
+                                    rows_per_image: Some(h),
+                                },
+                                tile_size,
+                            );
+                            alpha_texture.create_view(&wgpu::TextureViewDescriptor::default())
+                        });
+                        let alpha_binding =
+                            alpha_view.as_ref().unwrap_or(&pipeline.dummy_alpha_view);
+
                         let params = device.create_buffer(&wgpu::BufferDescriptor {
                             label: Some("siplot image tile params"),
                             size: std::mem::size_of::<ImageParams>() as u64,
@@ -731,6 +839,10 @@ impl GpuImage {
                                     binding: 4,
                                     resource: wgpu::BindingResource::Sampler(&pipeline.lut_sampler),
                                 },
+                                wgpu::BindGroupEntry {
+                                    binding: 5,
+                                    resource: wgpu::BindingResource::TextureView(alpha_binding),
+                                },
                             ],
                         });
                         ImageTile {
@@ -755,6 +867,7 @@ impl GpuImage {
                         gamma: colormap.gamma,
                         norm: colormap.normalization.code(),
                         interp: image.interpolation.code(),
+                        has_alpha_map: u32::from(image.alpha_map.is_some()),
                         nan_color: srgb_u8_to_linear_rgba(colormap.nan_color),
                     },
                 )
@@ -943,6 +1056,7 @@ impl GpuImage {
                     gamma,
                     norm,
                     interp,
+                    has_alpha_map,
                     nan_color,
                 } => {
                     let params = ImageParams {
@@ -955,6 +1069,8 @@ impl GpuImage {
                         gamma,
                         norm,
                         interp,
+                        has_alpha_map,
+                        _pad: [0; 3],
                         nan_color,
                     };
                     queue.write_buffer(&tile.params, 0, bytemuck::bytes_of(&params));
@@ -998,10 +1114,10 @@ mod tests {
 
     #[test]
     fn image_params_is_std140_sized() {
-        // The std140 uniform layout (see the struct comment) must stay 128 bytes
-        // with the vec4 nan_color 16-byte aligned at offset 112; drift here means
+        // The std140 uniform layout (see the struct comment) must stay 144 bytes
+        // with the vec4 nan_color 16-byte aligned at offset 128; drift here means
         // the Rust struct and the WGSL `Params` no longer agree.
-        assert_eq!(std::mem::size_of::<ImageParams>(), 128);
+        assert_eq!(std::mem::size_of::<ImageParams>(), 144);
         assert_eq!(std::mem::align_of::<ImageParams>(), 4);
     }
 

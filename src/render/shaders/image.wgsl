@@ -18,6 +18,9 @@ struct Params {
     gamma: f32,                // exponent for norm == 3 (gamma)
     norm: u32,                 // normalization code: 0 linear, 1 log, 2 sqrt, 3 gamma, 4 arcsinh
     interp: u32,               // interpolation: 0 nearest, 1 linear (bilinear on data)
+    has_alpha_map: u32,        // 1 if a per-pixel alpha map is bound at binding 5
+    // WGSL pads the vec4 below to the 16-aligned offset 128 (the three trailing
+    // u32s above end at 116); the Rust ImageParams adds explicit padding to match.
     nan_color: vec4<f32>,      // linear RGBA for non-finite samples (silx nan_color)
 };
 
@@ -41,6 +44,9 @@ fn apply_scale(p: vec2<f32>) -> vec2<f32> {
                                                        // kept for layout parity
 @group(0) @binding(3) var lut_tex: texture_2d<f32>;    // 256x1 sRGB
 @group(0) @binding(4) var lut_samp: sampler;           // filtering (linear)
+@group(0) @binding(5) var alpha_tex: texture_2d<f32>;  // R32Float per-pixel alpha,
+                                                       // unfilterable; 1x1 dummy
+                                                       // when has_alpha_map == 0
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -139,8 +145,42 @@ fn sample_data(uv: vec2<f32>) -> f32 {
     return texel(c, size);
 }
 
+// Fetch one alpha-map texel by integer coordinate, clamped to bounds.
+fn texel_alpha(coord: vec2<i32>, size: vec2<i32>) -> f32 {
+    let c = clamp(coord, vec2<i32>(0, 0), size - vec2<i32>(1, 1));
+    return textureLoad(alpha_tex, c, 0).r;
+}
+
+// Sample the per-pixel alpha map at normalized uv, mirroring `sample_data`'s
+// nearest/linear logic so the alpha map is filtered the same way as the data
+// (silx applies the alpha texture under the image's interpolation). R32Float is
+// unfilterable, so the bilinear path is done by hand like the data path.
+fn sample_alpha(uv: vec2<f32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(alpha_tex));
+    if (params.interp == 1u) { // linear
+        let p = uv * vec2<f32>(size) - vec2<f32>(0.5, 0.5);
+        let base = vec2<i32>(floor(p));
+        let f = p - floor(p);
+        let v00 = texel_alpha(base, size);
+        let v10 = texel_alpha(base + vec2<i32>(1, 0), size);
+        let v01 = texel_alpha(base + vec2<i32>(0, 1), size);
+        let v11 = texel_alpha(base + vec2<i32>(1, 1), size);
+        let top = mix(v00, v10, f.x);
+        let bot = mix(v01, v11, f.x);
+        return mix(top, bot, f.y);
+    }
+    let c = vec2<i32>(floor(uv * vec2<f32>(size)));
+    return texel_alpha(c, size);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // The effective opacity: global alpha times the per-pixel alpha map when one
+    // is bound (silx multiplies the alpha data into every pixel, masked or not).
+    var a = params.alpha;
+    if (params.has_alpha_map == 1u) {
+        a = a * clamp(sample_alpha(in.uv), 0.0, 1.0);
+    }
     let v = sample_data(in.uv);
     // Non-finite samples (NaN / +/-inf) get the colormap's nan_color instead of
     // the low color, mirroring silx (default transparent white). NaN fails both
@@ -150,9 +190,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // its alpha is scaled by the image's global alpha like the colormapped path.
     let finite = (v >= -3.4028235e38) && (v <= 3.4028235e38);
     if (!finite) {
-        return vec4<f32>(params.nan_color.rgb, params.nan_color.a * params.alpha);
+        return vec4<f32>(params.nan_color.rgb, params.nan_color.a * a);
     }
     let value = normalize_value(v);
     let rgb = textureSample(lut_tex, lut_samp, vec2<f32>(value, 0.5)).rgb;
-    return vec4<f32>(rgb, params.alpha);
+    return vec4<f32>(rgb, a);
 }

@@ -901,7 +901,24 @@ fn image_data_from_spec(spec: ImageSpec<'_>) -> ImageData {
             if spec.aggregation != AggregationMode::None {
                 scale = (scale.0 * bx.max(1) as f64, scale.1 * by.max(1) as f64);
             }
-            ImageData::new(agg_w, agg_h, agg_data, *colormap)
+            // A per-pixel alpha map is at the original resolution; reduce it by
+            // the same blocks (mean coverage) when the data is aggregated so it
+            // matches the downsampled image dimensions.
+            let alpha_map = spec.alpha_map.map(|am| {
+                assert_eq!(
+                    am.len(),
+                    (width as usize) * (height as usize),
+                    "alpha_map length must equal width * height"
+                );
+                if spec.aggregation != AggregationMode::None {
+                    aggregate_blocks(am, width, height, bx, by, AggregationMode::Mean).0
+                } else {
+                    am.to_vec()
+                }
+            });
+            let mut img = ImageData::new(agg_w, agg_h, agg_data, *colormap);
+            img.alpha_map = alpha_map;
+            img
         }
         // Aggregation is a scalar-data reduction; RGBA images are passed through
         // unaggregated (silx ImageDataAggregated is a scalar density map).
