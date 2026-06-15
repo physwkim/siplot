@@ -2140,6 +2140,7 @@ fn image_spec_retained_data(spec: &ImageSpec<'_>) -> Option<RetainedItemData> {
             interpolation: spec.interpolation,
             aggregation: spec.aggregation,
             aggregation_block: spec.aggregation_block,
+            alpha_map: spec.alpha_map.map(|a| a.to_vec()),
         }),
         ImagePixelsSpec::Rgba { .. } => None,
     }
@@ -2450,18 +2451,30 @@ enum RetainedItemData {
         /// Per-axis aggregation block factors `(block_x, block_y)`, retained so a
         /// re-upload preserves the level-of-detail reduction.
         aggregation_block: (u32, u32),
+        /// Per-pixel alpha map (silx `ImageData.getAlphaData`), row-major at the
+        /// displayed resolution, retained for the same reason as `alpha`: a
+        /// re-upload rebuilds the spec via [`ImageSpec::scalar`], whose builder
+        /// defaults it to `None`, so without retaining it a level edit / autoscale
+        /// / median filter would silently drop the alpha overlay. `None` when the
+        /// image has no per-pixel alpha.
+        alpha_map: Option<Vec<f32>>,
     },
 }
 
 /// The display attributes of a retained scalar image that a re-upload must
-/// carry over — geometry, opacity, interpolation, and aggregation. Bundled so
-/// that [`apply`](Self::apply) is the *single owner* of restoring them onto a
-/// freshly built [`ImageSpec`]: every re-upload path (level edit, autoscale,
-/// median filter, the alpha-slider bindings) rebuilds the spec via
-/// [`ImageSpec::scalar`] — whose builder resets these to defaults — and then
-/// calls `apply`, so a new attribute is preserved everywhere by adding it here
-/// once, and a new re-upload path cannot silently drop them.
-#[derive(Clone, Copy, Debug)]
+/// carry over — geometry, opacity, interpolation, aggregation, and the
+/// per-pixel alpha map. Bundled so that [`apply`](Self::apply) is the *single
+/// owner* of restoring them onto a freshly built [`ImageSpec`]: every re-upload
+/// path (level edit, autoscale, median filter, the alpha-slider bindings)
+/// rebuilds the spec via [`ImageSpec::scalar`] — whose builder resets these to
+/// defaults — and then calls `apply`, so a new attribute is preserved
+/// everywhere by adding it here once, and a new re-upload path cannot silently
+/// drop them.
+///
+/// Owns the alpha map by value (so it is not `Copy`): the rebuilt
+/// [`ImageSpec`] borrows it, so the attrs must outlive the spec — which they do,
+/// being bound before it on every re-upload path.
+#[derive(Clone, Debug)]
 struct ImageDisplayAttrs {
     origin: (f64, f64),
     scale: (f64, f64),
@@ -2469,18 +2482,22 @@ struct ImageDisplayAttrs {
     interpolation: InterpolationMode,
     aggregation: AggregationMode,
     aggregation_block: (u32, u32),
+    alpha_map: Option<Vec<f32>>,
 }
 
 impl ImageDisplayAttrs {
     /// Restore every carried-over display attribute onto a rebuilt scalar
-    /// [`ImageSpec`] (the single owner of the retained→spec restore).
-    fn apply(self, spec: &mut ImageSpec<'_>) {
+    /// [`ImageSpec`] (the single owner of the retained→spec restore). Borrows
+    /// `self` for the spec's data lifetime so the spec can reference the owned
+    /// alpha map.
+    fn apply<'a>(&'a self, spec: &mut ImageSpec<'a>) {
         spec.origin = self.origin;
         spec.scale = self.scale;
         spec.alpha = self.alpha;
         spec.interpolation = self.interpolation;
         spec.aggregation = self.aggregation;
         spec.aggregation_block = self.aggregation_block;
+        spec.alpha_map = self.alpha_map.as_deref();
     }
 }
 
@@ -2497,6 +2514,7 @@ impl RetainedItemData {
                 interpolation,
                 aggregation,
                 aggregation_block,
+                alpha_map,
                 ..
             } => Some(ImageDisplayAttrs {
                 origin: *origin,
@@ -2505,6 +2523,7 @@ impl RetainedItemData {
                 interpolation: *interpolation,
                 aggregation: *aggregation,
                 aggregation_block: *aggregation_block,
+                alpha_map: alpha_map.clone(),
             }),
             RetainedItemData::Curve { .. } => None,
         }
@@ -14568,6 +14587,7 @@ mod tests {
             interpolation: InterpolationMode::Nearest,
             aggregation: AggregationMode::None,
             aggregation_block: (1, 1),
+            alpha_map: None,
         };
         let input = retained_data_to_stats_input(&data);
         let mut w = StatsWidget::new();
@@ -14588,14 +14608,16 @@ mod tests {
 
     #[test]
     fn image_display_attrs_round_trip_preserves_every_reupload_field() {
-        // A scalar image with non-default opacity, interpolation, and
-        // aggregation: capturing it to RetainedItemData and restoring onto a
-        // fresh ImageSpec::scalar (as every re-upload path does) must carry
-        // *every* display field via the single-owner ImageDisplayAttrs::apply —
-        // not just geometry. This is the structural guard against a re-upload
-        // path silently resetting interpolation/aggregation to scalar() defaults
-        // (the same defect family the retained alpha closed).
+        // A scalar image with non-default opacity, interpolation, aggregation,
+        // and a per-pixel alpha map: capturing it to RetainedItemData and
+        // restoring onto a fresh ImageSpec::scalar (as every re-upload path does)
+        // must carry *every* display field via the single-owner
+        // ImageDisplayAttrs::apply — not just geometry. This is the structural
+        // guard against a re-upload path silently resetting interpolation /
+        // aggregation / the alpha map to scalar() defaults (the same defect
+        // family the retained alpha closed).
         let pixels = [1.0f32, 2.0, 3.0, 4.0];
+        let am = [0.0f32, 0.25, 0.75, 1.0];
         let mut spec = ImageSpec::scalar(2, 2, &pixels, Colormap::viridis(0.0, 4.0));
         spec.origin = (5.0, 6.0);
         spec.scale = (2.0, 3.0);
@@ -14603,17 +14625,20 @@ mod tests {
         spec.interpolation = InterpolationMode::Linear;
         spec.aggregation = AggregationMode::Max;
         spec.aggregation_block = (2, 2);
+        spec.alpha_map = Some(&am);
 
         let retained = image_spec_retained_data(&spec).expect("scalar image retains data");
         let attrs = retained
             .image_display_attrs()
             .expect("image has display attrs");
 
-        // A fresh spec starts at the scalar() defaults (Nearest / None / unit).
+        // A fresh spec starts at the scalar() defaults (Nearest / None / unit /
+        // no alpha map).
         let mut rebuilt = ImageSpec::scalar(2, 2, &pixels, Colormap::viridis(0.0, 4.0));
         assert_eq!(rebuilt.interpolation, InterpolationMode::Nearest);
         assert_eq!(rebuilt.aggregation, AggregationMode::None);
         assert_eq!(rebuilt.alpha, 1.0);
+        assert!(rebuilt.alpha_map.is_none());
         attrs.apply(&mut rebuilt);
 
         assert_eq!(rebuilt.origin, (5.0, 6.0));
@@ -14622,6 +14647,7 @@ mod tests {
         assert_eq!(rebuilt.interpolation, InterpolationMode::Linear);
         assert_eq!(rebuilt.aggregation, AggregationMode::Max);
         assert_eq!(rebuilt.aggregation_block, (2, 2));
+        assert_eq!(rebuilt.alpha_map, Some(am.as_slice()));
     }
 
     #[test]
@@ -14642,6 +14668,7 @@ mod tests {
             interpolation: InterpolationMode::Nearest,
             aggregation: AggregationMode::None,
             aggregation_block: (1, 1),
+            alpha_map: None,
         };
         let mut named = ManagedRoi::new(Roi::Rect {
             x: (0.0, 2.0),
@@ -14787,6 +14814,7 @@ mod tests {
             interpolation: InterpolationMode::Nearest,
             aggregation: AggregationMode::None,
             aggregation_block: (1, 1),
+            alpha_map: None,
         };
         assert!(retained_curve_xy(&image).is_none());
     }

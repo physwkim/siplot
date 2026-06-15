@@ -61,6 +61,15 @@ fn teal_left_right(raw: &[u8]) -> (u32, u32) {
 /// Render the uniform teal image filling the pinned view, optionally with a
 /// per-pixel alpha map, and return the `(left-third, right-third)` teal counts.
 fn render(alpha_map: Option<Vec<f32>>) -> (u32, u32) {
+    render_after(alpha_map, None)
+}
+
+/// As [`render`], but after adding the image optionally apply a colormap
+/// level edit (`set_active_image_levels`) — a re-upload path that rebuilds the
+/// `ImageSpec` via `ImageSpec::scalar` and must restore the retained alpha map
+/// (the `(-1, 2)` levels keep the uniform `0.5` texel at the mid teal, so the
+/// detector is unchanged and only the alpha map's survival is under test).
+fn render_after(alpha_map: Option<Vec<f32>>, relevel: Option<(f64, f64)>) -> (u32, u32) {
     let rs = create_render_state(default_wgpu_setup());
     siplot::install(&rs);
 
@@ -75,6 +84,14 @@ fn render(alpha_map: Option<Vec<f32>>) -> (u32, u32) {
         spec = spec.with_alpha_map(am);
     }
     plot.add_image_spec(spec);
+
+    // The first added item is the active item, so a level edit re-uploads it.
+    if let Some((vmin, vmax)) = relevel {
+        assert!(
+            plot.set_active_image_levels(vmin, vmax),
+            "level edit must re-upload the active scalar image"
+        );
+    }
 
     // Pin the view to the image extent so the image fills the data area, and
     // drop the colormap colorbar — its viridis ramp would otherwise paint teal
@@ -101,17 +118,20 @@ fn render(alpha_map: Option<Vec<f32>>) -> (u32, u32) {
     teal_left_right(image.as_raw())
 }
 
-#[test]
-fn per_pixel_alpha_map_makes_only_the_masked_half_transparent() {
-    // Opaque (col < WD/2) on the left, fully transparent on the right.
-    let alpha_map: Vec<f32> = (0..(WD * HD))
+/// A row-major alpha map: opaque (`1.0`) for the left half of the columns
+/// (`col < WD/2`), fully transparent (`0.0`) for the right half.
+fn left_opaque_right_transparent() -> Vec<f32> {
+    (0..(WD * HD))
         .map(|i| {
             let col = i % WD;
             if col < WD / 2 { 1.0 } else { 0.0 }
         })
-        .collect();
+        .collect()
+}
 
-    let (masked_left, masked_right) = render(Some(alpha_map));
+#[test]
+fn per_pixel_alpha_map_makes_only_the_masked_half_transparent() {
+    let (masked_left, masked_right) = render(Some(left_opaque_right_transparent()));
     let (control_left, control_right) = render(None);
 
     // Control (no alpha map): the uniform image is opaque on BOTH halves.
@@ -132,5 +152,26 @@ fn per_pixel_alpha_map_makes_only_the_masked_half_transparent() {
         masked_right, 0,
         "the transparent (alpha=0) right half must show no teal (was {control_right} \
          when opaque): masked_right={masked_right}"
+    );
+}
+
+#[test]
+fn per_pixel_alpha_map_survives_a_level_edit_reupload() {
+    // A colormap level edit re-uploads the image through `ImageSpec::scalar`
+    // (which defaults the alpha map to `None`); the retained alpha map must be
+    // restored via the single-owner `ImageDisplayAttrs::apply` so the masked
+    // right half stays transparent after the re-upload — the regression guard
+    // for the `RetainedItemData::Image` field-drop family extended to the map.
+    let (masked_left, masked_right) =
+        render_after(Some(left_opaque_right_transparent()), Some((-1.0, 2.0)));
+
+    assert!(
+        masked_left > 200,
+        "after a re-upload the opaque left half must still be teal: masked_left={masked_left}"
+    );
+    assert_eq!(
+        masked_right, 0,
+        "after a re-upload the alpha map must still mask the right half: \
+         masked_right={masked_right}"
     );
 }
