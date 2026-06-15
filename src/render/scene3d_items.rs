@@ -9,6 +9,7 @@
 use egui::Color32;
 
 use crate::core::colormap::{AutoscaleMode, Colormap, ColormapName};
+use crate::core::scene3d::marching_cubes::isosurface as marching_cubes_isosurface;
 use crate::core::scene3d::mat4::{Mat4, Vec3, mat4_rotate};
 use crate::render::gpu_scene3d::{
     ImageInterpolation, PointMarker, Scene3dGeometry, Scene3dImageLayer, flat_normal,
@@ -1555,6 +1556,328 @@ impl HeightMapRGBA {
     }
 }
 
+/// silx's default isosurface colour `#FFD700FF` (gold), `Isosurface.__init__`.
+pub const DEFAULT_ISOSURFACE_COLOR: Color32 = Color32::from_rgb(0xFF, 0xD7, 0x00);
+
+/// silx's documented default auto-level: `mean(data) + std(data)` over the finite
+/// samples (`volume.py` `setAutoLevelFunction` example, the value
+/// `ScalarFieldView` seeds its first isosurface with). Returns NaN when there are
+/// no finite samples.
+pub fn mean_plus_std(data: &[f32]) -> f32 {
+    let finite: Vec<f64> = data
+        .iter()
+        .filter(|v| v.is_finite())
+        .map(|&v| v as f64)
+        .collect();
+    if finite.is_empty() {
+        return f32::NAN;
+    }
+    let n = finite.len() as f64;
+    let mean = finite.iter().sum::<f64>() / n;
+    let var = finite.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n;
+    (mean + var.sqrt()) as f32
+}
+
+/// One iso-surface of a [`ScalarField3D`]: an iso-level and a solid colour.
+///
+/// Port of silx `plot3d.items.volume.Isosurface`. The level is either a fixed
+/// value or computed from the parent field by an auto-level function (silx
+/// `setAutoLevelFunction`; e.g. [`mean_plus_std`]); the resolved value is stored
+/// in `level` and refreshed by the owning [`ScalarField3D`] whenever the data
+/// changes. The surface itself is built and emitted by the parent (the data lives
+/// there), as a lit solid-colour mesh through the P1.2 mesh path.
+#[derive(Clone, Debug)]
+pub struct Isosurface {
+    level: f32,
+    auto: Option<fn(&[f32]) -> f32>,
+    color: Color32,
+}
+
+impl Isosurface {
+    /// A fixed-level iso-surface in the given colour.
+    pub fn new(level: f32, color: Color32) -> Self {
+        Self {
+            level,
+            auto: None,
+            color,
+        }
+    }
+
+    /// An auto-level iso-surface: `level` is recomputed by `auto(data)` each time
+    /// the parent field changes (silx `setAutoLevelFunction`).
+    pub fn new_auto(auto: fn(&[f32]) -> f32, color: Color32) -> Self {
+        Self {
+            level: f32::NAN,
+            auto: Some(auto),
+            color,
+        }
+    }
+
+    /// The resolved iso-level (NaN if an auto-level has not yet been computed
+    /// against data).
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+
+    /// Set a fixed iso-level, clearing any auto-level function (silx `setLevel`).
+    pub fn set_level(&mut self, level: f32) {
+        self.level = level;
+        self.auto = None;
+    }
+
+    /// Set the auto-level function (silx `setAutoLevelFunction`); takes effect on
+    /// the next parent data update.
+    pub fn set_auto_level(&mut self, auto: fn(&[f32]) -> f32) {
+        self.auto = Some(auto);
+    }
+
+    /// True when the level is computed by an auto-level function.
+    pub fn is_auto_level(&self) -> bool {
+        self.auto.is_some()
+    }
+
+    /// The iso-surface colour.
+    pub fn color(&self) -> Color32 {
+        self.color
+    }
+
+    /// Set the iso-surface colour (silx `setColor`).
+    pub fn set_color(&mut self, color: Color32) {
+        self.color = color;
+    }
+
+    /// Re-resolve an auto-level against `data` (called by the parent on data
+    /// change). Fixed levels are left unchanged.
+    fn resolve(&mut self, data: &[f32]) {
+        if let Some(f) = self.auto {
+            self.level = f(data);
+        }
+    }
+}
+
+/// A 3D scalar field on a regular grid, rendered as marching-cubes iso-surfaces.
+///
+/// Port of silx `plot3d.items.volume.ScalarField3D`. Holds the `(depth, height,
+/// width)` field (`zyx`, `width` contiguous) and a list of [`Isosurface`]s. Each
+/// iso-surface is extracted with [marching cubes](marching_cubes_isosurface) and
+/// emitted as a lit solid-colour mesh; the marching-cubes `(z,y,x)` vertices are
+/// mapped to world `(x+0.5, y+0.5, z+0.5)` (and normals `(nz,ny,nx)→(nx,ny,nz)`),
+/// reproducing silx's `_isogroup` swap matrix + `Translate(0.5,0.5,0.5)`. The
+/// field bounds are the full volume box `(0,0,0)..(width,height,depth)` (silx
+/// `BoundedGroup`), independent of any iso-surface extent.
+///
+/// The cut plane (silx's `CutPlane`) is a separate wave (P2.2); this item covers
+/// the iso-surface side of `ScalarField3D`.
+#[derive(Clone, Debug)]
+pub struct ScalarField3D {
+    data: Vec<f32>,
+    depth: usize,
+    height: usize,
+    width: usize,
+    data_range: Option<(f32, f32, f32)>,
+    isosurfaces: Vec<Isosurface>,
+}
+
+impl Default for ScalarField3D {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ScalarField3D {
+    /// An empty scalar field with no iso-surfaces.
+    pub fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            depth: 0,
+            height: 0,
+            width: 0,
+            data_range: None,
+            isosurfaces: Vec::new(),
+        }
+    }
+
+    /// Set the 3D scalar field, `data` row-major as `(depth, height, width)` with
+    /// `width` contiguous. Returns `false` (leaving the field unchanged) when
+    /// `data.len() != depth*height*width` or any dimension is `< 2` (silx asserts
+    /// `min(shape) >= 2`). Setting data re-resolves every auto-level iso-surface.
+    pub fn set_data(&mut self, data: &[f32], depth: usize, height: usize, width: usize) -> bool {
+        if depth < 2 || height < 2 || width < 2 || data.len() != depth * height * width {
+            return false;
+        }
+        self.data = data.to_vec();
+        self.depth = depth;
+        self.height = height;
+        self.width = width;
+        self.data_range = compute_data_range(&self.data);
+        let data = std::mem::take(&mut self.data);
+        for iso in &mut self.isosurfaces {
+            iso.resolve(&data);
+        }
+        self.data = data;
+        true
+    }
+
+    /// Builder form of [`set_data`](Self::set_data); inconsistent data leaves the
+    /// field empty.
+    pub fn with_data(mut self, data: &[f32], depth: usize, height: usize, width: usize) -> Self {
+        self.set_data(data, depth, height, width);
+        self
+    }
+
+    /// Field dimensions `(depth, height, width)`.
+    pub fn dimensions(&self) -> (usize, usize, usize) {
+        (self.depth, self.height, self.width)
+    }
+
+    /// Read-only access to the field samples (`zyx`, `width` contiguous).
+    pub fn data(&self) -> &[f32] {
+        &self.data
+    }
+
+    /// The data range as `(min, min_positive, max)` over finite samples, or
+    /// `None` when empty / all non-finite (silx `getDataRange`; `min_positive` is
+    /// NaN when no sample is positive).
+    pub fn data_range(&self) -> Option<(f32, f32, f32)> {
+        self.data_range
+    }
+
+    /// True when no field data is set.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Add a fixed-level iso-surface, returning its index (silx `addIsosurface`).
+    pub fn add_isosurface(&mut self, level: f32, color: Color32) -> usize {
+        self.isosurfaces.push(Isosurface::new(level, color));
+        self.isosurfaces.len() - 1
+    }
+
+    /// Add an auto-level iso-surface (silx `addIsosurface` with a callable),
+    /// resolving the level against the current data immediately. Returns its
+    /// index.
+    pub fn add_auto_isosurface(&mut self, auto: fn(&[f32]) -> f32, color: Color32) -> usize {
+        let mut iso = Isosurface::new_auto(auto, color);
+        if !self.data.is_empty() {
+            iso.resolve(&self.data);
+        }
+        self.isosurfaces.push(iso);
+        self.isosurfaces.len() - 1
+    }
+
+    /// All iso-surfaces, in insertion order.
+    pub fn isosurfaces(&self) -> &[Isosurface] {
+        &self.isosurfaces
+    }
+
+    /// Mutable access to one iso-surface (e.g. to change its level or colour).
+    pub fn isosurface_mut(&mut self, index: usize) -> Option<&mut Isosurface> {
+        self.isosurfaces.get_mut(index)
+    }
+
+    /// Remove the iso-surface at `index` (silx `removeIsosurface`); out-of-range
+    /// is a no-op returning `false`.
+    pub fn remove_isosurface(&mut self, index: usize) -> bool {
+        if index < self.isosurfaces.len() {
+            self.isosurfaces.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove all iso-surfaces (silx `clearIsosurfaces`).
+    pub fn clear_isosurfaces(&mut self) {
+        self.isosurfaces.clear();
+    }
+
+    /// The volume bounding box `(0,0,0)..(width,height,depth)`, or `None` when no
+    /// data is set (silx `BoundedGroup` data bounds, in world `xyz`).
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        if self.data.is_empty() {
+            return None;
+        }
+        Some((
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(self.width as f32, self.height as f32, self.depth as f32),
+        ))
+    }
+
+    /// Append every iso-surface's triangles to `geometry`. Iso-surfaces are
+    /// emitted from highest level to lowest (silx `_updateIsosurfaces` sorts by
+    /// `-level`); a non-finite level or an empty surface is skipped.
+    pub fn append_to(&self, geometry: &mut Scene3dGeometry) {
+        if self.data.is_empty() {
+            return;
+        }
+        let mut order: Vec<usize> = (0..self.isosurfaces.len()).collect();
+        order.sort_by(|&a, &b| {
+            self.isosurfaces[b]
+                .level
+                .total_cmp(&self.isosurfaces[a].level)
+        });
+        for i in order {
+            let iso = &self.isosurfaces[i];
+            if !iso.level.is_finite() {
+                continue;
+            }
+            let Some((vertices, normals, indices)) = marching_cubes_isosurface(
+                &self.data,
+                self.depth,
+                self.height,
+                self.width,
+                iso.level,
+                true,
+            ) else {
+                continue;
+            };
+            // zyx → xyz swap + 0.5 cell-centre offset (silx _isogroup transform).
+            for tri in indices.chunks_exact(3) {
+                let p = [0usize, 1, 2].map(|k| {
+                    let v = vertices[tri[k] as usize];
+                    [v[2] + 0.5, v[1] + 0.5, v[0] + 0.5]
+                });
+                let n = [0usize, 1, 2].map(|k| {
+                    let nm = normals[tri[k] as usize];
+                    [nm[2], nm[1], nm[0]]
+                });
+                geometry.add_mesh_triangle(p, iso.color, n);
+            }
+        }
+    }
+}
+
+/// Compute `(min, min_positive, max)` over the finite samples (silx
+/// `ScalarField3D._computeRangeFromData` via `min_max(..., min_positive=True,
+/// finite=True)`). `min_positive` is NaN when no sample is `> 0`; returns `None`
+/// when there are no finite samples.
+fn compute_data_range(data: &[f32]) -> Option<(f32, f32, f32)> {
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut min_pos = f32::INFINITY;
+    let mut any = false;
+    for &v in data {
+        if !v.is_finite() {
+            continue;
+        }
+        any = true;
+        min = min.min(v);
+        max = max.max(v);
+        if v > 0.0 {
+            min_pos = min_pos.min(v);
+        }
+    }
+    if !any {
+        return None;
+    }
+    let min_pos = if min_pos.is_finite() {
+        min_pos
+    } else {
+        f32::NAN
+    };
+    Some((min, min_pos, max))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2076,5 +2399,160 @@ mod tests {
             assert_eq!(g.points[i].marker, PointMarker::Square.id());
         }
         assert_eq!(g.points[3].pos, [1.0, 1.0, 3.0]);
+    }
+
+    // --- ScalarField3D / Isosurface (P2.1b) ---
+
+    /// A central high block in a 5×5×5 field at level 0.5 (rest 0).
+    fn blob_field() -> (Vec<f32>, usize, usize, usize) {
+        let (d, h, w) = (5usize, 5usize, 5usize);
+        let mut data = vec![0.0f32; d * h * w];
+        for z in 1..4 {
+            for y in 1..4 {
+                for x in 1..4 {
+                    data[(z * h + y) * w + x] = 1.0;
+                }
+            }
+        }
+        (data, d, h, w)
+    }
+
+    #[test]
+    fn scalar_field_rejects_bad_shape() {
+        let mut sf = ScalarField3D::new();
+        // Wrong length.
+        assert!(!sf.set_data(&[0.0; 7], 2, 2, 2));
+        // A dimension < 2 (silx asserts min(shape) >= 2).
+        assert!(!sf.set_data(&[0.0; 2], 1, 2, 1));
+        assert!(sf.is_empty());
+        // Valid.
+        assert!(sf.set_data(&[0.0; 8], 2, 2, 2));
+        assert_eq!(sf.dimensions(), (2, 2, 2));
+    }
+
+    #[test]
+    fn scalar_field_data_range_and_bounds() {
+        let (data, d, h, w) = blob_field();
+        let sf = ScalarField3D::new().with_data(&data, d, h, w);
+        let (min, min_pos, max) = sf.data_range().expect("range");
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 1.0);
+        assert_eq!(min_pos, 1.0, "smallest positive sample is 1.0");
+        // Volume box (0,0,0)..(width,height,depth).
+        let (lo, hi) = sf.bounds().expect("bounds");
+        assert_eq!(lo.to_array(), [0.0, 0.0, 0.0]);
+        assert_eq!(hi.to_array(), [5.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn data_range_min_positive_nan_when_no_positive() {
+        let sf = ScalarField3D::new().with_data(&[-1.0; 8], 2, 2, 2);
+        let (min, min_pos, max) = sf.data_range().unwrap();
+        assert_eq!(min, -1.0);
+        assert_eq!(max, -1.0);
+        assert!(min_pos.is_nan(), "no positive sample → NaN min positive");
+    }
+
+    #[test]
+    fn add_remove_clear_isosurfaces() {
+        let (data, d, h, w) = blob_field();
+        let mut sf = ScalarField3D::new().with_data(&data, d, h, w);
+        let i0 = sf.add_isosurface(0.5, Color32::RED);
+        let i1 = sf.add_isosurface(0.25, DEFAULT_ISOSURFACE_COLOR);
+        assert_eq!((i0, i1), (0, 1));
+        assert_eq!(sf.isosurfaces().len(), 2);
+        assert_eq!(sf.isosurfaces()[0].level(), 0.5);
+        assert_eq!(sf.isosurfaces()[1].color(), DEFAULT_ISOSURFACE_COLOR);
+
+        sf.isosurface_mut(0).unwrap().set_level(0.75);
+        assert_eq!(sf.isosurfaces()[0].level(), 0.75);
+
+        assert!(sf.remove_isosurface(0));
+        assert!(!sf.remove_isosurface(5));
+        assert_eq!(sf.isosurfaces().len(), 1);
+        sf.clear_isosurfaces();
+        assert!(sf.isosurfaces().is_empty());
+    }
+
+    #[test]
+    fn auto_level_resolves_on_data_and_on_add() {
+        let (data, d, h, w) = blob_field();
+        // mean = 27/125 = 0.216; std = sqrt(mean*(1-mean)) for a 0/1 field.
+        let expect = mean_plus_std(&data);
+        assert!(expect.is_finite() && expect > 0.0);
+
+        // Auto added before data → NaN until data is set, then resolved.
+        let mut sf = ScalarField3D::new();
+        sf.add_auto_isosurface(mean_plus_std, DEFAULT_ISOSURFACE_COLOR);
+        assert!(sf.isosurfaces()[0].level().is_nan());
+        assert!(sf.set_data(&data, d, h, w));
+        assert!((sf.isosurfaces()[0].level() - expect).abs() < 1e-6);
+
+        // Auto added after data → resolved immediately.
+        let mut sf2 = ScalarField3D::new().with_data(&data, d, h, w);
+        sf2.add_auto_isosurface(mean_plus_std, DEFAULT_ISOSURFACE_COLOR);
+        assert!((sf2.isosurfaces()[0].level() - expect).abs() < 1e-6);
+        assert!(sf2.isosurfaces()[0].is_auto_level());
+    }
+
+    #[test]
+    fn mean_plus_std_ignores_non_finite_and_empty() {
+        assert!(mean_plus_std(&[]).is_nan());
+        assert!(mean_plus_std(&[f32::NAN, f32::INFINITY]).is_nan());
+        // Constant field: std 0 → level == the constant.
+        assert!((mean_plus_std(&[2.0, 2.0, 2.0]) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn isosurface_emits_swapped_offset_triangles() {
+        let (data, d, h, w) = blob_field();
+        let mut sf = ScalarField3D::new().with_data(&data, d, h, w);
+        sf.add_isosurface(0.5, DEFAULT_ISOSURFACE_COLOR);
+
+        let mut g = Scene3dGeometry::new();
+        sf.append_to(&mut g);
+
+        // The closed surface of a 3×3×3 block has triangles (3 mesh vertices each).
+        assert!(!g.meshes.is_empty(), "isosurface produced triangles");
+        assert_eq!(g.meshes.len() % 3, 0, "triangles");
+
+        let gold = egui::Rgba::from(DEFAULT_ISOSURFACE_COLOR).to_array();
+        // All vertices: gold colour, inside the volume box, unit normals.
+        for v in &g.meshes {
+            assert_eq!(v.color, gold);
+            for k in 0..3 {
+                assert!(
+                    v.pos[k] >= 0.0 && v.pos[k] <= 5.0,
+                    "inside box: {:?}",
+                    v.pos
+                );
+            }
+            let n = v.normal;
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-4, "unit normal, got {len}");
+        }
+        // The block spans index [1,3]; crossings sit at 0.5 and 3.5 → world
+        // [1.0, 4.0] after +0.5, so every coordinate is within [1.0, 4.0].
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for v in &g.meshes {
+            for k in 0..3 {
+                lo = lo.min(v.pos[k]);
+                hi = hi.max(v.pos[k]);
+            }
+        }
+        assert!(
+            lo >= 1.0 - 1e-4 && hi <= 4.0 + 1e-4,
+            "surface in [1,4]: {lo}..{hi}"
+        );
+    }
+
+    #[test]
+    fn non_finite_level_emits_nothing() {
+        let (data, d, h, w) = blob_field();
+        let mut sf = ScalarField3D::new().with_data(&data, d, h, w);
+        sf.add_isosurface(f32::NAN, DEFAULT_ISOSURFACE_COLOR);
+        let mut g = Scene3dGeometry::new();
+        sf.append_to(&mut g);
+        assert!(g.meshes.is_empty(), "NaN level → no triangles");
     }
 }
