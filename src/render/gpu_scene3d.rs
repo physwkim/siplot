@@ -979,7 +979,10 @@ impl Scene3dGpu {
 /// The geometric (flat) face normal of triangle `a, b, c`: the normalized cross
 /// product `(b−a) × (c−a)`. A degenerate triangle yields a zero vector (the
 /// mesh shader's `normalize` then leaves the face at ambient only).
-fn flat_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+///
+/// `pub(crate)` so the item layer ([`crate::render::scene3d_items`]) can compute
+/// the same fallback normal when a mesh provides none — one owner of the rule.
+pub(crate) fn flat_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     let va = Vec3::new(a[0], a[1], a[2]);
     let vb = Vec3::new(b[0], b[1], b[2]);
     let vc = Vec3::new(c[0], c[1], c[2]);

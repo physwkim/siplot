@@ -10,7 +10,7 @@ use egui::Color32;
 
 use crate::core::colormap::{AutoscaleMode, Colormap, ColormapName};
 use crate::core::scene3d::mat4::Vec3;
-use crate::render::gpu_scene3d::{PointMarker, Scene3dGeometry};
+use crate::render::gpu_scene3d::{PointMarker, Scene3dGeometry, flat_normal};
 
 /// silx's default plot symbol size in pixels (`_config.DEFAULT_PLOT_SYMBOL_SIZE`).
 pub const DEFAULT_SCATTER3D_SIZE: f32 = 6.0;
@@ -177,6 +177,369 @@ impl Scatter3D {
     }
 }
 
+/// How a mesh's flat vertex stream is grouped into triangles (silx
+/// `Mesh.setData` `mode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MeshDrawMode {
+    /// Independent triangles: vertices `(0,1,2), (3,4,5), …`.
+    #[default]
+    Triangles,
+    /// Triangle strip: vertices `(0,1,2), (1,2,3), (2,3,4), …`.
+    TriangleStrip,
+    /// Triangle fan: vertices `(0,1,2), (0,2,3), (0,3,4), …`.
+    Fan,
+}
+
+/// Mesh vertex colouring (silx accepts a single colour or one colour per vertex).
+#[derive(Clone, Debug)]
+pub enum MeshColor {
+    /// One colour shared by every vertex.
+    Uniform(Color32),
+    /// One colour per vertex (must match the vertex count).
+    PerVertex(Vec<Color32>),
+}
+
+/// Expand a draw mode into triangles of *vertex indices*. When `indices` is given
+/// the vertex stream is `indices` (unindexed); otherwise it is `0..n_vertices` in
+/// order. Mirrors silx `utils.unindexArrays` + the per-mode reshape/expand in
+/// `_MeshBase._pickFull` (triangle `i` uses stream `i, i+1, i+2` for strips; the
+/// shared apex `0` plus `i, i+1` for fans). The single owner of mesh topology so
+/// [`Mesh3D`] and [`ColormapMesh3D`] expand identically.
+fn expand_triangles(
+    mode: MeshDrawMode,
+    n_vertices: usize,
+    indices: Option<&[u32]>,
+) -> Vec<[usize; 3]> {
+    let stream: Vec<usize> = match indices {
+        Some(idx) => idx.iter().map(|&i| i as usize).collect(),
+        None => (0..n_vertices).collect(),
+    };
+    let n = stream.len();
+    let mut tris = Vec::new();
+    match mode {
+        MeshDrawMode::Triangles => {
+            for c in stream.chunks_exact(3) {
+                tris.push([c[0], c[1], c[2]]);
+            }
+        }
+        MeshDrawMode::TriangleStrip => {
+            for i in 0..n.saturating_sub(2) {
+                tris.push([stream[i], stream[i + 1], stream[i + 2]]);
+            }
+        }
+        MeshDrawMode::Fan => {
+            for i in 1..n.saturating_sub(1) {
+                tris.push([stream[0], stream[i], stream[i + 1]]);
+            }
+        }
+    }
+    tris
+}
+
+/// Common length/range validation for mesh `setData`: per-vertex `normals` (if
+/// any) must match the vertex count, and every `index` (if any) must be in range.
+fn mesh_attrs_valid(n: usize, normals: Option<&[[f32; 3]]>, indices: Option<&[u32]>) -> bool {
+    if let Some(ns) = normals
+        && ns.len() != n
+    {
+        return false;
+    }
+    if let Some(idx) = indices
+        && idx.iter().any(|&i| i as usize >= n)
+    {
+        return false;
+    }
+    true
+}
+
+/// Axis-aligned bounds `(min, max)` over a `(N, 3)` position array, or `None`
+/// when empty (silx `DataItem3D.getBounds`).
+fn positions_bounds(positions: &[[f32; 3]]) -> Option<(Vec3, Vec3)> {
+    if positions.is_empty() {
+        return None;
+    }
+    let mut min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+    let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &[px, py, pz] in positions {
+        min.x = min.x.min(px);
+        min.y = min.y.min(py);
+        min.z = min.z.min(pz);
+        max.x = max.x.max(px);
+        max.y = max.y.max(py);
+        max.z = max.z.max(pz);
+    }
+    Some((min, max))
+}
+
+/// A triangle mesh with solid (per-vertex or uniform) vertex colours.
+///
+/// Port of silx `plot3d.items.Mesh` (a `DataItem3D` wrapping a
+/// `scene.primitives.Mesh3D`). Vertices carry positions, colours and optional
+/// normals; when no normals are supplied the geometric flat face normal is used
+/// per triangle (via [`flat_normal`]), so the headlight still shades the surface.
+/// Strips and fans are expanded to a triangle list on the CPU since the GPU path
+/// is `TriangleList` only.
+#[derive(Clone, Debug)]
+pub struct Mesh3D {
+    positions: Vec<[f32; 3]>,
+    colors: MeshColor,
+    normals: Option<Vec<[f32; 3]>>,
+    mode: MeshDrawMode,
+    indices: Option<Vec<u32>>,
+}
+
+impl Default for Mesh3D {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Mesh3D {
+    /// An empty mesh (white, `Triangles` mode).
+    pub fn new() -> Self {
+        Self {
+            positions: Vec::new(),
+            colors: MeshColor::Uniform(Color32::WHITE),
+            normals: None,
+            mode: MeshDrawMode::Triangles,
+            indices: None,
+        }
+    }
+
+    /// Set the mesh geometry (silx `Mesh.setData`). Returns `false` (leaving the
+    /// mesh unchanged) when the attributes are inconsistent: per-vertex colours or
+    /// normals not matching the vertex count, or an out-of-range index. An empty
+    /// `positions` clears the mesh and returns `true` (silx treats it as no mesh).
+    pub fn set_data(
+        &mut self,
+        positions: &[[f32; 3]],
+        colors: MeshColor,
+        normals: Option<&[[f32; 3]]>,
+        mode: MeshDrawMode,
+        indices: Option<&[u32]>,
+    ) -> bool {
+        let n = positions.len();
+        if let MeshColor::PerVertex(cs) = &colors
+            && cs.len() != n
+        {
+            return false;
+        }
+        if !mesh_attrs_valid(n, normals, indices) {
+            return false;
+        }
+        self.positions = positions.to_vec();
+        self.colors = colors;
+        self.normals = normals.map(<[[f32; 3]]>::to_vec);
+        self.mode = mode;
+        self.indices = indices.map(<[u32]>::to_vec);
+        true
+    }
+
+    /// Builder form of [`set_data`](Self::set_data); inconsistent attributes leave
+    /// the mesh empty.
+    pub fn with_data(
+        mut self,
+        positions: &[[f32; 3]],
+        colors: MeshColor,
+        normals: Option<&[[f32; 3]]>,
+        mode: MeshDrawMode,
+        indices: Option<&[u32]>,
+    ) -> Self {
+        self.set_data(positions, colors, normals, mode, indices);
+        self
+    }
+
+    /// The drawing mode.
+    pub fn mode(&self) -> MeshDrawMode {
+        self.mode
+    }
+
+    /// Number of vertices.
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// True when there are no vertices.
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    /// Axis-aligned data bounds `(min, max)`, or `None` when empty.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        positions_bounds(&self.positions)
+    }
+
+    /// Append this mesh's triangles to `geometry` for upload via
+    /// [`crate::render::gpu_scene3d::set_scene3d`].
+    pub fn append_to(&self, geometry: &mut Scene3dGeometry) {
+        for [i0, i1, i2] in
+            expand_triangles(self.mode, self.positions.len(), self.indices.as_deref())
+        {
+            let p = [self.positions[i0], self.positions[i1], self.positions[i2]];
+            let normals = match &self.normals {
+                Some(ns) => [ns[i0], ns[i1], ns[i2]],
+                None => [flat_normal(p[0], p[1], p[2]); 3],
+            };
+            let rgba = match &self.colors {
+                MeshColor::Uniform(c) => [egui::Rgba::from(*c).to_array(); 3],
+                MeshColor::PerVertex(cs) => [
+                    egui::Rgba::from(cs[i0]).to_array(),
+                    egui::Rgba::from(cs[i1]).to_array(),
+                    egui::Rgba::from(cs[i2]).to_array(),
+                ],
+            };
+            geometry.add_mesh_triangle_rgba(p, rgba, normals);
+        }
+    }
+}
+
+/// A triangle mesh whose vertex colours come from a per-vertex scalar `value`
+/// mapped through a [`Colormap`].
+///
+/// Port of silx `plot3d.items.ColormapMesh` (`_MeshBase` + `ColormapMixIn`,
+/// wrapping a `scene.primitives.ColormapMesh3D`). silx maps values to colours on
+/// the GPU from a colormap texture; here the mapping is done on the CPU via
+/// [`Colormap::color_at`] when building the geometry (as for [`Scatter3D`]).
+#[derive(Clone, Debug)]
+pub struct ColormapMesh3D {
+    positions: Vec<[f32; 3]>,
+    values: Vec<f64>,
+    normals: Option<Vec<[f32; 3]>>,
+    mode: MeshDrawMode,
+    indices: Option<Vec<u32>>,
+    colormap: Colormap,
+}
+
+impl Default for ColormapMesh3D {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ColormapMesh3D {
+    /// An empty colormap mesh with silx defaults: the viridis colormap over
+    /// `[0, 1]`, `Triangles` mode.
+    pub fn new() -> Self {
+        Self {
+            positions: Vec::new(),
+            values: Vec::new(),
+            normals: None,
+            mode: MeshDrawMode::Triangles,
+            indices: None,
+            colormap: Colormap::new(ColormapName::Viridis, 0.0, 1.0),
+        }
+    }
+
+    /// Set the mesh geometry (silx `ColormapMesh.setData`). Returns `false`
+    /// (leaving the mesh unchanged) when `values`, per-vertex `normals`, or
+    /// `indices` are inconsistent with the vertex count. An empty `positions`
+    /// clears the mesh and returns `true`.
+    pub fn set_data(
+        &mut self,
+        positions: &[[f32; 3]],
+        values: &[f64],
+        normals: Option<&[[f32; 3]]>,
+        mode: MeshDrawMode,
+        indices: Option<&[u32]>,
+    ) -> bool {
+        let n = positions.len();
+        if values.len() != n {
+            return false;
+        }
+        if !mesh_attrs_valid(n, normals, indices) {
+            return false;
+        }
+        self.positions = positions.to_vec();
+        self.values = values.to_vec();
+        self.normals = normals.map(<[[f32; 3]]>::to_vec);
+        self.mode = mode;
+        self.indices = indices.map(<[u32]>::to_vec);
+        true
+    }
+
+    /// Builder form of [`set_data`](Self::set_data); inconsistent attributes leave
+    /// the mesh empty.
+    pub fn with_data(
+        mut self,
+        positions: &[[f32; 3]],
+        values: &[f64],
+        normals: Option<&[[f32; 3]]>,
+        mode: MeshDrawMode,
+        indices: Option<&[u32]>,
+    ) -> Self {
+        self.set_data(positions, values, normals, mode, indices);
+        self
+    }
+
+    /// Set the colormap (silx `ColormapMixIn.setColormap`).
+    pub fn set_colormap(&mut self, colormap: Colormap) {
+        self.colormap = colormap;
+    }
+
+    /// Builder form of [`set_colormap`](Self::set_colormap).
+    pub fn with_colormap(mut self, colormap: Colormap) -> Self {
+        self.colormap = colormap;
+        self
+    }
+
+    /// Read-only access to the colormap.
+    pub fn colormap(&self) -> &Colormap {
+        &self.colormap
+    }
+
+    /// Mutable access to the colormap.
+    pub fn colormap_mut(&mut self) -> &mut Colormap {
+        &mut self.colormap
+    }
+
+    /// Fit the colormap's value range to the current data with `mode`, returning
+    /// the new `(vmin, vmax)` (as [`Scatter3D::autoscale_colormap`]).
+    pub fn autoscale_colormap(&mut self, mode: AutoscaleMode) -> (f64, f64) {
+        let (vmin, vmax) = mode.range(&self.values, self.colormap.autoscale_percentiles);
+        self.colormap.vmin = vmin;
+        self.colormap.vmax = vmax;
+        (vmin, vmax)
+    }
+
+    /// The drawing mode.
+    pub fn mode(&self) -> MeshDrawMode {
+        self.mode
+    }
+
+    /// Number of vertices.
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// True when there are no vertices.
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    /// Axis-aligned data bounds `(min, max)`, or `None` when empty.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        positions_bounds(&self.positions)
+    }
+
+    /// Append this mesh's triangles (coloured through the colormap) to `geometry`.
+    pub fn append_to(&self, geometry: &mut Scene3dGeometry) {
+        let rgba_at = |i: usize| {
+            let [r, g, b, a] = self.colormap.color_at(self.values[i]);
+            egui::Rgba::from(Color32::from_rgba_unmultiplied(r, g, b, a)).to_array()
+        };
+        for [i0, i1, i2] in
+            expand_triangles(self.mode, self.positions.len(), self.indices.as_deref())
+        {
+            let p = [self.positions[i0], self.positions[i1], self.positions[i2]];
+            let normals = match &self.normals {
+                Some(ns) => [ns[i0], ns[i1], ns[i2]],
+                None => [flat_normal(p[0], p[1], p[2]); 3],
+            };
+            geometry.add_mesh_triangle_rgba(p, [rgba_at(i0), rgba_at(i1), rgba_at(i2)], normals);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +612,187 @@ mod tests {
         let (min, max) = s.bounds().expect("non-empty bounds");
         assert_eq!((min.x, min.y, min.z), (-1.0, -2.0, -1.0));
         assert_eq!((max.x, max.y, max.z), (2.0, 3.0, 4.0));
+    }
+
+    // A flat, camera-facing triangle in the z=0 plane (CCW seen from +z).
+    fn flat_tri() -> [[f32; 3]; 3] {
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    }
+
+    #[test]
+    fn mesh_triangles_mode_emits_one_triangle_with_flat_normal() {
+        let [a, b, c] = flat_tri();
+        let mut m = Mesh3D::new();
+        assert!(m.set_data(
+            &[a, b, c],
+            MeshColor::Uniform(Color32::from_rgb(255, 0, 0)),
+            None,
+            MeshDrawMode::Triangles,
+            None,
+        ));
+
+        let mut g = Scene3dGeometry::new();
+        m.append_to(&mut g);
+
+        // Three mesh vertices (one triangle).
+        assert_eq!(g.meshes.len(), 3);
+        // No normals supplied → geometric flat normal (b−a)×(c−a) = +z, unit.
+        for v in &g.meshes {
+            assert_eq!(v.normal, [0.0, 0.0, 1.0]);
+            assert_eq!(
+                v.color,
+                egui::Rgba::from(Color32::from_rgb(255, 0, 0)).to_array()
+            );
+        }
+        assert_eq!(g.meshes[1].pos, b);
+    }
+
+    #[test]
+    fn mesh_set_data_rejects_inconsistent_attributes() {
+        let [a, b, c] = flat_tri();
+        let mut m = Mesh3D::new();
+        // Per-vertex colours shorter than the vertices.
+        assert!(!m.set_data(
+            &[a, b, c],
+            MeshColor::PerVertex(vec![Color32::RED, Color32::GREEN]),
+            None,
+            MeshDrawMode::Triangles,
+            None,
+        ));
+        // Normals not matching the vertex count.
+        assert!(!m.set_data(
+            &[a, b, c],
+            MeshColor::Uniform(Color32::WHITE),
+            Some(&[[0.0, 0.0, 1.0]]),
+            MeshDrawMode::Triangles,
+            None,
+        ));
+        // Index out of range.
+        assert!(!m.set_data(
+            &[a, b, c],
+            MeshColor::Uniform(Color32::WHITE),
+            None,
+            MeshDrawMode::Triangles,
+            Some(&[0, 1, 3]),
+        ));
+        assert!(m.is_empty(), "rejected data must not be partially stored");
+        // A consistent per-vertex set is accepted.
+        assert!(m.set_data(
+            &[a, b, c],
+            MeshColor::PerVertex(vec![Color32::RED, Color32::GREEN, Color32::BLUE]),
+            Some(&[[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+            MeshDrawMode::Triangles,
+            Some(&[0, 1, 2]),
+        ));
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn mesh_strip_and_fan_expand_to_triangle_lists() {
+        // Four collinear-in-index vertices; strip → 2 tris, fan → 2 tris.
+        let p = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+
+        let mut strip = Scene3dGeometry::new();
+        Mesh3D::new()
+            .with_data(
+                &p,
+                MeshColor::Uniform(Color32::WHITE),
+                None,
+                MeshDrawMode::TriangleStrip,
+                None,
+            )
+            .append_to(&mut strip);
+        // strip over 4 verts → (0,1,2),(1,2,3) → 2 triangles → 6 vertices.
+        assert_eq!(strip.meshes.len(), 6);
+        // Second triangle is vertices 1,2,3.
+        assert_eq!(strip.meshes[3].pos, p[1]);
+        assert_eq!(strip.meshes[4].pos, p[2]);
+        assert_eq!(strip.meshes[5].pos, p[3]);
+
+        let mut fan = Scene3dGeometry::new();
+        Mesh3D::new()
+            .with_data(
+                &p,
+                MeshColor::Uniform(Color32::WHITE),
+                None,
+                MeshDrawMode::Fan,
+                None,
+            )
+            .append_to(&mut fan);
+        // fan over 4 verts → (0,1,2),(0,2,3) → 2 triangles → 6 vertices.
+        assert_eq!(fan.meshes.len(), 6);
+        assert_eq!(fan.meshes[3].pos, p[0]); // shared apex
+        assert_eq!(fan.meshes[4].pos, p[2]);
+        assert_eq!(fan.meshes[5].pos, p[3]);
+    }
+
+    #[test]
+    fn mesh_indices_unindex_before_expansion() {
+        // Two stored vertices reused by indices to form one triangle.
+        let p = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let mut g = Scene3dGeometry::new();
+        Mesh3D::new()
+            .with_data(
+                &p,
+                MeshColor::Uniform(Color32::WHITE),
+                None,
+                MeshDrawMode::Triangles,
+                Some(&[0, 1, 0]),
+            )
+            .append_to(&mut g);
+        assert_eq!(g.meshes.len(), 3);
+        assert_eq!(g.meshes[0].pos, p[0]);
+        assert_eq!(g.meshes[1].pos, p[1]);
+        assert_eq!(g.meshes[2].pos, p[0]);
+    }
+
+    #[test]
+    fn colormap_mesh_colours_vertices_through_the_colormap() {
+        let [a, b, c] = flat_tri();
+        let cmap = Colormap::new(ColormapName::Viridis, 0.0, 2.0);
+        let mut m = ColormapMesh3D::new().with_colormap(cmap.clone());
+        assert!(m.set_data(
+            &[a, b, c],
+            &[0.0, 1.0, 2.0],
+            None,
+            MeshDrawMode::Triangles,
+            None
+        ));
+
+        let mut g = Scene3dGeometry::new();
+        m.append_to(&mut g);
+        assert_eq!(g.meshes.len(), 3);
+
+        let expect = |v: f64| {
+            let [r, gg, bb, al] = cmap.color_at(v);
+            egui::Rgba::from(Color32::from_rgba_unmultiplied(r, gg, bb, al)).to_array()
+        };
+        assert_eq!(g.meshes[0].color, expect(0.0));
+        assert_eq!(g.meshes[2].color, expect(2.0));
+        assert_ne!(g.meshes[0].color, g.meshes[2].color);
+        // No normals → flat +z normal for the camera-facing triangle.
+        assert_eq!(g.meshes[0].normal, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn colormap_mesh_rejects_value_length_mismatch_and_autoscales() {
+        let [a, b, c] = flat_tri();
+        let mut m = ColormapMesh3D::new();
+        assert!(!m.set_data(&[a, b, c], &[0.0, 1.0], None, MeshDrawMode::Triangles, None));
+        assert!(m.is_empty());
+        assert!(m.set_data(
+            &[a, b, c],
+            &[-3.0, 0.0, 7.0],
+            None,
+            MeshDrawMode::Triangles,
+            None
+        ));
+        let (vmin, vmax) = m.autoscale_colormap(AutoscaleMode::MinMax);
+        assert_eq!((vmin, vmax), (-3.0, 7.0));
     }
 }
