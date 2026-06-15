@@ -33,6 +33,7 @@ pub mod scalar_field_properties;
 pub mod scalar_field_view;
 pub mod scatter_mask;
 pub mod scene_widget;
+pub mod scene_window;
 pub mod stats_widget;
 pub mod sync;
 pub mod tool_buttons;
