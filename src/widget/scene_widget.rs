@@ -19,6 +19,7 @@ use egui_wgpu::RenderState;
 use crate::core::scene3d::camera::{Camera, CameraDirection, CameraFace};
 use crate::core::scene3d::interaction::{OrbitDrag, PanDrag, window_to_ndc};
 use crate::core::scene3d::mat4::Vec3;
+use crate::core::scene3d::pick::{picking_segment, segment_triangles_intersection};
 use crate::render::gpu_scene3d::{
     Scene3dGeometry, Scene3dId, install_scene3d, paint_scene3d, set_scene3d, snapshot_scene3d,
 };
@@ -256,6 +257,97 @@ impl SceneWidget {
             size_px,
         )
     }
+
+    /// Pick the scene geometry under a click at normalized device coordinates
+    /// `ndc` (`x, y ∈ [-1, 1]`; convert a widget-local pixel with
+    /// [`window_to_ndc`]). Returns the nearest hit (smallest NDC depth) among the
+    /// data surfaces and scatter points, or `None` if the ray misses everything
+    /// or the camera is singular.
+    ///
+    /// Port of silx `SceneWidget.pickItems` reduced to the data the
+    /// [`ScalarFieldView`](crate::ScalarFieldView) flagship draws: it builds the
+    /// picking segment ([`picking_segment`]) and intersects it with the data
+    /// triangles ([`segment_triangles_intersection`] over
+    /// `Scene3dGeometry::pick_triangles` — flat fills, lit meshes, iso-surfaces);
+    /// scatter points are hit-tested by projecting each to NDC and keeping those
+    /// within [`PICK_POINT_TOLERANCE_PX`] of the click. The bounding-box / axes
+    /// chrome is excluded (it is not part of the data content), matching silx
+    /// picking scene items rather than the frame.
+    ///
+    /// Uses the camera's current viewport size, so call after [`SceneWidget::show`]
+    /// has run this frame (it syncs the camera aspect to the rendered rect).
+    pub fn pick(&self, ndc: (f32, f32)) -> Option<ScenePick> {
+        let segment = picking_segment(&self.camera, ndc)?;
+        let mvp = self.camera.matrix();
+
+        let mut best: Option<ScenePick> = None;
+        let mut consider = |cand: ScenePick| {
+            if best.is_none_or(|b| cand.ndc_depth < b.ndc_depth) {
+                best = Some(cand);
+            }
+        };
+
+        // Surfaces: the nearest triangle hit (the list is depth-sorted).
+        let triangles = self.content.pick_triangles();
+        if let Some(hit) = segment_triangles_intersection(segment, &triangles).first() {
+            let position = hit.position(segment.0, segment.1);
+            let ndc_depth = mvp.transform_point(position, true).z;
+            consider(ScenePick {
+                position,
+                ndc_depth,
+                kind: ScenePickKind::Surface,
+            });
+        }
+
+        // Scatter points: nearest within the click tolerance, in front of the camera.
+        let (vw, vh) = self.camera.size();
+        let radius_ndc_x = 2.0 * PICK_POINT_TOLERANCE_PX / vw.max(1.0);
+        let radius_ndc_y = 2.0 * PICK_POINT_TOLERANCE_PX / vh.max(1.0);
+        for (index, world) in self.content.pick_points().into_iter().enumerate() {
+            let p = mvp.transform_point(world, true);
+            if !(-1.0..=1.0).contains(&p.z) {
+                continue; // outside the depth frustum (behind camera / clipped)
+            }
+            let dx = (p.x - ndc.0) / radius_ndc_x;
+            let dy = (p.y - ndc.1) / radius_ndc_y;
+            if dx * dx + dy * dy <= 1.0 {
+                consider(ScenePick {
+                    position: world,
+                    ndc_depth: p.z,
+                    kind: ScenePickKind::Point { index },
+                });
+            }
+        }
+
+        best
+    }
+}
+
+/// Pixel tolerance for scatter-point picking: a point is pickable when it
+/// projects within this many pixels of the click. silx tests against the
+/// marker footprint; a fixed tolerance is a documented simplification (the
+/// per-point marker size is not threaded into the pick path).
+pub const PICK_POINT_TOLERANCE_PX: f32 = 7.0;
+
+/// What [`SceneWidget::pick`] hit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScenePickKind {
+    /// A data surface (a triangle of a fill, lit mesh, or iso-surface).
+    Surface,
+    /// A scatter point, with its index in the points channel.
+    Point { index: usize },
+}
+
+/// The nearest scene hit from [`SceneWidget::pick`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScenePick {
+    /// World-space position of the hit.
+    pub position: Vec3,
+    /// NDC depth `z ∈ [-1, 1]` of the hit (smaller is nearer the camera); the
+    /// key used to choose the nearest across surfaces and points.
+    pub ndc_depth: f32,
+    /// Which channel was hit.
+    pub kind: ScenePickKind,
 }
 
 /// The seven predefined viewpoints in silx's menu order, each with its silx menu

@@ -365,6 +365,40 @@ impl Scene3dGeometry {
             .extend_from_slice(&other.textured_meshes);
     }
 
+    /// World-space triangles for CPU picking, as `[v0, v1, v2]` triples: the
+    /// flat-shaded `triangles` channel followed by the lit `meshes` channel
+    /// (iso-surfaces, colormapped meshes, the cylindrical-volume primitives).
+    /// Image quads and textured meshes (the cut plane) are excluded — those are
+    /// picked as planes/volumes by the field-aware pickers, not as raw triangles.
+    /// Used by [`crate::widget::SceneWidget::pick`].
+    pub fn pick_triangles(&self) -> Vec<[Vec3; 3]> {
+        let mut out = Vec::with_capacity(self.triangles.len() / 3 + self.meshes.len() / 3);
+        for tri in self.triangles.chunks_exact(3) {
+            out.push([
+                Vec3::from_array(tri[0].pos),
+                Vec3::from_array(tri[1].pos),
+                Vec3::from_array(tri[2].pos),
+            ]);
+        }
+        for tri in self.meshes.chunks_exact(3) {
+            out.push([
+                Vec3::from_array(tri[0].pos),
+                Vec3::from_array(tri[1].pos),
+                Vec3::from_array(tri[2].pos),
+            ]);
+        }
+        out
+    }
+
+    /// World-space scatter-point positions (the `points` channel), for
+    /// threshold picking. Used by [`crate::widget::SceneWidget::pick`].
+    pub fn pick_points(&self) -> Vec<Vec3> {
+        self.points
+            .iter()
+            .map(|p| Vec3::from_array(p.pos))
+            .collect()
+    }
+
     /// Append a line segment `a→b` in one solid [`Color32`].
     pub fn add_line(&mut self, a: [f32; 3], b: [f32; 3], color: Color32) {
         let rgba = egui::Rgba::from(color).to_array();

@@ -164,7 +164,9 @@ pub use crate::widget::roi_stats_widget::{RoiStatsRow, RoiStatsWidget};
 pub use crate::widget::scalar_field_properties::ScalarFieldProperties;
 pub use crate::widget::scalar_field_view::ScalarFieldView;
 pub use crate::widget::scatter_mask::{ScatterMaskWidget, point_in_polygon};
-pub use crate::widget::scene_widget::{SceneWidget, viewpoint_menu};
+pub use crate::widget::scene_widget::{
+    PICK_POINT_TOLERANCE_PX, ScenePick, ScenePickKind, SceneWidget, viewpoint_menu,
+};
 pub use crate::widget::scene_window::SceneWindow;
 pub use crate::widget::stats_widget::{
     StatsInput, StatsWidget, UpdateMode, format_significant, format_stat,
