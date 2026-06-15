@@ -18,6 +18,7 @@ use crate::core::roi::{HandleKind, ManagedRoi, Roi, RoiInteractionMode};
 use crate::core::shape::{Line, Shape, ShapeKind, triangulate_simple_polygon};
 use crate::core::transform::{Axis, AxisSide, Scale, Transform, YAxis};
 use crate::core::triangles::Triangles;
+use crate::widget::interaction;
 
 /// Colors used to draw the chrome, derived from the active egui visuals so the
 /// chrome follows light/dark theme.
@@ -941,13 +942,30 @@ fn arc_outline(
     pts
 }
 
-/// Draw the handle glyphs of a ROI in `color`, one per [`RoiHandle`] from
-/// [`Roi::handles`]. Mirrors the silx handle markers (`items/_roi_base.py`
-/// `addHandle`/`addTranslateHandle`): a translate or center handle is a `+`
-/// (silx `"+"`), every other handle (shape vertex / band edge) is a small filled
-/// square (silx default `"s"`).
-fn draw_roi_handles(painter: &Painter, t: &Transform, roi: &Roi, color: Color32) {
-    for handle in roi.handles() {
+/// Draw the handle glyphs of a ROI in `color`, one per [`RoiHandle`]. Mirrors
+/// the silx handle markers (`items/_roi_base.py` `addHandle`/`addTranslateHandle`):
+/// a translate or center handle is a `+` (silx `"+"`), every other handle (shape
+/// vertex / band edge) is a small filled square (silx default `"s"`).
+///
+/// In silx **ThreePointMode** an Arc shows its three control-point handles
+/// instead of the four polar handles ([`RoiInteractionMode::ArcThreePoint`]); the
+/// handle set is otherwise [`Roi::handles`].
+fn draw_roi_handles(
+    painter: &Painter,
+    t: &Transform,
+    roi: &Roi,
+    color: Color32,
+    mode: Option<RoiInteractionMode>,
+) {
+    let three_point = mode == Some(RoiInteractionMode::ArcThreePoint);
+    let handles = match three_point
+        .then(|| interaction::arc_three_point_handles(roi))
+        .flatten()
+    {
+        Some(h) => h.to_vec(),
+        None => roi.handles(),
+    };
+    for handle in handles {
         let p = t.data_to_pixel(handle.pos[0], handle.pos[1]);
         match handle.kind {
             HandleKind::Translate | HandleKind::Center => {
@@ -1224,7 +1242,7 @@ pub fn draw_roi(
     // A PointROI's own symbol doubles as its handle (silx `PointROI` is a single
     // marker, not a `HandleBasedROI`), so it is not drawn over again.
     if !matches!(roi, Roi::Point { .. }) {
-        draw_roi_handles(painter, t, roi, color);
+        draw_roi_handles(painter, t, roi, color, mode);
     }
 
     if let (Some(name), Some(anchor)) = (appearance.name.filter(|s| !s.is_empty()), label_anchor) {

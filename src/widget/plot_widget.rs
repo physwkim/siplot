@@ -1109,8 +1109,12 @@ fn apply_interaction(
             {
                 let cur_data = view.pixel_to_data(cur);
                 match rd.grab {
-                    // Edge resize: move the grabbed handle to the absolute cursor.
-                    RoiGrab::Edge(edge) => managed.roi.move_edge(edge, cur_data),
+                    // Edge resize: move the grabbed handle to the absolute
+                    // cursor, mode-gated (ThreePointMode Arc reshapes via the
+                    // circumcircle; everything else uses the polar `move_edge`).
+                    RoiGrab::Edge(edge) => {
+                        interaction::roi_apply_edge_drag(managed, edge, cur_data)
+                    }
                     // Whole-ROI translate: shift by this frame's delta, then
                     // advance the carried anchor so deltas accumulate (silx body
                     // drag).

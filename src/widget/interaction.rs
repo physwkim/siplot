@@ -12,7 +12,7 @@
 use egui::{Pos2, Rect, Vec2};
 
 use crate::core::marker::{Marker, MarkerConstraint, MarkerKind};
-use crate::core::roi::{ManagedRoi, Roi, RoiEdge};
+use crate::core::roi::{HandleKind, ManagedRoi, Roi, RoiEdge, RoiHandle, RoiInteractionMode};
 use crate::core::transform::{Scale, Transform};
 
 /// Data limits `(x_min, x_max, y_min, y_max)`.
@@ -1520,6 +1520,82 @@ pub fn arc_three_point_drag(arc: &Roi, point: ArcControlPoint, to: (f64, f64)) -
     arc_from_three_points(start, mid, end, weight)
 }
 
+/// Map a handle index (`0/1/2`) to its ThreePointMode control point in the
+/// `(start, mid, end)` order [`arc_control_points`] / [`arc_three_point_handles`]
+/// expose. Any other index clamps to `End`, matching the three-handle layout.
+fn arc_control_point_for(index: usize) -> ArcControlPoint {
+    match index {
+        0 => ArcControlPoint::Start,
+        1 => ArcControlPoint::Mid,
+        _ => ArcControlPoint::End,
+    }
+}
+
+/// True when this managed ROI edits in silx **ThreePointMode**: an [`Roi::Arc`]
+/// whose interaction mode is [`RoiInteractionMode::ArcThreePoint`]. In that mode
+/// the ROI's draggable handles are the three control points (not the four polar
+/// handles) and a handle drag reshapes via [`arc_three_point_drag`] (re-fitting
+/// the circumcircle) instead of the polar [`Roi::move_edge`].
+#[must_use]
+pub fn arc_is_three_point(managed: &ManagedRoi) -> bool {
+    matches!(managed.roi, Roi::Arc { .. })
+        && managed.interaction_mode() == Some(RoiInteractionMode::ArcThreePoint)
+}
+
+/// The three ThreePointMode handles of an arc as [`RoiHandle`]s (data-space
+/// vertex handles at the `start`/`mid`/`end` control points, in that order), for
+/// drawing and hit-testing. `None` for a non-arc.
+#[must_use]
+pub fn arc_three_point_handles(arc: &Roi) -> Option<[RoiHandle; 3]> {
+    let (start, mid, end) = arc_control_points(arc)?;
+    let h = |p: (f64, f64)| RoiHandle {
+        pos: [p.0, p.1],
+        kind: HandleKind::Vertex,
+    };
+    Some([h(start), h(mid), h(end)])
+}
+
+/// Index of the ThreePointMode control-point handle within `grab_px` of
+/// `cursor` (screen pixels), as a [`RoiEdge::Vertex`] (`0=start, 1=mid, 2=end`),
+/// or `None`. The closest handle within range wins, mirroring
+/// [`Roi::edge_at`]'s nearest-handle rule. Pure (geometry only).
+#[must_use]
+pub fn arc_three_point_grab(
+    arc: &Roi,
+    transform: &Transform,
+    cursor: Pos2,
+    grab_px: f32,
+) -> Option<RoiEdge> {
+    let handles = arc_three_point_handles(arc)?;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, handle) in handles.iter().enumerate() {
+        let p = transform.data_to_pixel(handle.pos[0], handle.pos[1]);
+        let dist = cursor.distance(p);
+        if dist <= grab_px && best.is_none_or(|(_, d)| dist < d) {
+            best = Some((i, dist));
+        }
+    }
+    best.map(|(i, _)| RoiEdge::Vertex(i))
+}
+
+/// Apply a handle drag to a managed ROI, mode-gated (silx
+/// `HandleBasedROI.handleDragUpdated` dispatched by `InteractionModeMixIn`): a
+/// ThreePointMode Arc ([`arc_is_three_point`]) reshapes via
+/// [`arc_three_point_drag`] — the grabbed `Vertex(i)` is control point
+/// start/mid/end — re-fitting the circumcircle; every other ROI and mode (Arc
+/// PolarMode, Band, Rect, …) applies the polar/default [`Roi::move_edge`]. This
+/// is the single owner of "how a grabbed handle edits the shape", so the live
+/// drag path never has to branch on the mode itself.
+pub fn roi_apply_edge_drag(managed: &mut ManagedRoi, edge: RoiEdge, to: (f64, f64)) {
+    if arc_is_three_point(managed) {
+        if let RoiEdge::Vertex(i) = edge {
+            managed.roi = arc_three_point_drag(&managed.roi, arc_control_point_for(i), to);
+        }
+    } else {
+        managed.roi.move_edge(edge, to);
+    }
+}
+
 /// Center and radius of the circle through three points, porting silx
 /// `ArcROI._circleEquation` (`items/_arc_roi.py:986-996`). silx uses complex
 /// arithmetic:
@@ -1584,7 +1660,14 @@ pub fn roi_grab_at(
     let data = transform.pixel_to_data(cursor);
     for (i, managed) in rois.iter().enumerate().rev() {
         let roi = &managed.roi;
-        if let Some(edge) = roi.edge_at(transform, cursor, grab_px) {
+        // ThreePointMode Arc: only the three control-point handles are grabbable
+        // (not the polar handles). PolarMode and every other ROI use `edge_at`.
+        let edge = if arc_is_three_point(managed) {
+            arc_three_point_grab(roi, transform, cursor, grab_px)
+        } else {
+            roi.edge_at(transform, cursor, grab_px)
+        };
+        if let Some(edge) = edge {
             return Some((i, RoiGrab::Edge(edge)));
         }
         if roi.contains(data) {
@@ -3154,6 +3237,119 @@ mod tests {
         assert_eq!(
             roi_grab_at(&rois, &t, pos2(50.0, 50.0), 4.0),
             Some((1, RoiGrab::Translate))
+        );
+    }
+
+    // --- Arc ThreePointMode vs PolarMode handle dispatch (rows 1180/1184) ---
+
+    /// A managed Arc centered at (5,5), central radius 2 (inner 1, outer 3),
+    /// sweeping 0..π — control points (7,5)/(5,7)/(3,5), polar weight handle at
+    /// (5,8). `new` seeds the silx default ThreePointMode; `mode` overrides it.
+    fn managed_arc(mode: RoiInteractionMode) -> ManagedRoi {
+        let mut m = ManagedRoi::new(Roi::Arc {
+            center: (5.0, 5.0),
+            inner_radius: 1.0,
+            outer_radius: 3.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::PI,
+        });
+        assert!(m.set_interaction_mode(mode));
+        m
+    }
+
+    #[test]
+    fn arc_is_three_point_only_for_threepoint_arc() {
+        assert!(arc_is_three_point(&managed_arc(
+            RoiInteractionMode::ArcThreePoint
+        )));
+        assert!(!arc_is_three_point(&managed_arc(
+            RoiInteractionMode::ArcPolar
+        )));
+        assert!(!arc_is_three_point(&ManagedRoi::new(Roi::Rect {
+            x: (0.0, 1.0),
+            y: (0.0, 1.0),
+        })));
+    }
+
+    #[test]
+    fn arc_three_point_handles_are_the_control_points() {
+        let arc = Roi::Arc {
+            center: (5.0, 5.0),
+            inner_radius: 1.0,
+            outer_radius: 3.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::PI,
+        };
+        let h = arc_three_point_handles(&arc).expect("arc has three-point handles");
+        assert!(h.iter().all(|h| h.kind == HandleKind::Vertex));
+        let near =
+            |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+        assert!(near(h[0].pos, [7.0, 5.0]), "start {:?}", h[0].pos);
+        assert!(near(h[1].pos, [5.0, 7.0]), "mid {:?}", h[1].pos);
+        assert!(near(h[2].pos, [3.0, 5.0]), "end {:?}", h[2].pos);
+        assert!(
+            arc_three_point_handles(&Roi::Rect {
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn roi_grab_at_threepoint_grabs_control_points_polar_grabs_polar_handles() {
+        let t = pick_transform();
+        // Mid control point at data (5,7) -> pixel (50,30).
+        let tp = vec![managed_arc(RoiInteractionMode::ArcThreePoint)];
+        assert_eq!(
+            roi_grab_at(&tp, &t, pos2(50.0, 30.0), 4.0),
+            Some((0, RoiGrab::Edge(RoiEdge::Vertex(1)))),
+            "ThreePointMode grabs the mid control point"
+        );
+        // The polar weight handle (outer radius, mid angle) at data (5,8) ->
+        // pixel (50,20) is NOT a ThreePoint handle: the cursor falls through to
+        // a body translate.
+        assert_eq!(
+            roi_grab_at(&tp, &t, pos2(50.0, 20.0), 4.0),
+            Some((0, RoiGrab::Translate)),
+            "ThreePointMode does not expose the polar weight handle"
+        );
+        // PolarMode grabs the weight handle at that same pixel.
+        let polar = vec![managed_arc(RoiInteractionMode::ArcPolar)];
+        assert_eq!(
+            roi_grab_at(&polar, &t, pos2(50.0, 20.0), 4.0),
+            Some((0, RoiGrab::Edge(RoiEdge::Vertex(1)))),
+            "PolarMode grabs the polar weight handle"
+        );
+    }
+
+    #[test]
+    fn roi_apply_edge_drag_dispatches_on_interaction_mode() {
+        let to = (5.0, 9.0); // drag the grabbed vertex upward
+
+        // ThreePointMode: Vertex(1) is the mid control point; the edit re-fits
+        // the circumcircle (matching `arc_three_point_drag`).
+        let mut tp = managed_arc(RoiInteractionMode::ArcThreePoint);
+        let base = tp.roi.clone();
+        roi_apply_edge_drag(&mut tp, RoiEdge::Vertex(1), to);
+        assert_eq!(
+            tp.roi,
+            arc_three_point_drag(&base, ArcControlPoint::Mid, to),
+            "ThreePointMode reshapes via the circumcircle"
+        );
+
+        // PolarMode: Vertex(1) is the weight handle; the edit applies the polar
+        // `move_edge` (changes the band thickness, fixed center).
+        let mut polar = managed_arc(RoiInteractionMode::ArcPolar);
+        let mut expected = polar.roi.clone();
+        roi_apply_edge_drag(&mut polar, RoiEdge::Vertex(1), to);
+        expected.move_edge(RoiEdge::Vertex(1), to);
+        assert_eq!(polar.roi, expected, "PolarMode edits via move_edge");
+
+        // The same grab + drag yields different geometry under the two modes.
+        assert_ne!(
+            tp.roi, polar.roi,
+            "the interaction mode gates which edit a handle drag performs"
         );
     }
 }
