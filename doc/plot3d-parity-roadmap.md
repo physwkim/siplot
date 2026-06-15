@@ -65,7 +65,7 @@ Legend: ✅ done · ◐ partial · ☐ not started
 |---|---|---|---|
 | P1.1 | Scatter3D (points / spheres) | items/scatter.py, primitives Points/ColorPoints/Spheres | ✅ |
 | P1.2 | Mesh / Box / Cylinder / Hexagon | items/mesh.py, primitives Mesh3D/ColormapMesh3D + Geometry | ✅ |
-| P1.3 | 3D ImageData / ImageRgba / HeightMap | items/image.py, items/_pick.py, primitives ImageData/ImageRgba | ☐ |
+| P1.3 | 3D ImageData / ImageRgba / HeightMap | items/image.py, items/_pick.py, primitives ImageData/ImageRgba | ✅ |
 
 P1.1 notes: `Scatter3D` ports silx's `Points`/`_Points` faithfully — billboarded,
 pixel-sized markers (all eight `_Points` symbols) via `scene3d_points.wgsl`.
@@ -75,6 +75,19 @@ texture (points are few vs image rasters); per-point picking (`_pickFull`) is
 deferred with the rest of GPU picking (see Architecture); the `Spheres` primitive
 (shaded 3D spheres — not used by silx `Scatter3D`, which renders `Points`) is not
 yet ported.
+
+P1.3 notes: `ImageData3D`/`ImageRgba3D` render a 2D image as one textured quad
+(`scene3d_image.wgsl` + `Scene3dImageLayer`, an `Rgba8Unorm` texture per layer),
+matching silx's single-quad-per-image approach (not per-pixel geometry); image
+colour is premultiplied-linear so it round-trips the blit, with nearest/linear
+`InterpolationMixIn`. `ImageData3D` colormaps on the CPU (as P1.1/P1.2);
+`ImageRgba3D` takes `Color32` pixels directly. `HeightMapData`/`HeightMapRGBA`
+render the height field as size-1 square points — exactly how silx renders them
+(`primitives.Points`, marker `'s'`) — reusing the point pipeline; mismatched
+colour/height sizes are nearest-neighbour resampled. Documented divergence: silx's
+resample indexes the column axis by the field *height* (image.py:318/390, a bug on
+non-square data); this port uses *width* (agrees for equal-sized data). Image
+`_pickFull` (plane intersect / NDC point picking) deferred with GPU picking.
 
 P1.2 notes: a `scene3d_mesh.wgsl` pipeline shades lit triangles with silx's
 camera-fixed headlight (`DirectionalLight` defaults: ambient 0.3, diffuse 0.7, no
