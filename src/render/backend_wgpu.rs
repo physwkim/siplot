@@ -970,7 +970,9 @@ fn marker_from_spec(spec: MarkerSpec<'_>) -> Marker {
     .with_color(spec.color)
     .with_line_style(spec.line_style)
     .with_line_width(spec.line_width)
-    .with_y_axis(spec.y_axis);
+    .with_y_axis(spec.y_axis)
+    .with_draggable(spec.is_draggable)
+    .with_constraint(spec.constraint);
     if let Some(text) = spec.text {
         marker = marker.with_text(text);
     }
@@ -1490,7 +1492,7 @@ mod tests {
 
     use crate::core::colormap::Colormap;
     use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
-    use crate::core::marker::{MarkerKind, MarkerSymbol};
+    use crate::core::marker::{MarkerConstraint, MarkerKind, MarkerSymbol};
     use crate::render::gpu_image::{ImagePixels, InterpolationMode};
 
     #[test]
@@ -1613,6 +1615,8 @@ mod tests {
             line_width: 3.0,
             y_axis: YAxis::Right,
             bg_color: Some(Color32::BLACK),
+            is_draggable: true,
+            constraint: MarkerConstraint::Vertical,
         });
 
         assert_eq!(
@@ -1630,6 +1634,8 @@ mod tests {
         assert_eq!(marker.line_style, LineStyle::Dotted);
         assert_eq!(marker.line_width, 3.0);
         assert_eq!(marker.y_axis, YAxis::Right);
+        assert!(marker.is_draggable);
+        assert_eq!(marker.constraint, MarkerConstraint::Vertical);
     }
 
     #[test]

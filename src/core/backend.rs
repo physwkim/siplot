@@ -12,7 +12,7 @@ use egui::{Color32, Pos2, Rect};
 
 use crate::core::colormap::Colormap;
 use crate::core::items::{Baseline, ErrorBars, LineStyle, Symbol};
-use crate::core::marker::MarkerSymbol;
+use crate::core::marker::{MarkerConstraint, MarkerSymbol};
 use crate::core::shape::ShapeKind;
 use crate::core::transform::{Margins, YAxis};
 use crate::render::gpu_image::{AggregationMode, InterpolationMode};
@@ -197,8 +197,8 @@ pub struct ShapeSpec<'a> {
     pub gap_color: Option<Color32>,
 }
 
-/// Marker spec mirroring `BackendBase.addMarker`, excluding Qt-only font and
-/// drag-constraint details.
+/// Marker spec mirroring `BackendBase.addMarker`, excluding Qt-only font
+/// details.
 #[derive(Clone, Debug)]
 pub struct MarkerSpec<'a> {
     pub x: Option<f64>,
@@ -211,6 +211,11 @@ pub struct MarkerSpec<'a> {
     pub line_width: f32,
     pub y_axis: YAxis,
     pub bg_color: Option<Color32>,
+    /// Whether the user may drag the marker (silx `addMarker` `draggable`).
+    pub is_draggable: bool,
+    /// Drag-time position filter (silx `addMarker` `constraint`, the
+    /// `'horizontal'` / `'vertical'` presets).
+    pub constraint: MarkerConstraint,
 }
 
 /// Result of backend item picking.

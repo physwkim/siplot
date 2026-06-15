@@ -20,7 +20,7 @@ use crate::core::backend::{
 use crate::core::calibration::Calibration;
 use crate::core::colormap::{AutoscaleMode, Colormap, Normalization};
 use crate::core::items::{Baseline, LineStyle, ScalarMask, Symbol};
-use crate::core::marker::{Marker, MarkerKind, MarkerSymbol};
+use crate::core::marker::{Marker, MarkerConstraint, MarkerKind, MarkerSymbol};
 use crate::core::plot::{DataMargins, DataRange, GraphGrid, Plot, PlotId};
 use crate::core::roi::{ManagedRoi, Roi, RoiInteractionMode, RoiLineStyle};
 use crate::core::scatter_viz::{GridImage, ScatterLineProfile};
@@ -2380,6 +2380,8 @@ fn marker_spec_from_data(marker: &Marker) -> MarkerSpec<'_> {
         line_width: marker.line_width,
         y_axis: marker.y_axis,
         bg_color: marker.bgcolor,
+        is_draggable: marker.is_draggable,
+        constraint: marker.constraint,
     }
 }
 
@@ -4313,6 +4315,8 @@ impl PlotWidget {
             line_width: 1.0,
             y_axis: YAxis::Left,
             bg_color: None,
+            is_draggable: false,
+            constraint: MarkerConstraint::None,
         })
     }
 
@@ -4329,6 +4333,8 @@ impl PlotWidget {
             line_width: 1.0,
             y_axis: YAxis::Left,
             bg_color: None,
+            is_draggable: false,
+            constraint: MarkerConstraint::None,
         })
     }
 
@@ -4345,6 +4351,8 @@ impl PlotWidget {
             line_width: 1.0,
             y_axis: axis,
             bg_color: None,
+            is_draggable: false,
+            constraint: MarkerConstraint::None,
         })
     }
 
@@ -7765,6 +7773,25 @@ pub struct CompareImages {
     /// Latest pointer data position over the plot (silx status bar `self._pos`),
     /// updated each frame in [`Self::show`]; `None` before any pointer move.
     cursor: Option<[f64; 2]>,
+    /// Handle of the on-plot draggable split separator (silx `__vline`/`__hline`),
+    /// or `None` when the current mode shows no separator. silx keeps both markers
+    /// and toggles `setVisible`; siplot markers carry no visibility flag, so the
+    /// separator is recreated when its orientation must change and removed when no
+    /// split is shown.
+    separator: Option<ItemHandle>,
+    /// Orientation of the live `separator`: `true` = horizontal line (slides
+    /// vertically, [`CompareMode::SplitHorizontal`]); `false` = vertical line
+    /// ([`CompareMode::HalfHalf`]).
+    separator_horizontal: bool,
+    /// Whether the separator is mid-drag. While dragging, [`Self::show`] reads the
+    /// marker position back into `split` (silx `__separatorMoved`) and does not
+    /// reposition the marker out from under the cursor.
+    separator_dragging: bool,
+    /// Common-grid `(width, height)` of the last-built composite, used to map the
+    /// separator's data position to/from the `[0, 1]` `split` fraction without
+    /// rebuilding the pixels.
+    composite_w: u32,
+    composite_h: u32,
 }
 
 impl CompareImages {
@@ -7787,6 +7814,11 @@ impl CompareImages {
             alignment: CompareAlignment::default(),
             dirty: false,
             cursor: None,
+            separator: None,
+            separator_horizontal: false,
+            separator_dragging: false,
+            composite_w: 0,
+            composite_h: 0,
         }
     }
 
@@ -7884,12 +7916,12 @@ impl CompareImages {
                 ("B", "Show only image B", CompareMode::OnlyB),
                 (
                     "½",
-                    "Vertical split: A left / B right (drag slider)",
+                    "Vertical split: A left / B right (drag the separator or slider)",
                     CompareMode::HalfHalf,
                 ),
                 (
                     "═",
-                    "Horizontal split: A top / B bottom (drag slider)",
+                    "Horizontal split: A top / B bottom (drag the separator or slider)",
                     CompareMode::SplitHorizontal,
                 ),
                 ("A-B", "Subtract: A minus B", CompareMode::Subtract),
@@ -7967,6 +7999,8 @@ impl CompareImages {
     pub fn show(&mut self, ui: &mut egui::Ui) -> PlotResponse {
         if self.dirty && !self.data_a.is_empty() {
             let (composite, cw, ch) = self.build_composite();
+            self.composite_w = cw;
+            self.composite_h = ch;
             if let Some(handle) = self.composite_handle {
                 self.inner
                     .try_update_rgba_image(handle, cw, ch, &composite)
@@ -7977,7 +8011,12 @@ impl CompareImages {
             }
             self.dirty = false;
         }
+        // Place/reposition the on-plot draggable split separator before drawing
+        // (silx `__updateSeparators`).
+        self.sync_separator();
         let response = self.inner.show(ui);
+        // A drag of the separator updates `split` (silx `__separatorMoved`).
+        self.read_separator_drag(&response);
         // Track the cursor data position for the status bar (silx status bar's
         // `mouseMoved` -> `self._pos`); keep the last position on frames with no
         // pointer event, matching silx.
@@ -7985,6 +8024,107 @@ impl CompareImages {
             self.cursor = Some(cursor);
         }
         response
+    }
+
+    /// Ensure the on-plot split separator matches the current mode and `split`
+    /// (silx `__updateSeparators`): a draggable vertical line for
+    /// [`CompareMode::HalfHalf`], a horizontal line for
+    /// [`CompareMode::SplitHorizontal`], none for the other modes (or with no
+    /// data). The marker is recreated when its orientation must change and
+    /// repositioned to the split fraction every frame the user is *not* dragging
+    /// it, so a programmatic [`Self::set_split`] or the toolbar slider move it too.
+    fn sync_separator(&mut self) {
+        let want = if self.data_a.is_empty() {
+            None
+        } else {
+            match self.mode {
+                CompareMode::HalfHalf => Some(false),
+                CompareMode::SplitHorizontal => Some(true),
+                _ => None,
+            }
+        };
+
+        let Some(horizontal) = want else {
+            if let Some(handle) = self.separator.take() {
+                self.inner.remove(handle);
+            }
+            self.separator_dragging = false;
+            return;
+        };
+
+        // Orientation changed (mode switched between the two split modes): the
+        // marker kind is fixed at creation, so drop the old line and rebuild.
+        if self.separator.is_some() && self.separator_horizontal != horizontal {
+            if let Some(handle) = self.separator.take() {
+                self.inner.remove(handle);
+            }
+            self.separator_dragging = false;
+        }
+
+        let (x, y) = self.separator_position(horizontal);
+        match self.separator {
+            Some(handle) => {
+                if !self.separator_dragging {
+                    self.inner.set_marker_position(handle, x, y);
+                }
+            }
+            None => {
+                let marker = if horizontal {
+                    Marker::hline(y)
+                } else {
+                    Marker::vline(x)
+                }
+                .with_color(Color32::BLUE)
+                .with_draggable(true);
+                self.separator = Some(self.inner.add_marker_data(&marker));
+                self.separator_horizontal = horizontal;
+            }
+        }
+    }
+
+    /// The separator's data position for the current `split`: a vertical line sits
+    /// at data x `split * width`, a horizontal line at data y `split * height` —
+    /// the composite occupies data `[0, width] × [0, height]` (identity image
+    /// geometry), so the line lands on the composite's split column/row.
+    fn separator_position(&self, horizontal: bool) -> (f64, f64) {
+        if horizontal {
+            (0.0, self.split as f64 * self.composite_h as f64)
+        } else {
+            (self.split as f64 * self.composite_w as f64, 0.0)
+        }
+    }
+
+    /// Fold a separator drag back into `split` (silx `__plotSlot` ->
+    /// `__separatorMoved`): the dragged data position divided by the composite
+    /// extent gives the new fraction. [`Self::set_split`] clamps it to `[0, 1]`,
+    /// so a drag past the image edge collapses to a full-A / full-B view.
+    fn read_separator_drag(&mut self, response: &PlotResponse) {
+        let Some(sep) = self.separator else { return };
+        if response.marker_drag_started == Some(sep) {
+            self.separator_dragging = true;
+        }
+        if (response.marker_moved == Some(sep) || response.marker_drag_finished == Some(sep))
+            && let Some((x, y)) = self.inner.marker_position(sep)
+        {
+            let (pos, extent) = if self.separator_horizontal {
+                (y, self.composite_h)
+            } else {
+                (x, self.composite_w)
+            };
+            if extent > 0 {
+                self.set_split((pos / extent as f64) as f32);
+            }
+        }
+        if response.marker_drag_finished == Some(sep) {
+            self.separator_dragging = false;
+        }
+    }
+
+    /// Map a data position to its on-screen pixel under the inner plot's cached
+    /// transform (`None` before the first frame caches the data area). Forwards to
+    /// the inner [`PlotWidget`]; useful for hit-testing the draggable separator.
+    pub fn data_to_pixel(&self, x: f64, y: f64, axis: YAxis) -> Option<egui::Pos2> {
+        self.inner.data_to_pixel(x, y, axis)
     }
 
     /// The raw A and B pixel values under data position `(x, y)`, mirroring silx
