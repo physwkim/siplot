@@ -16,7 +16,7 @@
 use egui::{Color32, PointerButton, Pos2, Response, Sense, Ui};
 use egui_wgpu::RenderState;
 
-use crate::core::scene3d::camera::{Camera, CameraFace};
+use crate::core::scene3d::camera::{Camera, CameraDirection, CameraFace};
 use crate::core::scene3d::interaction::{OrbitDrag, PanDrag, window_to_ndc};
 use crate::core::scene3d::mat4::Vec3;
 use crate::render::gpu_scene3d::{
@@ -136,6 +136,30 @@ impl SceneWidget {
         self.camera.adjust_depth_extent(self.bounds);
     }
 
+    /// Set the camera to one of the predefined viewpoints (front/back/left/
+    /// right/top/bottom/side) and re-frame the scene. Port of silx
+    /// `_SetViewpointAction`: `camera.extrinsic.reset(face)` followed by
+    /// `centerScene()`.
+    pub fn set_viewpoint(&mut self, face: CameraFace) {
+        self.camera.extrinsic.reset(face);
+        self.camera.reset_camera(self.bounds);
+        self.camera.adjust_depth_extent(self.bounds);
+    }
+
+    /// Orbit the scene about its centre around the vertical axis by
+    /// `angle_degrees` (positive = the silx "left" orbit direction). Port of
+    /// silx `RotateViewpoint`'s per-frame `viewport.orbitCamera("left", angle)`;
+    /// the caller drives the animation (e.g. `angle = deg_per_sec * dt` each
+    /// frame, requesting a repaint). The depth frustum is re-adjusted so the
+    /// scene stays clipped correctly.
+    pub fn rotate_scene(&mut self, angle_degrees: f32) {
+        let center = self.center();
+        self.camera
+            .extrinsic
+            .orbit(CameraDirection::Left, center, angle_degrees);
+        self.camera.adjust_depth_extent(self.bounds);
+    }
+
     /// Build the combined geometry (chrome + content) and upload it for this
     /// scene id.
     fn upload(&self, render_state: &RenderState) {
@@ -217,4 +241,36 @@ impl SceneWidget {
         paint_scene3d(ui, rect, self.id, &self.camera, self.background);
         response
     }
+}
+
+/// The seven predefined viewpoints in silx's menu order, each with its silx menu
+/// label and tooltip (`actions/viewpoint.py`).
+const VIEWPOINT_PRESETS: [(CameraFace, &str, &str); 7] = [
+    (CameraFace::Front, "Front", "View along the -Z axis"),
+    (CameraFace::Back, "Back", "View along the +Z axis"),
+    (CameraFace::Top, "Top", "View along the -Y axis"),
+    (CameraFace::Bottom, "Bottom", "View along the +Y axis"),
+    (CameraFace::Right, "Right", "View along the -X axis"),
+    (CameraFace::Left, "Left", "View along the +X axis"),
+    (CameraFace::Side, "Side", "Side view"),
+];
+
+/// Draw a viewpoint drop-down menu button (port of silx
+/// `tools.ViewpointTools.ViewpointToolButton`): a `View` button whose menu sets
+/// one of the seven predefined viewpoints on `scene`. Returns the chosen
+/// [`CameraFace`] when a preset is selected this frame, otherwise `None`.
+pub fn viewpoint_menu(ui: &mut Ui, scene: &mut SceneWidget) -> Option<CameraFace> {
+    let mut chosen = None;
+    ui.menu_button("View", |ui| {
+        for (face, label, tip) in VIEWPOINT_PRESETS {
+            if ui.button(label).on_hover_text(tip).clicked() {
+                scene.set_viewpoint(face);
+                chosen = Some(face);
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Reset the viewpoint to a defined position");
+    chosen
 }

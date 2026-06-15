@@ -180,9 +180,26 @@ uses the baked-in viewport defaults (as P1.2).
 
 | Wave | Item | silx source | Status |
 |---|---|---|---|
-| P3.1 | Viewpoint presets + PositionInfo + GroupProperties | actions/viewpoint.py, tools/* | ☐ |
-| P3.2 | 3D colorbar + egui parameter panel | tools/GroupProperties.py, _model/* (→ egui) | ☐ |
+| P3.1 | Viewpoint presets (+ PositionInfo deferred-with-picking; GroupProperties → P3.2) | actions/viewpoint.py, tools/ViewpointTools.py | ◐ |
+| P3.2 | 3D colorbar + egui parameter panel (+ GroupProperties) | tools/GroupProperties.py, _model/* (→ egui) | ☐ |
 | P3.3 | SceneWindow composition + io snapshot + roadmap reconcile | SceneWindow.py, actions/io.py | ☐ |
+
+P3.1 notes: ports silx's **viewpoint presets** in full. `SceneWidget::set_viewpoint`
+mirrors `actions/viewpoint.py._SetViewpointAction` — `camera.extrinsic.reset(face)`
+then `centerScene()` — for all seven faces (front/back/left/right/top/bottom/side,
+the existing `CameraFace`); `SceneWidget::rotate_scene(angle_degrees)` ports
+`RotateViewpoint`'s per-frame `viewport.orbitCamera("left", angle)` as a primitive
+the caller animates. `viewpoint_menu` (`widget::scene_widget`) ports
+`tools.ViewpointTools.ViewpointToolButton` — a "View" drop-down whose items invoke
+the presets, verified end-to-end through an AccessKit harness click
+(`tests/scene_viewpoint_render.rs`). **Deferred / relocated (documented, not
+dropped):** `tools.PositionInfoWidget` is built entirely on
+`SceneWidget.pickItems(x, y, …)` — 3D scene picking, which is deferred alongside
+the iso-surface `_pickFull` GPU-picking work (see P2.1 notes); it cannot be ported
+faithfully without that picker, so it stays deferred rather than stubbed with a
+non-functional readout. The `GroupPropertiesWidget` properties panel is scoped with
+the egui parameter panel in **P3.2** (its silx `tools/GroupProperties.py` +
+`_model/*` source), so P3.1 stops at the viewpoint tools.
 
 ## Verification
 
