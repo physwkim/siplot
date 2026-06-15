@@ -27,6 +27,7 @@ use egui::Color32;
 use egui_wgpu::{RenderState, wgpu};
 
 use crate::core::scene3d::camera::Camera;
+use crate::core::scene3d::mat4::Vec3;
 
 /// Scene identity key (mirrors [`crate::core::plot::PlotId`]); lets several
 /// independent 3D scenes coexist in one egui app without sharing GPU state.
@@ -129,6 +130,63 @@ impl Scene3dGeometry {
     pub fn add_triangle_rgba(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], rgba: [f32; 4]) {
         for pos in [a, b, c] {
             self.triangles.push(Scene3dVertex { pos, color: rgba });
+        }
+    }
+
+    /// Append the bounding-box wireframe + RGB axes for `bounds`, the scene's
+    /// spatial chrome. Port of silx `primitives.BoxWithAxes`: three coloured axis
+    /// lines from the min corner (X red, Y green, Z blue, each spanning the box
+    /// extent) plus the nine remaining box edges in `box_color` (the three edges
+    /// that coincide with the axes are drawn as the axes, not repeated).
+    pub fn add_bounding_box_with_axes(&mut self, bounds: (Vec3, Vec3), box_color: Color32) {
+        let (min, max) = bounds;
+        let size = max - min;
+        // Unit-cube coordinate → world (silx scales the unit `_vertices` by size
+        // and the GroupBBox transform translates them to the min corner).
+        let v = |ux: f32, uy: f32, uz: f32| {
+            [
+                min.x + size.x * ux,
+                min.y + size.y * uy,
+                min.z + size.z * uz,
+            ]
+        };
+        // The 13 vertices of silx `BoxWithAxes._vertices` (axes origin+tips, then
+        // the box corners not already covered by an axis tip).
+        let verts = [
+            v(0.0, 0.0, 0.0), // 0 axes origin
+            v(1.0, 0.0, 0.0), // 1 X tip
+            v(0.0, 0.0, 0.0), // 2 axes origin
+            v(0.0, 1.0, 0.0), // 3 Y tip
+            v(0.0, 0.0, 0.0), // 4 axes origin
+            v(0.0, 0.0, 1.0), // 5 Z tip
+            v(1.0, 0.0, 0.0), // 6 box corners, z=0
+            v(1.0, 1.0, 0.0), // 7
+            v(0.0, 1.0, 0.0), // 8
+            v(0.0, 0.0, 1.0), // 9 box corners, z=1
+            v(1.0, 0.0, 1.0), // 10
+            v(1.0, 1.0, 1.0), // 11
+            v(0.0, 1.0, 1.0), // 12
+        ];
+
+        // RGB axes (X red, Y green, Z blue).
+        self.add_line(verts[0], verts[1], Color32::from_rgb(255, 0, 0));
+        self.add_line(verts[2], verts[3], Color32::from_rgb(0, 255, 0));
+        self.add_line(verts[4], verts[5], Color32::from_rgb(0, 0, 255));
+
+        // The remaining nine box edges (silx `_lineIndices` minus the three axes).
+        const BOX_EDGES: [(usize, usize); 9] = [
+            (6, 7),
+            (7, 8),
+            (6, 10),
+            (7, 11),
+            (8, 12),
+            (9, 10),
+            (10, 11),
+            (11, 12),
+            (12, 9),
+        ];
+        for &(a, b) in &BOX_EDGES {
+            self.add_line(verts[a], verts[b], box_color);
         }
     }
 }
@@ -658,5 +716,44 @@ impl egui_wgpu::CallbackTrait for Scene3dCallback {
             render_pass.set_bind_group(0, blit_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounding_box_with_axes_has_twelve_lines_and_rgb_axes() {
+        let mut g = Scene3dGeometry::new();
+        g.add_bounding_box_with_axes(
+            (Vec3::ZERO, Vec3::new(2.0, 3.0, 4.0)),
+            Color32::from_rgb(200, 200, 200),
+        );
+
+        // 3 axes + 9 box edges = 12 lines = 24 line vertices; no triangles.
+        assert_eq!(g.lines.len(), 24);
+        assert!(g.triangles.is_empty());
+
+        // X axis: origin → (2,0,0), red.
+        assert_eq!(g.lines[0].pos, [0.0, 0.0, 0.0]);
+        assert_eq!(g.lines[1].pos, [2.0, 0.0, 0.0]);
+        assert_eq!(g.lines[0].color, egui::Rgba::from(Color32::RED).to_array());
+        // Y axis tip (0,3,0) green; Z axis tip (0,0,4) blue.
+        assert_eq!(g.lines[3].pos, [0.0, 3.0, 0.0]);
+        assert_eq!(
+            g.lines[2].color,
+            egui::Rgba::from(Color32::GREEN).to_array()
+        );
+        assert_eq!(g.lines[5].pos, [0.0, 0.0, 4.0]);
+        assert_eq!(g.lines[4].color, egui::Rgba::from(Color32::BLUE).to_array());
+
+        // Box edges carry the box color, and the far top corner (2,3,4) appears.
+        let box_rgba = egui::Rgba::from(Color32::from_rgb(200, 200, 200)).to_array();
+        assert_eq!(g.lines[6].color, box_rgba);
+        assert!(
+            g.lines.iter().any(|v| v.pos == [2.0, 3.0, 4.0]),
+            "the far corner (max) should be a box-edge endpoint"
+        );
     }
 }
