@@ -10,7 +10,9 @@ use egui::Color32;
 
 use crate::core::colormap::{AutoscaleMode, Colormap, ColormapName};
 use crate::core::scene3d::mat4::{Mat4, Vec3, mat4_rotate};
-use crate::render::gpu_scene3d::{PointMarker, Scene3dGeometry, flat_normal};
+use crate::render::gpu_scene3d::{
+    ImageInterpolation, PointMarker, Scene3dGeometry, Scene3dImageLayer, flat_normal,
+};
 
 /// silx's default plot symbol size in pixels (`_config.DEFAULT_PLOT_SYMBOL_SIZE`).
 pub const DEFAULT_SCATTER3D_SIZE: f32 = 6.0;
@@ -971,6 +973,313 @@ impl Hexagon3D {
     }
 }
 
+/// Premultiplied-linear RGBA8 for a [`Color32`] — the image-layer pixel format
+/// (same linear/premultiplied convention as the geometry colour path, so an
+/// image's sampled colour matches a triangle of the same `Color32`).
+fn premul_linear_rgba8(c: Color32) -> [u8; 4] {
+    let [r, g, b, a] = egui::Rgba::from(c).to_array();
+    [
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+        (a * 255.0).round() as u8,
+    ]
+}
+
+/// World bounds `(min, max)` of an image quad of `width × height` pixels at
+/// `origin` with per-pixel `scale`, in the `z = origin.z` plane, or `None` when
+/// empty.
+fn image_bounds(
+    width: usize,
+    height: usize,
+    origin: [f32; 3],
+    scale: [f32; 2],
+) -> Option<(Vec3, Vec3)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let min = Vec3::from_array(origin);
+    let max = Vec3::new(
+        origin[0] + width as f32 * scale[0],
+        origin[1] + height as f32 * scale[1],
+        origin[2],
+    );
+    Some((min, max))
+}
+
+/// A 2D scalar image displayed as a flat colormapped quad (silx
+/// `plot3d.items.ImageData`). The data is a row-major `width × height` array;
+/// each pixel is coloured through a [`Colormap`] (CPU [`Colormap::color_at`], as
+/// for the other colormapped 3D items) into one image-layer texture.
+#[derive(Clone, Debug)]
+pub struct ImageData3D {
+    data: Vec<f64>,
+    width: usize,
+    height: usize,
+    colormap: Colormap,
+    origin: [f32; 3],
+    scale: [f32; 2],
+    interpolation: ImageInterpolation,
+}
+
+impl Default for ImageData3D {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageData3D {
+    /// An empty image with silx defaults: viridis over `[0, 1]`, origin `(0,0,0)`,
+    /// unit pixel scale, nearest sampling.
+    pub fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            width: 0,
+            height: 0,
+            colormap: Colormap::new(ColormapName::Viridis, 0.0, 1.0),
+            origin: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0],
+            interpolation: ImageInterpolation::Nearest,
+        }
+    }
+
+    /// Set the scalar image data (silx `ImageData.setData`), row-major. Returns
+    /// `false` (unchanged) when `data.len() != width * height`.
+    pub fn set_data(&mut self, data: &[f64], width: usize, height: usize) -> bool {
+        if data.len() != width * height {
+            return false;
+        }
+        self.data = data.to_vec();
+        self.width = width;
+        self.height = height;
+        true
+    }
+
+    /// Builder form of [`set_data`](Self::set_data).
+    pub fn with_data(mut self, data: &[f64], width: usize, height: usize) -> Self {
+        self.set_data(data, width, height);
+        self
+    }
+
+    /// Set the colormap.
+    pub fn set_colormap(&mut self, colormap: Colormap) {
+        self.colormap = colormap;
+    }
+
+    /// Builder form of [`set_colormap`](Self::set_colormap).
+    pub fn with_colormap(mut self, colormap: Colormap) -> Self {
+        self.colormap = colormap;
+        self
+    }
+
+    /// Read-only access to the colormap.
+    pub fn colormap(&self) -> &Colormap {
+        &self.colormap
+    }
+
+    /// Mutable access to the colormap.
+    pub fn colormap_mut(&mut self) -> &mut Colormap {
+        &mut self.colormap
+    }
+
+    /// Fit the colormap's value range to the current data with `mode`, returning
+    /// the new `(vmin, vmax)`.
+    pub fn autoscale_colormap(&mut self, mode: AutoscaleMode) -> (f64, f64) {
+        let (vmin, vmax) = mode.range(&self.data, self.colormap.autoscale_percentiles);
+        self.colormap.vmin = vmin;
+        self.colormap.vmax = vmax;
+        (vmin, vmax)
+    }
+
+    /// Set the world position of pixel-corner `(0, 0)`.
+    pub fn set_origin(&mut self, origin: [f32; 3]) {
+        self.origin = origin;
+    }
+
+    /// Builder form of [`set_origin`](Self::set_origin).
+    pub fn with_origin(mut self, origin: [f32; 3]) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Set the world size of one pixel along x and y.
+    pub fn set_scale(&mut self, scale: [f32; 2]) {
+        self.scale = scale;
+    }
+
+    /// Builder form of [`set_scale`](Self::set_scale).
+    pub fn with_scale(mut self, scale: [f32; 2]) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Set the texture filtering.
+    pub fn set_interpolation(&mut self, interpolation: ImageInterpolation) {
+        self.interpolation = interpolation;
+    }
+
+    /// Builder form of [`set_interpolation`](Self::set_interpolation).
+    pub fn with_interpolation(mut self, interpolation: ImageInterpolation) -> Self {
+        self.interpolation = interpolation;
+        self
+    }
+
+    /// Image dimensions `(width, height)` in pixels.
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// True when there is no image data.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// World bounds `(min, max)` of the image quad, or `None` when empty.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        image_bounds(self.width, self.height, self.origin, self.scale)
+    }
+
+    /// Append this image as a colormapped layer to `geometry`.
+    pub fn append_to(&self, geometry: &mut Scene3dGeometry) {
+        if self.is_empty() {
+            return;
+        }
+        let mut pixels = Vec::with_capacity(self.data.len() * 4);
+        for &v in &self.data {
+            let [r, g, b, a] = self.colormap.color_at(v);
+            pixels.extend_from_slice(&premul_linear_rgba8(Color32::from_rgba_unmultiplied(
+                r, g, b, a,
+            )));
+        }
+        geometry.add_image_layer(Scene3dImageLayer {
+            pixels,
+            width: self.width as u32,
+            height: self.height as u32,
+            origin: self.origin,
+            scale: self.scale,
+            interpolation: self.interpolation,
+        });
+    }
+}
+
+/// A 2D RGB(A) image displayed as a flat quad (silx `plot3d.items.ImageRgba`).
+/// Pixels are given directly as [`Color32`] (row-major); no colormap.
+#[derive(Clone, Debug)]
+pub struct ImageRgba3D {
+    pixels: Vec<Color32>,
+    width: usize,
+    height: usize,
+    origin: [f32; 3],
+    scale: [f32; 2],
+    interpolation: ImageInterpolation,
+}
+
+impl Default for ImageRgba3D {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageRgba3D {
+    /// An empty RGBA image with silx defaults: origin `(0,0,0)`, unit pixel scale,
+    /// nearest sampling.
+    pub fn new() -> Self {
+        Self {
+            pixels: Vec::new(),
+            width: 0,
+            height: 0,
+            origin: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0],
+            interpolation: ImageInterpolation::Nearest,
+        }
+    }
+
+    /// Set the RGBA image data (silx `ImageRgba.setData`), row-major. Returns
+    /// `false` (unchanged) when `pixels.len() != width * height`.
+    pub fn set_data(&mut self, pixels: &[Color32], width: usize, height: usize) -> bool {
+        if pixels.len() != width * height {
+            return false;
+        }
+        self.pixels = pixels.to_vec();
+        self.width = width;
+        self.height = height;
+        true
+    }
+
+    /// Builder form of [`set_data`](Self::set_data).
+    pub fn with_data(mut self, pixels: &[Color32], width: usize, height: usize) -> Self {
+        self.set_data(pixels, width, height);
+        self
+    }
+
+    /// Set the world position of pixel-corner `(0, 0)`.
+    pub fn set_origin(&mut self, origin: [f32; 3]) {
+        self.origin = origin;
+    }
+
+    /// Builder form of [`set_origin`](Self::set_origin).
+    pub fn with_origin(mut self, origin: [f32; 3]) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Set the world size of one pixel along x and y.
+    pub fn set_scale(&mut self, scale: [f32; 2]) {
+        self.scale = scale;
+    }
+
+    /// Builder form of [`set_scale`](Self::set_scale).
+    pub fn with_scale(mut self, scale: [f32; 2]) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Set the texture filtering.
+    pub fn set_interpolation(&mut self, interpolation: ImageInterpolation) {
+        self.interpolation = interpolation;
+    }
+
+    /// Builder form of [`set_interpolation`](Self::set_interpolation).
+    pub fn with_interpolation(mut self, interpolation: ImageInterpolation) -> Self {
+        self.interpolation = interpolation;
+        self
+    }
+
+    /// Image dimensions `(width, height)` in pixels.
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// True when there is no image data.
+    pub fn is_empty(&self) -> bool {
+        self.pixels.is_empty()
+    }
+
+    /// World bounds `(min, max)` of the image quad, or `None` when empty.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        image_bounds(self.width, self.height, self.origin, self.scale)
+    }
+
+    /// Append this image as an RGBA layer to `geometry`.
+    pub fn append_to(&self, geometry: &mut Scene3dGeometry) {
+        if self.is_empty() {
+            return;
+        }
+        let mut pixels = Vec::with_capacity(self.pixels.len() * 4);
+        for &c in &self.pixels {
+            pixels.extend_from_slice(&premul_linear_rgba8(c));
+        }
+        geometry.add_image_layer(Scene3dImageLayer {
+            pixels,
+            width: self.width as u32,
+            height: self.height as u32,
+            origin: self.origin,
+            scale: self.scale,
+            interpolation: self.interpolation,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1335,5 +1644,75 @@ mod tests {
             [-2.0, -2.0, -2.0],
             [2.0, 2.0, 2.0],
         );
+    }
+
+    #[test]
+    fn image_data3d_builds_a_colormapped_layer() {
+        let cmap = Colormap::new(ColormapName::Viridis, 0.0, 3.0);
+        let mut img = ImageData3D::new().with_colormap(cmap.clone());
+        // 2×2 image, row-major.
+        assert!(img.set_data(&[0.0, 1.0, 2.0, 3.0], 2, 2));
+        assert_eq!(img.dimensions(), (2, 2));
+
+        let mut g = Scene3dGeometry::new();
+        img.append_to(&mut g);
+        assert_eq!(g.images.len(), 1);
+        let layer = &g.images[0];
+        assert_eq!((layer.width, layer.height), (2, 2));
+        assert_eq!(layer.pixels.len(), 2 * 2 * 4);
+
+        // Each pixel is the colormap lookup, premultiplied-linear.
+        let expect = |v: f64| {
+            let [r, gg, b, a] = cmap.color_at(v);
+            premul_linear_rgba8(Color32::from_rgba_unmultiplied(r, gg, b, a))
+        };
+        assert_eq!(&layer.pixels[0..4], &expect(0.0)); // (row0,col0)
+        assert_eq!(&layer.pixels[12..16], &expect(3.0)); // (row1,col1)
+        assert_ne!(&layer.pixels[0..4], &layer.pixels[12..16]);
+    }
+
+    #[test]
+    fn image_data3d_rejects_size_mismatch_and_bounds_follow_origin_scale() {
+        let mut img = ImageData3D::new();
+        assert!(!img.set_data(&[0.0, 1.0, 2.0], 2, 2));
+        assert!(img.is_empty());
+        assert!(img.bounds().is_none());
+
+        let img = ImageData3D::new()
+            .with_data(&[0.0; 6], 3, 2)
+            .with_origin([10.0, 20.0, -1.0])
+            .with_scale([2.0, 5.0]);
+        // Quad spans origin → origin + (w·sx, h·sy) at z = origin.z.
+        let (min, max) = img.bounds().expect("bounds");
+        assert_eq!((min.x, min.y, min.z), (10.0, 20.0, -1.0));
+        assert_eq!(
+            (max.x, max.y, max.z),
+            (10.0 + 3.0 * 2.0, 20.0 + 2.0 * 5.0, -1.0)
+        );
+    }
+
+    #[test]
+    fn image_rgba3d_passes_pixels_through_premultiplied() {
+        let cols = [Color32::RED, Color32::GREEN, Color32::BLUE, Color32::WHITE];
+        let mut img = ImageRgba3D::new();
+        assert!(img.set_data(&cols, 2, 2));
+
+        let mut g = Scene3dGeometry::new();
+        img.append_to(&mut g);
+        assert_eq!(g.images.len(), 1);
+        let layer = &g.images[0];
+        assert_eq!((layer.width, layer.height), (2, 2));
+        for (i, &c) in cols.iter().enumerate() {
+            assert_eq!(&layer.pixels[i * 4..i * 4 + 4], &premul_linear_rgba8(c));
+        }
+    }
+
+    #[test]
+    fn image_rgba3d_rejects_size_mismatch() {
+        let mut img = ImageRgba3D::new();
+        assert!(!img.set_data(&[Color32::RED, Color32::GREEN], 2, 2));
+        assert!(img.is_empty());
+        assert!(img.set_data(&[Color32::RED; 4], 2, 2));
+        assert_eq!(img.dimensions(), (2, 2));
     }
 }
