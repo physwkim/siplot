@@ -34,9 +34,10 @@ pub enum ShapeKind {
 /// A shape drawn over the data area (silx `BackendBase.addShape`).
 ///
 /// `fill` is honored for [`ShapeKind::Polygon`] / [`ShapeKind::Rectangle`].
-/// **Fill is convex-only**: egui's polygon fill (`Shape::convex_polygon`) is
-/// correct for rectangles and convex polygons but renders a concave polygon's
-/// fill as its convex interpretation. The outline (and all line kinds) honor
+/// Concave polygons fill correctly: the widget chrome fills the polygon's
+/// ear-clipping triangulation ([`triangulate_simple_polygon`]) as a mesh rather
+/// than using egui's convex-only `Shape::convex_polygon`, matching silx's
+/// matplotlib / pygfx backends. The outline (and all line kinds) honor
 /// `line_style` / `line_width`, with `gap_color` filling dash gaps (silx
 /// `gapcolor`).
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +326,115 @@ impl Line {
     }
 }
 
+/// Triangulate a simple polygon (possibly concave; no holes, no
+/// self-intersection) by ear clipping, returning index triples into `points`.
+///
+/// egui's [`egui::Shape::convex_polygon`] fills the *convex interpretation* of
+/// its vertices, so a concave polygon's fill spills across the concavity. silx's
+/// matplotlib / pygfx backends fill concave polygons correctly; the widget
+/// chrome matches that by filling the returned triangles as an [`egui::Mesh`]
+/// instead of one `convex_polygon`. The outline is unaffected (it is stroked
+/// from the point list directly).
+///
+/// Returns `N - 2` triangles for an `N`-vertex simple polygon (`N >= 3`), an
+/// empty vector for fewer than 3 points, and — defensively — a fan over the
+/// leftover ring if the input is degenerate or self-intersecting (never panics,
+/// never loops forever). Orientation is normalized internally, so clockwise and
+/// counter-clockwise inputs triangulate identically.
+pub fn triangulate_simple_polygon(points: &[Pos2]) -> Vec<[u32; 3]> {
+    let n = points.len();
+    if n < 3 {
+        return Vec::new();
+    }
+
+    // Work on a ring of indices, normalized to counter-clockwise so a convex
+    // corner is a left turn (positive orientation).
+    let mut ring: Vec<usize> = (0..n).collect();
+    if signed_area_2(points) < 0.0 {
+        ring.reverse();
+    }
+
+    let mut tris = Vec::with_capacity(n - 2);
+    // Each successful clip removes one vertex; cap total attempts so a
+    // non-simple polygon cannot loop forever.
+    let mut attempts = 0;
+    let max_attempts = n * n;
+    while ring.len() > 3 {
+        let m = ring.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let a = ring[(i + m - 1) % m];
+            let b = ring[i];
+            let c = ring[(i + 1) % m];
+            if is_ear(points, &ring, a, b, c) {
+                tris.push([a as u32, b as u32, c as u32]);
+                ring.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        attempts += 1;
+        if !clipped || attempts > max_attempts {
+            // Degenerate / self-intersecting: fan the leftover ring so something
+            // is drawn rather than nothing.
+            for k in 1..ring.len() - 1 {
+                tris.push([ring[0] as u32, ring[k] as u32, ring[k + 1] as u32]);
+            }
+            return tris;
+        }
+    }
+    tris.push([ring[0] as u32, ring[1] as u32, ring[2] as u32]);
+    tris
+}
+
+/// Twice the signed area of the polygon (shoelace); positive for CCW.
+fn signed_area_2(points: &[Pos2]) -> f32 {
+    let n = points.len();
+    let mut sum = 0.0;
+    for i in 0..n {
+        let p = points[i];
+        let q = points[(i + 1) % n];
+        sum += p.x * q.y - q.x * p.y;
+    }
+    sum
+}
+
+/// Twice the signed area of triangle `(a, b, c)`; > 0 when `a → b → c` turns
+/// left (CCW). Doubles as the left-of-directed-edge test for `a → b` against `c`
+/// (the two are algebraically equal).
+fn orient(a: Pos2, b: Pos2, c: Pos2) -> f32 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+/// Whether triangle `(a, b, c)` is an ear of the CCW `ring`: a convex corner at
+/// `b` whose triangle contains no other ring vertex.
+fn is_ear(points: &[Pos2], ring: &[usize], a: usize, b: usize, c: usize) -> bool {
+    let (pa, pb, pc) = (points[a], points[b], points[c]);
+    // Convex (left turn) at b for a CCW polygon; reflex/collinear is no ear.
+    if orient(pa, pb, pc) <= 0.0 {
+        return false;
+    }
+    for &v in ring {
+        if v == a || v == b || v == c {
+            continue;
+        }
+        if point_in_triangle(points[v], pa, pb, pc) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether `p` lies inside or on the boundary of CCW triangle `(a, b, c)`.
+fn point_in_triangle(p: Pos2, a: Pos2, b: Pos2, c: Pos2) -> bool {
+    let s1 = orient(a, b, p);
+    let s2 = orient(b, c, p);
+    let s3 = orient(c, a, p);
+    let has_neg = s1 < 0.0 || s2 < 0.0 || s3 < 0.0;
+    let has_pos = s1 > 0.0 || s2 > 0.0 || s3 > 0.0;
+    !(has_neg && has_pos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +635,86 @@ mod tests {
         let l = Line::from_points((4.0, 1.0), (4.0, 9.0));
         assert!(!l.slope.is_finite());
         assert_eq!(l.intercept, 4.0);
+    }
+
+    /// Total area covered by a triangulation (each triangle is `½·|orient|`).
+    fn triangulation_area(points: &[Pos2], tris: &[[u32; 3]]) -> f32 {
+        tris.iter()
+            .map(|t| {
+                0.5 * orient(
+                    points[t[0] as usize],
+                    points[t[1] as usize],
+                    points[t[2] as usize],
+                )
+                .abs()
+            })
+            .sum()
+    }
+
+    fn polygon_area(points: &[Pos2]) -> f32 {
+        0.5 * signed_area_2(points).abs()
+    }
+
+    #[test]
+    fn triangulate_too_few_points_is_empty() {
+        assert!(triangulate_simple_polygon(&[]).is_empty());
+        assert!(triangulate_simple_polygon(&[pos2(0.0, 0.0)]).is_empty());
+        assert!(triangulate_simple_polygon(&[pos2(0.0, 0.0), pos2(1.0, 1.0)]).is_empty());
+    }
+
+    #[test]
+    fn triangulate_triangle_is_itself() {
+        let p = [pos2(0.0, 0.0), pos2(2.0, 0.0), pos2(1.0, 2.0)];
+        let tris = triangulate_simple_polygon(&p);
+        assert_eq!(tris.len(), 1);
+        assert!((triangulation_area(&p, &tris) - polygon_area(&p)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn triangulate_convex_quad_tiles_it() {
+        let p = [
+            pos2(0.0, 0.0),
+            pos2(4.0, 0.0),
+            pos2(4.0, 3.0),
+            pos2(0.0, 3.0),
+        ];
+        let tris = triangulate_simple_polygon(&p);
+        assert_eq!(tris.len(), 2); // N - 2
+        assert!((triangulation_area(&p, &tris) - 12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn triangulate_concave_polygon_tiles_exactly_not_its_hull() {
+        // Arrowhead: D is a reflex vertex strictly inside hull triangle A,B,C.
+        // Polygon area is 3.0; the convex hull area is 4.0. A correct concave
+        // triangulation must sum to 3.0 (egui's convex_polygon would cover 4.0).
+        let p = [
+            pos2(0.0, 0.0), // A
+            pos2(4.0, 1.0), // B
+            pos2(0.0, 2.0), // C
+            pos2(1.0, 1.0), // D (reflex)
+        ];
+        let tris = triangulate_simple_polygon(&p);
+        assert_eq!(tris.len(), 2); // N - 2
+        let area = triangulation_area(&p, &tris);
+        assert!(
+            (area - 3.0).abs() < 1e-4,
+            "expected polygon area 3.0, got {area}"
+        );
+        assert!(area < 4.0 - 1e-3, "must not cover the convex hull (4.0)");
+    }
+
+    #[test]
+    fn triangulate_normalizes_clockwise_input() {
+        // Same arrowhead wound clockwise: orientation is normalized internally.
+        let p = [
+            pos2(1.0, 1.0), // D (reflex)
+            pos2(0.0, 2.0), // C
+            pos2(4.0, 1.0), // B
+            pos2(0.0, 0.0), // A
+        ];
+        let tris = triangulate_simple_polygon(&p);
+        assert_eq!(tris.len(), 2);
+        assert!((triangulation_area(&p, &tris) - 3.0).abs() < 1e-4);
     }
 }

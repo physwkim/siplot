@@ -15,7 +15,7 @@ use crate::core::items::LineStyle;
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol, TextAnchor};
 use crate::core::plot::{GraphGrid, TickMode};
 use crate::core::roi::{HandleKind, ManagedRoi, Roi};
-use crate::core::shape::{Line, Shape, ShapeKind};
+use crate::core::shape::{Line, Shape, ShapeKind, triangulate_simple_polygon};
 use crate::core::transform::{Axis, AxisSide, Scale, Transform, YAxis};
 use crate::core::triangles::Triangles;
 
@@ -1073,7 +1073,7 @@ pub fn draw_roi(
                 .map(|&(x, y)| t.data_to_pixel(x, y))
                 .collect();
             if let Some(fc) = fill {
-                painter.add(egui::Shape::convex_polygon(pts.clone(), fc, Stroke::NONE));
+                fill_polygon(painter, &pts, fc);
             }
             let anchor = pts.first().copied();
             outline(pts);
@@ -1439,12 +1439,35 @@ pub fn draw_triangles(painter: &Painter, t: &Transform, triangles: &[Triangles])
     }
 }
 
+/// Fill a (possibly concave) simple polygon with a solid `color` by drawing its
+/// ear-clipping triangulation as a [`egui::Mesh`].
+///
+/// egui's [`egui::Shape::convex_polygon`] fills the convex interpretation of its
+/// vertices, so a concave polygon's fill spills across the concavity; routing
+/// through [`triangulate_simple_polygon`] makes the fill match the actual
+/// outline (silx's matplotlib / pygfx backends fill concave polygons correctly).
+/// Convex polygons triangulate to a fan, so this is correct for them too.
+fn fill_polygon(painter: &Painter, pts: &[Pos2], color: Color32) {
+    let tris = triangulate_simple_polygon(pts);
+    if tris.is_empty() {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for &p in pts {
+        mesh.colored_vertex(p, color);
+    }
+    for [a, b, c] in tris {
+        mesh.add_triangle(a, b, c);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 /// Draw the shapes whose [`Shape::is_overlay`] matches `overlay` over the data
 /// area (silx `addShape`): filled and/or outlined polygons and rectangles, open
 /// polylines, and full-span horizontal/vertical lines, in the shape's line
-/// style. Drawing is clipped to the data area. Fill is convex-only (egui's
-/// `convex_polygon`): correct for rectangles and convex polygons
-/// (`doc/design.md` §8).
+/// style. Drawing is clipped to the data area. Polygon/rectangle fill is drawn
+/// as a triangulated [`egui::Mesh`] via [`fill_polygon`], so concave polygons
+/// fill correctly (`doc/design.md` §8).
 ///
 /// The `overlay` filter is the silx `isOverlay` split (items/shape.py:54-73):
 /// non-overlay shapes (`overlay = false`) belong to the base data layer and are
@@ -1462,11 +1485,7 @@ pub fn draw_shapes(painter: &Painter, t: &Transform, shapes: &[Shape], overlay: 
                     continue;
                 }
                 if s.fill {
-                    painter.add(egui::Shape::convex_polygon(
-                        pts.clone(),
-                        s.color,
-                        Stroke::NONE,
-                    ));
+                    fill_polygon(&painter, &pts, s.color);
                 }
                 // Close the outline back to the first vertex.
                 let mut path = pts;
