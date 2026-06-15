@@ -814,6 +814,37 @@ impl Roi {
         })
     }
 
+    /// The three line segments an **UnboundedMode** band draws, each spanned
+    /// across the visible data extents `x_range` / `y_range` (silx renders the
+    /// [`band_lines`](Self::band_lines) as full-width lines clipped to the plot):
+    /// `[centre, edge0, edge1]`, every entry a `[start, end]` data-space pair.
+    /// A sloped band is evaluated at the x-extents; a vertical band is drawn at
+    /// the y-extents. Returns `None` for a non-band ROI. Pure (data-space only),
+    /// so the spanned geometry is unit-testable without a `Transform`.
+    #[must_use]
+    pub fn band_unbounded_segments(
+        &self,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) -> Option<[[(f64, f64); 2]; 3]> {
+        Some(match self.band_lines()? {
+            BandLines::Sloped {
+                slope,
+                middle,
+                edges,
+            } => {
+                let (x0, x1) = x_range;
+                let seg = |c: f64| [(x0, slope * x0 + c), (x1, slope * x1 + c)];
+                [seg(middle), seg(edges.0), seg(edges.1)]
+            }
+            BandLines::Vertical { middle, edges } => {
+                let (y0, y1) = y_range;
+                let seg = |x: f64| [(x, y0), (x, y1)];
+                [seg(middle), seg(edges.0), seg(edges.1)]
+            }
+        })
+    }
+
     /// Test whether the data-space point `pos = (x, y)` is inside this ROI.
     ///
     /// Each variant mirrors the matching silx `RegionOfInterest.contains`
@@ -2600,6 +2631,53 @@ mod tests {
             y: (0.0, 1.0),
         };
         assert_eq!(rect.band_lines(), None);
+    }
+
+    #[test]
+    fn band_unbounded_segments_span_horizontal_band_across_x() {
+        // A horizontal band along y=0, width 2 → centre at y=0, edges at y=±1,
+        // each drawn across the x-extents.
+        let band = Roi::Band {
+            begin: (0.0, 0.0),
+            end: (4.0, 0.0),
+            width: 2.0,
+        };
+        let segs = band
+            .band_unbounded_segments((-5.0, 5.0), (-9.0, 9.0))
+            .expect("band has unbounded segments");
+        // Centre line y=0 spanned at x=-5..5.
+        assert_eq!(segs[0], [(-5.0, 0.0), (5.0, 0.0)]);
+        // Edge lines y=-1 and y=+1 (begin−off then begin+off; off = 0.5·2·normal,
+        // normal of (1,0) is (0,1) → off=(0,1)).
+        assert_eq!(segs[1], [(-5.0, -1.0), (5.0, -1.0)]);
+        assert_eq!(segs[2], [(-5.0, 1.0), (5.0, 1.0)]);
+    }
+
+    #[test]
+    fn band_unbounded_segments_span_vertical_band_across_y() {
+        // A vertical band along x=3, width 2 → centre at x=3, edges at x=2 and 4,
+        // each drawn across the y-extents.
+        let band = Roi::Band {
+            begin: (3.0, 0.0),
+            end: (3.0, 5.0),
+            width: 2.0,
+        };
+        let segs = band
+            .band_unbounded_segments((-1.0, 1.0), (-8.0, 8.0))
+            .expect("vertical band has unbounded segments");
+        // Edge order follows band_lines `(begin.x − off.x, begin.x + off.x)`; the
+        // upward band's normal is (−1, 0) so off.x = −1 → edges come out (4, 2).
+        assert_eq!(segs[0], [(3.0, -8.0), (3.0, 8.0)]);
+        assert_eq!(segs[1], [(4.0, -8.0), (4.0, 8.0)]);
+        assert_eq!(segs[2], [(2.0, -8.0), (2.0, 8.0)]);
+    }
+
+    #[test]
+    fn band_unbounded_segments_is_none_for_non_band() {
+        assert_eq!(
+            Roi::Point { x: 1.0, y: 2.0 }.band_unbounded_segments((0.0, 1.0), (0.0, 1.0)),
+            None
+        );
     }
 
     #[test]

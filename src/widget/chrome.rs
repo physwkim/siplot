@@ -14,7 +14,7 @@ use crate::core::dtime_ticks::{self, DateTime, TimeZone};
 use crate::core::items::LineStyle;
 use crate::core::marker::{Marker, MarkerKind, MarkerSymbol, TextAnchor};
 use crate::core::plot::{GraphGrid, TickMode};
-use crate::core::roi::{HandleKind, ManagedRoi, Roi};
+use crate::core::roi::{HandleKind, ManagedRoi, Roi, RoiInteractionMode};
 use crate::core::shape::{Line, Shape, ShapeKind, triangulate_simple_polygon};
 use crate::core::transform::{Axis, AxisSide, Scale, Transform, YAxis};
 use crate::core::triangles::Triangles;
@@ -865,7 +865,7 @@ pub fn draw_rois(
 ) {
     for r in rois {
         let appearance = roi_appearance(r, default_color);
-        draw_roi(painter, t, &r.roi, &appearance, style);
+        draw_roi(painter, t, &r.roi, &appearance, style, r.interaction_mode());
     }
 }
 
@@ -968,12 +968,18 @@ fn draw_roi_handles(painter: &Painter, t: &Transform, roi: &Roi, color: Color32)
 /// Draw one ROI honoring `appearance`: the override color recolors the outline,
 /// fill, and handles; a selected ROI uses a thicker border (silx highlight
 /// `linewidth=2`); and a non-empty name is drawn as a label near the ROI.
+///
+/// `mode` is the ROI's interaction mode (silx `InteractionModeMixIn`): a
+/// [`RoiInteractionMode::BandUnbounded`] band draws as three view-spanning
+/// parallel lines (silx UnboundedMode) instead of the bounded corner polygon;
+/// every other mode (and `None`) draws the default geometry.
 pub fn draw_roi(
     painter: &Painter,
     t: &Transform,
     roi: &Roi,
     appearance: &RoiAppearance,
     style: &Style,
+    mode: Option<RoiInteractionMode>,
 ) {
     let color = appearance.color.unwrap_or(style.axis);
     // Base width from the appearance (silx default 1.0); a selected/current ROI
@@ -1167,18 +1173,36 @@ pub fn draw_roi(
             end,
             width: bw,
         } => {
-            // The four band corners form a convex quadrilateral (rotated rect).
-            let corners = band_corners_data(*begin, *end, *bw);
-            let pts: Vec<Pos2> = corners
-                .iter()
-                .map(|&(x, y)| t.data_to_pixel(x, y))
-                .collect();
-            if let Some(fc) = fill {
-                painter.add(egui::Shape::convex_polygon(pts.clone(), fc, Stroke::NONE));
+            if mode == Some(RoiInteractionMode::BandUnbounded) {
+                // silx UnboundedMode: draw the three parallel lines spanned across
+                // the view instead of the bounded corner polygon, and no fill (the
+                // unbounded region is infinite).
+                if let Some(segs) =
+                    roi.band_unbounded_segments((t.x.min, t.x.max), (t.y.min, t.y.max))
+                {
+                    for seg in segs {
+                        let line: Vec<Pos2> =
+                            seg.iter().map(|&(x, y)| t.data_to_pixel(x, y)).collect();
+                        draw_styled_line(painter, line, color, width, &line_style, gap_color);
+                    }
+                }
+                // Label anchor at the begin handle.
+                Some(t.data_to_pixel(begin.0, begin.1))
+            } else {
+                // BoundedMode (default): the four band corners form a convex
+                // quadrilateral (rotated rect).
+                let corners = band_corners_data(*begin, *end, *bw);
+                let pts: Vec<Pos2> = corners
+                    .iter()
+                    .map(|&(x, y)| t.data_to_pixel(x, y))
+                    .collect();
+                if let Some(fc) = fill {
+                    painter.add(egui::Shape::convex_polygon(pts.clone(), fc, Stroke::NONE));
+                }
+                let anchor = pts.first().copied();
+                outline(pts);
+                anchor
             }
-            let anchor = pts.first().copied();
-            outline(pts);
-            anchor
         }
         _ => {
             // Rect, HRange, VRange
