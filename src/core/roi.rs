@@ -1102,6 +1102,89 @@ impl RoiLineStyle {
     }
 }
 
+/// A named way to edit a region of interest with handles (silx
+/// `RoiInteractionMode`, `items/_roi_base.py:132`). Only the shape kinds that
+/// mix in silx's `InteractionModeMixIn` — [`Roi::Arc`] and [`Roi::Band`] —
+/// offer more than one mode; every other kind has a single fixed edit
+/// behaviour and no interaction mode (see [`Roi::available_interaction_modes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RoiInteractionMode {
+    /// Arc edited by three points on its main-radius circle (silx
+    /// `ArcROI.ThreePointMode`; the silx default for an arc).
+    ArcThreePoint,
+    /// Arc edited by polar anchors — mid / weight / start / end (silx
+    /// `ArcROI.PolarMode`).
+    ArcPolar,
+    /// Arc anchors only translate the whole ROI (silx `ArcROI.MoveMode`).
+    ArcTranslation,
+    /// Band drawn bounded on both sides as a four-corner polygon (silx
+    /// `BandROI.BoundedMode`; the silx default for a band).
+    BandBounded,
+    /// Band drawn unbounded as three parallel infinite lines (silx
+    /// `BandROI.UnboundedMode`).
+    BandUnbounded,
+}
+
+impl RoiInteractionMode {
+    /// Short label (silx `RoiInteractionMode.label`).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            RoiInteractionMode::ArcThreePoint => "3 points",
+            RoiInteractionMode::ArcPolar => "Polar",
+            RoiInteractionMode::ArcTranslation => "Translation",
+            RoiInteractionMode::BandBounded => "Bounded",
+            RoiInteractionMode::BandUnbounded => "Unbounded",
+        }
+    }
+
+    /// Longer description (silx `RoiInteractionMode.description`).
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        match self {
+            RoiInteractionMode::ArcThreePoint => {
+                "Provides 3 points to define the main radius circle"
+            }
+            RoiInteractionMode::ArcPolar => "Provides anchors to edit the ROI in polar coords",
+            RoiInteractionMode::ArcTranslation => "Provides anchors to only move the ROI",
+            RoiInteractionMode::BandBounded => "Band is bounded on both sides",
+            RoiInteractionMode::BandUnbounded => "Band is unbounded on both sides",
+        }
+    }
+}
+
+impl Roi {
+    /// The interaction modes this ROI kind offers (silx
+    /// `InteractionModeMixIn.availableInteractionModes`). [`Roi::Arc`] offers
+    /// three (`3 points` / `Polar` / `Translation`), [`Roi::Band`] two
+    /// (`Bounded` / `Unbounded`); every other kind has a single fixed edit
+    /// behaviour and returns an empty slice. The first entry is the silx
+    /// default (see [`Self::default_interaction_mode`]).
+    #[must_use]
+    pub fn available_interaction_modes(&self) -> &'static [RoiInteractionMode] {
+        match self {
+            Roi::Arc { .. } => &[
+                RoiInteractionMode::ArcThreePoint,
+                RoiInteractionMode::ArcPolar,
+                RoiInteractionMode::ArcTranslation,
+            ],
+            Roi::Band { .. } => &[
+                RoiInteractionMode::BandBounded,
+                RoiInteractionMode::BandUnbounded,
+            ],
+            _ => &[],
+        }
+    }
+
+    /// The mode a freshly-created ROI of this kind starts in (silx
+    /// `_initInteractionMode`): Arc → `3 points`, Band → `Bounded`; `None` for
+    /// kinds without interaction modes.
+    #[must_use]
+    pub fn default_interaction_mode(&self) -> Option<RoiInteractionMode> {
+        self.available_interaction_modes().first().copied()
+    }
+}
+
 /// A region of interest plus the metadata silx keeps on its `RegionOfInterest`:
 /// an optional per-ROI color (falls back to the manager default, silx
 /// `useManagerColor`), a display name (silx `getName`/`setName`), whether it is
@@ -1129,12 +1212,20 @@ pub struct ManagedRoi {
     pub gap_color: Option<Color32>,
     /// Whether the ROI's interior is filled (silx `setFill`, default `false`).
     pub fill: bool,
+    /// Current handle-editing mode (silx `InteractionModeMixIn.__modeId`).
+    /// Private so the invariant `interaction_mode ∈ roi.available_interaction_modes()`
+    /// (or `None` for kinds without modes) holds by construction — read it with
+    /// [`Self::interaction_mode`] and change it through the validated
+    /// [`Self::set_interaction_mode`].
+    interaction_mode: Option<RoiInteractionMode>,
 }
 
 impl ManagedRoi {
     /// Wrap `roi` with default metadata: no color override, empty name, not
-    /// selected, solid 1.0-width outline, no gap color, unfilled (silx defaults).
+    /// selected, solid 1.0-width outline, no gap color, unfilled, and the ROI
+    /// kind's default interaction mode (silx defaults + `_initInteractionMode`).
     pub fn new(roi: Roi) -> Self {
+        let interaction_mode = roi.default_interaction_mode();
         Self {
             roi,
             color: None,
@@ -1144,6 +1235,29 @@ impl ManagedRoi {
             line_style: RoiLineStyle::default(),
             gap_color: None,
             fill: false,
+            interaction_mode,
+        }
+    }
+
+    /// The current handle-editing mode (silx
+    /// `InteractionModeMixIn.getInteractionMode`). `None` for ROI kinds without
+    /// interaction modes (everything but [`Roi::Arc`] / [`Roi::Band`]).
+    #[must_use]
+    pub fn interaction_mode(&self) -> Option<RoiInteractionMode> {
+        self.interaction_mode
+    }
+
+    /// Switch the handle-editing mode (silx
+    /// `InteractionModeMixIn.setInteractionMode`). Returns `false` and leaves
+    /// the mode unchanged if `mode` is not one of this ROI's
+    /// [`Roi::available_interaction_modes`] — silx raises in that case, but a
+    /// rejecting setter keeps the by-construction invariant without a panic.
+    pub fn set_interaction_mode(&mut self, mode: RoiInteractionMode) -> bool {
+        if self.roi.available_interaction_modes().contains(&mode) {
+            self.interaction_mode = Some(mode);
+            true
+        } else {
+            false
         }
     }
 }
@@ -2584,5 +2698,137 @@ mod tests {
         assert_eq!(RoiLineStyle::Solid.to_line_style(), LineStyle::Solid);
         assert_eq!(RoiLineStyle::Dashed.to_line_style(), LineStyle::Dashed);
         assert_eq!(RoiLineStyle::Dotted.to_line_style(), LineStyle::Dotted);
+    }
+
+    // --- RoiInteractionMode (silx InteractionModeMixIn) ---
+
+    fn sample_arc() -> Roi {
+        Roi::Arc {
+            center: (0.0, 0.0),
+            inner_radius: 1.0,
+            outer_radius: 2.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::FRAC_PI_2,
+        }
+    }
+
+    fn sample_band() -> Roi {
+        Roi::Band {
+            begin: (0.0, 0.0),
+            end: (4.0, 0.0),
+            width: 1.0,
+        }
+    }
+
+    #[test]
+    fn available_interaction_modes_match_silx_per_kind() {
+        // silx ArcROI.availableInteractionModes -> [ThreePoint, Polar, Move].
+        assert_eq!(
+            sample_arc().available_interaction_modes(),
+            &[
+                RoiInteractionMode::ArcThreePoint,
+                RoiInteractionMode::ArcPolar,
+                RoiInteractionMode::ArcTranslation,
+            ]
+        );
+        // silx BandROI -> {Bounded, Unbounded}.
+        assert_eq!(
+            sample_band().available_interaction_modes(),
+            &[
+                RoiInteractionMode::BandBounded,
+                RoiInteractionMode::BandUnbounded,
+            ]
+        );
+        // Every kind without InteractionModeMixIn offers no modes.
+        assert!(
+            Roi::Point { x: 0.0, y: 0.0 }
+                .available_interaction_modes()
+                .is_empty()
+        );
+        assert!(
+            Roi::Rect {
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+            }
+            .available_interaction_modes()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn default_interaction_mode_is_the_silx_init_mode() {
+        // silx _initInteractionMode: Arc -> ThreePointMode, Band -> BoundedMode.
+        assert_eq!(
+            sample_arc().default_interaction_mode(),
+            Some(RoiInteractionMode::ArcThreePoint)
+        );
+        assert_eq!(
+            sample_band().default_interaction_mode(),
+            Some(RoiInteractionMode::BandBounded)
+        );
+        assert_eq!(
+            Roi::Point { x: 0.0, y: 0.0 }.default_interaction_mode(),
+            None
+        );
+    }
+
+    #[test]
+    fn new_managed_roi_seeds_the_kind_default_mode() {
+        assert_eq!(
+            ManagedRoi::new(sample_arc()).interaction_mode(),
+            Some(RoiInteractionMode::ArcThreePoint)
+        );
+        assert_eq!(
+            ManagedRoi::new(sample_band()).interaction_mode(),
+            Some(RoiInteractionMode::BandBounded)
+        );
+        assert_eq!(
+            ManagedRoi::new(Roi::Point { x: 0.0, y: 0.0 }).interaction_mode(),
+            None
+        );
+    }
+
+    #[test]
+    fn set_interaction_mode_accepts_available_and_rejects_foreign() {
+        let mut arc = ManagedRoi::new(sample_arc());
+        // An available mode switches and reports success.
+        assert!(arc.set_interaction_mode(RoiInteractionMode::ArcPolar));
+        assert_eq!(arc.interaction_mode(), Some(RoiInteractionMode::ArcPolar));
+        // A mode belonging to another kind is rejected; the mode is unchanged.
+        assert!(!arc.set_interaction_mode(RoiInteractionMode::BandBounded));
+        assert_eq!(arc.interaction_mode(), Some(RoiInteractionMode::ArcPolar));
+        // A kind without modes rejects every mode and stays None.
+        let mut point = ManagedRoi::new(Roi::Point { x: 0.0, y: 0.0 });
+        assert!(!point.set_interaction_mode(RoiInteractionMode::ArcThreePoint));
+        assert_eq!(point.interaction_mode(), None);
+    }
+
+    #[test]
+    fn mode_label_and_description_match_silx_strings() {
+        assert_eq!(RoiInteractionMode::ArcThreePoint.label(), "3 points");
+        assert_eq!(
+            RoiInteractionMode::ArcThreePoint.description(),
+            "Provides 3 points to define the main radius circle"
+        );
+        assert_eq!(RoiInteractionMode::ArcPolar.label(), "Polar");
+        assert_eq!(
+            RoiInteractionMode::ArcPolar.description(),
+            "Provides anchors to edit the ROI in polar coords"
+        );
+        assert_eq!(RoiInteractionMode::ArcTranslation.label(), "Translation");
+        assert_eq!(
+            RoiInteractionMode::ArcTranslation.description(),
+            "Provides anchors to only move the ROI"
+        );
+        assert_eq!(RoiInteractionMode::BandBounded.label(), "Bounded");
+        assert_eq!(
+            RoiInteractionMode::BandBounded.description(),
+            "Band is bounded on both sides"
+        );
+        assert_eq!(RoiInteractionMode::BandUnbounded.label(), "Unbounded");
+        assert_eq!(
+            RoiInteractionMode::BandUnbounded.description(),
+            "Band is unbounded on both sides"
+        );
     }
 }

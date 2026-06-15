@@ -60,7 +60,7 @@ pub use crate::core::plot::{
     AxisConstraints, DataMargins, DataRange, DirtyState, ExtraAxis, GraphGrid, Plot, PlotId,
     TickMode, resolved_axis_label,
 };
-pub use crate::core::roi::{BandLines, ManagedRoi, Roi, RoiEdge, RoiLineStyle};
+pub use crate::core::roi::{BandLines, ManagedRoi, Roi, RoiEdge, RoiInteractionMode, RoiLineStyle};
 pub use crate::core::roi_io::{RoiIoError, decode_rois, encode_rois, load_rois, save_rois};
 pub use crate::core::scatter_viz::{
     BinnedStatistic, BinnedStatisticFunction, GridImage, GridMajorOrder, PointsViz, RegularGrid,
