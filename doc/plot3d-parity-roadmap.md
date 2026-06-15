@@ -108,9 +108,24 @@ a later enhancement).
 
 | Wave | Item | silx source | Status |
 |---|---|---|---|
-| P2.1 | Marching-cubes isosurface + ScalarField3D | items/volume.py, silx.math.marchingcubes | ☐ |
+| P2.1 | Marching-cubes isosurface + ScalarField3D | items/volume.py, silx.math.marchingcubes | ✅ |
 | P2.2 | Cut planes + colormap | scene/cutplane.py, primitives PlaneInGroup/ClipPlane | ☐ |
 | P2.3 | ScalarFieldView widget + ComplexField3D | ScalarFieldView.py, items/volume.py | ☐ |
+
+P2.1 notes: `marching_cubes` (`src/core/scene3d/marching_cubes.rs`) is a
+line-for-line port of silx's C++ `mc.hpp` slice-by-slice algorithm + the verbatim
+256-case lookup tables from `mc_lut.cpp` (Paul Bourke / Cory Bloyd, MIT), driven
+the same way as `marchingcubes.pyx`. Output vertices/normals stay in
+`(z,y,x)`/`(nz,ny,nx)` (silx's order); `sampling` and `invert_normals` are carried
+through faithfully. `ScalarField3D`/`Isosurface` (`render::scene3d_items`) own the
+`(depth,height,width)` field and its iso-surfaces: each surface is extracted with
+marching cubes and emitted as a lit solid-colour mesh (P1.2 path), mapping the
+`(z,y,x)` vertices to world `(x+0.5, y+0.5, z+0.5)` — silx's `_isogroup` swap
+matrix + `Translate(0.5,0.5,0.5)`. Field bounds are the full volume box (silx
+`BoundedGroup`). Auto-level (`mean_plus_std`, silx's documented default) re-resolves
+on data change. Documented simplifications: the cut plane is P2.2; iso-surface
+`_pickFull` (ray/marching-cubes-per-bin) is deferred with GPU picking; lighting
+uses the baked-in viewport defaults (as P1.2).
 
 ### Phase 3 — tools / window / parity tail
 
