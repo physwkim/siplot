@@ -65,6 +65,87 @@ const SCENE3D_VERTEX_ATTRS: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
+/// Point-sprite marker shape — the silx `_Points` markers (`SUPPORTED_MARKERS`).
+/// The discriminant order matches the `marker` id read by the `alpha_symbol`
+/// switch in `scene3d_points.wgsl`; keep the two in lock-step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PointMarker {
+    /// `'o'` — filled circle (silx default).
+    #[default]
+    Circle,
+    /// `'d'` — diamond.
+    Diamond,
+    /// `'s'` — square (the full sprite).
+    Square,
+    /// `'+'` — plus.
+    Plus,
+    /// `'x'` — diagonal cross.
+    Cross,
+    /// `'*'` — asterisk (plus + cross + soft circle edge).
+    Asterisk,
+    /// `'_'` — horizontal line.
+    HLine,
+    /// `'|'` — vertical line.
+    VLine,
+}
+
+impl PointMarker {
+    /// The `marker` id handed to the GPU; must match `scene3d_points.wgsl`.
+    pub fn id(self) -> u32 {
+        match self {
+            PointMarker::Circle => 0,
+            PointMarker::Diamond => 1,
+            PointMarker::Square => 2,
+            PointMarker::Plus => 3,
+            PointMarker::Cross => 4,
+            PointMarker::Asterisk => 5,
+            PointMarker::HLine => 6,
+            PointMarker::VLine => 7,
+        }
+    }
+}
+
+/// One scatter point (one instance): world-space centre, linear-premultiplied
+/// RGBA, pixel diameter, and marker id. `repr(C)` so the 36-byte stride matches
+/// [`SCENE3D_POINT_ATTRS`] and `scene3d_points.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Scene3dPoint {
+    /// World-space centre (the model transform, if any, folds into the MVP).
+    pub pos: [f32; 3],
+    /// Linear color space, premultiplied alpha — same convention as the 2D path.
+    pub color: [f32; 4],
+    /// Sprite diameter in physical pixels (silx `gl_PointSize`).
+    pub size: f32,
+    /// Marker shape id (see [`PointMarker::id`]).
+    pub marker: u32,
+}
+
+/// Per-instance attributes for [`Scene3dPoint`]: pos at location 0 (offset 0),
+/// color at 1 (offset 12), size at 2 (offset 28), marker at 3 (offset 32).
+const SCENE3D_POINT_ATTRS: [wgpu::VertexAttribute; 4] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 28,
+        shader_location: 2,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 32,
+        shader_location: 3,
+    },
+];
+
 /// Uniform block for `scene3d.wgsl`: the column-major, clip-corrected MVP.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -72,6 +153,17 @@ struct Scene3dParams {
     /// `camera.matrix() × model`, transposed to column-major and depth-corrected
     /// for wgpu z∈[0,1] (see [`crate::core::scene3d::mat4::Mat4::to_gpu_clip_cols`]).
     mvp: [[f32; 4]; 4],
+}
+
+/// Uniform block for `scene3d_points.wgsl`: the MVP plus the offscreen viewport
+/// pixel size (the sprite-corner offset is computed in pixels then converted to
+/// NDC, so the shader needs the viewport extent).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Scene3dPointParams {
+    mvp: [[f32; 4]; 4],
+    viewport: [f32; 2],
+    _pad: [f32; 2],
 }
 
 /// CPU-side geometry for one scene: a flat line-list and a flat triangle-list,
@@ -83,6 +175,8 @@ pub struct Scene3dGeometry {
     pub(crate) lines: Vec<Scene3dVertex>,
     /// Triples of vertices, each triple one triangle (`TriangleList` topology).
     pub(crate) triangles: Vec<Scene3dVertex>,
+    /// Scatter points, each drawn as a billboarded marker sprite.
+    pub(crate) points: Vec<Scene3dPoint>,
 }
 
 impl Scene3dGeometry {
@@ -91,15 +185,16 @@ impl Scene3dGeometry {
         Self::default()
     }
 
-    /// True when there is nothing to draw (no lines and no triangles).
+    /// True when there is nothing to draw (no lines, triangles, or points).
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.triangles.is_empty()
+        self.lines.is_empty() && self.triangles.is_empty() && self.points.is_empty()
     }
 
     /// Drop all geometry, keeping allocated capacity for reuse.
     pub fn clear(&mut self) {
         self.lines.clear();
         self.triangles.clear();
+        self.points.clear();
     }
 
     /// Append a line segment `a→b` in one solid [`Color32`].
@@ -131,6 +226,29 @@ impl Scene3dGeometry {
         for pos in [a, b, c] {
             self.triangles.push(Scene3dVertex { pos, color: rgba });
         }
+    }
+
+    /// Append one scatter point at `pos`, drawn as a `marker` sprite `size`
+    /// physical pixels across in solid [`Color32`].
+    pub fn add_point(&mut self, pos: [f32; 3], color: Color32, size: f32, marker: PointMarker) {
+        let rgba = egui::Rgba::from(color).to_array();
+        self.add_point_rgba(pos, rgba, size, marker);
+    }
+
+    /// Append one scatter point with explicit linear-premultiplied RGBA.
+    pub fn add_point_rgba(
+        &mut self,
+        pos: [f32; 3],
+        rgba: [f32; 4],
+        size: f32,
+        marker: PointMarker,
+    ) {
+        self.points.push(Scene3dPoint {
+            pos,
+            color: rgba,
+            size,
+            marker: marker.id(),
+        });
     }
 
     /// Append the bounding-box wireframe + RGB axes for `bounds`, the scene's
@@ -203,6 +321,10 @@ struct Scene3dPipeline {
     line_pipeline: wgpu::RenderPipeline,
     /// Depth-tested `TriangleList` pipeline (no face culling).
     tri_pipeline: wgpu::RenderPipeline,
+    /// `group(0)` layout for the point-sprite uniform (MVP + viewport, vertex stage).
+    point_bgl: wgpu::BindGroupLayout,
+    /// Depth-tested, alpha-blended billboarded point-sprite pipeline.
+    point_pipeline: wgpu::RenderPipeline,
     /// `group(0)` layout for the blit (sampled texture + sampler, fragment stage).
     blit_bgl: wgpu::BindGroupLayout,
     /// Depth-less full-screen blit pipeline (offscreen color → egui pass).
@@ -220,6 +342,10 @@ impl Scene3dPipeline {
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("siplot scene3d blit"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene3d_blit.wgsl").into()),
+        });
+        let point_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("siplot scene3d points"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene3d_points.wgsl").into()),
         });
 
         let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -295,6 +421,71 @@ impl Scene3dPipeline {
             "siplot scene3d triangles",
         );
 
+        // Point sprites: their own uniform (MVP + viewport, 80 bytes) and an
+        // instanced billboard pipeline with premultiplied-alpha blending so the
+        // antialiased marker edges composite over the opaque scene behind them.
+        let point_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("siplot scene3d point bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(
+                        std::mem::size_of::<Scene3dPointParams>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let point_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("siplot scene3d point layout"),
+            bind_group_layouts: &[Some(&point_bgl)],
+            immediate_size: 0,
+        });
+        let point_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("siplot scene3d points"),
+            layout: Some(&point_layout),
+            vertex: wgpu::VertexState {
+                module: &point_shader,
+                entry_point: Some("vs_main"),
+                // No vertex buffer: corners come from vertex_index. One instance
+                // per point carries pos/color/size/marker.
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Scene3dPoint>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &SCENE3D_POINT_ATTRS,
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &point_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("siplot scene3d blit bgl"),
             entries: &[
@@ -364,6 +555,8 @@ impl Scene3dPipeline {
             scene_bgl,
             line_pipeline,
             tri_pipeline,
+            point_bgl,
+            point_pipeline,
             blit_bgl,
             blit_pipeline,
             sampler,
@@ -384,6 +577,13 @@ struct Scene3dGpu {
     /// Triangle vertices; `None` while empty (skip the draw).
     tri_vbuf: Option<wgpu::Buffer>,
     tri_count: u32,
+    /// Point-sprite uniform (MVP + viewport), written each frame.
+    point_params_buf: wgpu::Buffer,
+    /// `group(0)` bind group over `point_params_buf` for the point pipeline.
+    point_bind_group: wgpu::BindGroup,
+    /// Per-instance scatter points; `None` while empty (skip the draw).
+    point_vbuf: Option<wgpu::Buffer>,
+    point_count: u32,
     /// Pixel size of the current offscreen target (`[0, 0]` until first sized).
     size: [u32; 2],
     /// Offscreen color view (target format); the blit samples this.
@@ -410,6 +610,20 @@ impl Scene3dGpu {
                 resource: params_buf.as_entire_binding(),
             }],
         });
+        let point_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("siplot scene3d point params"),
+            size: std::mem::size_of::<Scene3dPointParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let point_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("siplot scene3d point bind group"),
+            layout: &pipeline.point_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: point_params_buf.as_entire_binding(),
+            }],
+        });
         Self {
             params_buf,
             scene_bind_group,
@@ -417,6 +631,10 @@ impl Scene3dGpu {
             line_count: 0,
             tri_vbuf: None,
             tri_count: 0,
+            point_params_buf,
+            point_bind_group,
+            point_vbuf: None,
+            point_count: 0,
             size: [0, 0],
             color_view: None,
             depth_view: None,
@@ -424,13 +642,16 @@ impl Scene3dGpu {
         }
     }
 
-    /// Replace the line + triangle vertex buffers from `geometry`.
+    /// Replace the line + triangle + point buffers from `geometry`.
     fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, geometry: &Scene3dGeometry) {
         self.line_vbuf = make_vertex_buffer(device, queue, &geometry.lines, "siplot scene3d lines");
         self.line_count = geometry.lines.len() as u32;
         self.tri_vbuf =
             make_vertex_buffer(device, queue, &geometry.triangles, "siplot scene3d tris");
         self.tri_count = geometry.triangles.len() as u32;
+        self.point_vbuf =
+            make_vertex_buffer(device, queue, &geometry.points, "siplot scene3d points");
+        self.point_count = geometry.points.len() as u32;
     }
 
     /// Ensure the offscreen color+depth target matches `size` (in physical
@@ -542,14 +763,22 @@ impl Scene3dGpu {
             rp.set_vertex_buffer(0, buf.slice(..));
             rp.draw(0..self.line_count, 0..1);
         }
+        // Point sprites last: alpha-blended billboards over the opaque geometry.
+        // Six vertices (two triangles) per instance, one instance per point.
+        if let (Some(buf), true) = (&self.point_vbuf, self.point_count > 0) {
+            rp.set_pipeline(&pipeline.point_pipeline);
+            rp.set_bind_group(0, &self.point_bind_group, &[]);
+            rp.set_vertex_buffer(0, buf.slice(..));
+            rp.draw(0..6, 0..self.point_count);
+        }
     }
 }
 
 /// Create a `VERTEX | COPY_DST` buffer holding `verts`, or `None` when empty.
-fn make_vertex_buffer(
+fn make_vertex_buffer<T: bytemuck::Pod>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    verts: &[Scene3dVertex],
+    verts: &[T],
     label: &str,
 ) -> Option<wgpu::Buffer> {
     if verts.is_empty() {
@@ -598,6 +827,16 @@ impl Scene3dResources {
         scene.ensure_offscreen(device, pipeline, frame.size_px);
         let params = Scene3dParams { mvp: frame.mvp };
         queue.write_buffer(&scene.params_buf, 0, bytemuck::bytes_of(&params));
+        let point_params = Scene3dPointParams {
+            mvp: frame.mvp,
+            viewport: [frame.size_px[0] as f32, frame.size_px[1] as f32],
+            _pad: [0.0, 0.0],
+        };
+        queue.write_buffer(
+            &scene.point_params_buf,
+            0,
+            bytemuck::bytes_of(&point_params),
+        );
         scene.encode_offscreen(encoder, pipeline, frame.background);
     }
 }
