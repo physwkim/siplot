@@ -11,6 +11,8 @@
 //! arrive in later steps.
 
 use colorous::Gradient;
+use std::collections::BTreeMap;
+use std::sync::{OnceLock, RwLock};
 
 /// How a scalar value is mapped to the `[0, 1]` LUT coordinate before the color
 /// lookup (silx `Colormap.normalization`). Mirrors silx's `GLPlotImage`
@@ -551,6 +553,64 @@ const DEFAULT_GAMMA: f32 = 2.0;
 /// transparent white.
 const DEFAULT_NAN_COLOR: [u8; 4] = [255, 255, 255, 0];
 
+/// silx's default overlay/cursor color for a registered LUT
+/// (`registerLUT(..., cursor_color="black")`): opaque black.
+const DEFAULT_CURSOR_COLOR: [u8; 4] = [0, 0, 0, 255];
+
+/// A custom colormap LUT registered by name (silx `register_colormap`): the
+/// resolved 256-entry table plus the overlay cursor color silx associates with
+/// it (used when drawing an overlay over an image colormapped with this LUT).
+#[derive(Clone, Debug, PartialEq)]
+struct RegisteredColormap {
+    lut: [[u8; 4]; 256],
+    cursor_color: [u8; 4],
+}
+
+/// Process-global registry of custom named colormap LUTs — the siplot analogue
+/// of silx's module-level `_AVAILABLE_LUTS` / `_COLORMAP_CACHE`. A `BTreeMap`
+/// keeps [`registered_colormaps`] deterministic; the `RwLock` allows concurrent
+/// name resolution. Lazily initialised on first use.
+fn registry() -> &'static RwLock<BTreeMap<String, RegisteredColormap>> {
+    static REGISTRY: OnceLock<RwLock<BTreeMap<String, RegisteredColormap>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Register a custom colormap LUT under `name` so it can be resolved by name
+/// through [`Colormap::from_registered`] (silx `silx.gui.colors.registerLUT` /
+/// `silx.math.colormap.register_colormap`).
+///
+/// `colors` is an arbitrary-length (`N >= 1`) array of RGBA `u8` rows, resampled
+/// to the 256-entry LUT exactly as [`Colormap::from_colors`] does. `cursor_color`
+/// is the overlay color silx stores alongside the LUT (`None` → opaque black,
+/// silx's `cursor_color="black"` default). Registering an already-registered
+/// `name` overrides it (silx explicitly allows overriding).
+///
+/// Returns `false` and registers nothing when `colors` is empty, mirroring
+/// silx's non-empty-LUT assertion.
+pub fn register_colormap(name: &str, colors: &[[u8; 4]], cursor_color: Option<[u8; 4]>) -> bool {
+    let Some(lut) = resample_lut(colors) else {
+        return false;
+    };
+    let entry = RegisteredColormap {
+        lut,
+        cursor_color: cursor_color.unwrap_or(DEFAULT_CURSOR_COLOR),
+    };
+    registry().write().unwrap().insert(name.to_owned(), entry);
+    true
+}
+
+/// The names of all currently registered custom colormaps, in sorted order
+/// (silx `get_registered_colormaps`).
+pub fn registered_colormaps() -> Vec<String> {
+    registry().read().unwrap().keys().cloned().collect()
+}
+
+/// The overlay cursor color of a registered colormap (silx
+/// `get_colormap_cursor_color`), or `None` if `name` is not registered.
+pub fn registered_colormap_cursor_color(name: &str) -> Option<[u8; 4]> {
+    registry().read().unwrap().get(name).map(|c| c.cursor_color)
+}
+
 /// A 256-color lookup table with a value range and a [`Normalization`].
 ///
 /// `vmin`/`vmax` are the data values mapped to the first and last LUT entries.
@@ -661,6 +721,26 @@ impl Colormap {
     /// Returns `None` when `colors` is empty (silx asserts a non-empty array).
     pub fn from_colors(colors: &[[u8; 4]], vmin: f64, vmax: f64) -> Option<Self> {
         let lut = resample_lut(colors)?;
+        Some(Self {
+            lut,
+            vmin,
+            vmax,
+            normalization: Normalization::Linear,
+            gamma: DEFAULT_GAMMA,
+            nan_color: DEFAULT_NAN_COLOR,
+            autoscale_percentiles: DEFAULT_PERCENTILES,
+            editable: true,
+        })
+    }
+
+    /// Build a colormap from a custom LUT previously registered under `name`
+    /// (silx `Colormap(name=...)` resolving a `registerLUT` name), over
+    /// `[vmin, vmax]` with linear normalization and the default gamma.
+    ///
+    /// Returns `None` when no colormap is registered under `name` (register one
+    /// first with [`register_colormap`]).
+    pub fn from_registered(name: &str, vmin: f64, vmax: f64) -> Option<Self> {
+        let lut = registry().read().unwrap().get(name)?.lut;
         Some(Self {
             lut,
             vmin,
@@ -1611,5 +1691,75 @@ mod tests {
         let dup = cm.copy();
         assert_eq!(dup, cm);
         assert!(!dup.is_editable());
+    }
+
+    #[test]
+    fn register_then_resolve_round_trips_the_lut() {
+        // Distinct name keeps the process-global registry test-isolated.
+        let colors = [[0, 0, 0, 255], [255, 255, 255, 255]];
+        assert!(register_colormap("test-reg-roundtrip", &colors, None));
+
+        let cm = Colormap::from_registered("test-reg-roundtrip", 0.0, 1.0)
+            .expect("registered name resolves");
+        // The resolved LUT is exactly the resampled input.
+        assert_eq!(cm.lut, resample_lut(&colors).unwrap());
+        // Resolved colormaps default to a linear range with the default gamma.
+        assert_eq!((cm.vmin, cm.vmax), (0.0, 1.0));
+        assert_eq!(cm.normalization, Normalization::Linear);
+        assert_eq!(cm.gamma, DEFAULT_GAMMA);
+        assert!(cm.editable);
+    }
+
+    #[test]
+    fn register_empty_colors_registers_nothing() {
+        assert!(!register_colormap("test-reg-empty", &[], None));
+        assert!(Colormap::from_registered("test-reg-empty", 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn register_overrides_existing_name() {
+        assert!(register_colormap(
+            "test-reg-override",
+            &[[10, 20, 30, 255]],
+            None
+        ));
+        // Re-registering the same name wins (silx allows overriding).
+        assert!(register_colormap(
+            "test-reg-override",
+            &[[200, 100, 50, 255]],
+            None
+        ));
+        let cm = Colormap::from_registered("test-reg-override", 0.0, 1.0).unwrap();
+        assert_eq!(cm.lut[0], [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn registered_colormaps_lists_names_sorted() {
+        register_colormap("test-reg-list-b", &[[1, 1, 1, 255]], None);
+        register_colormap("test-reg-list-a", &[[2, 2, 2, 255]], None);
+        let names = registered_colormaps();
+        let a = names.iter().position(|n| n == "test-reg-list-a");
+        let b = names.iter().position(|n| n == "test-reg-list-b");
+        assert!(a.is_some() && b.is_some());
+        assert!(a < b, "BTreeMap keeps names sorted: a before b");
+    }
+
+    #[test]
+    fn cursor_color_defaults_to_black_or_uses_given() {
+        register_colormap("test-reg-cursor-default", &[[0, 0, 0, 255]], None);
+        assert_eq!(
+            registered_colormap_cursor_color("test-reg-cursor-default"),
+            Some(DEFAULT_CURSOR_COLOR)
+        );
+        register_colormap(
+            "test-reg-cursor-set",
+            &[[0, 0, 0, 255]],
+            Some([9, 8, 7, 255]),
+        );
+        assert_eq!(
+            registered_colormap_cursor_color("test-reg-cursor-set"),
+            Some([9, 8, 7, 255])
+        );
+        assert_eq!(registered_colormap_cursor_color("test-reg-not-there"), None);
     }
 }

@@ -25,7 +25,8 @@ pub use crate::core::background::{
 };
 pub use crate::core::calibration::Calibration;
 pub use crate::core::colormap::{
-    AutoscaleMode, Colormap, ColormapName, DEFAULT_PERCENTILES, Normalization,
+    AutoscaleMode, Colormap, ColormapName, DEFAULT_PERCENTILES, Normalization, register_colormap,
+    registered_colormap_cursor_color, registered_colormaps,
 };
 pub use crate::core::decimate::min_max_decimate;
 pub use crate::core::dtime_ticks::{
