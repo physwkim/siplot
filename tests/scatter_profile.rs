@@ -8,8 +8,13 @@
 //! only when a profile was actually produced. Building a `ScatterView` needs a
 //! wgpu render state (real or software).
 
-use egui_kittest::wgpu::{create_render_state, default_wgpu_setup};
-use siplot::{Colormap, ScatterView};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use egui_kittest::Harness;
+use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
+use siplot::egui;
+use siplot::{Colormap, ScatterView, YAxis};
 
 /// A triangle of scattered points carrying the affine field `v = x + 2y`, plus a
 /// 4th point so the convex hull is a quad. Linear interpolation reproduces the
@@ -78,4 +83,89 @@ fn show_line_profile_without_data_is_a_noop() {
     let shown = view.show_line_profile((0.0, 0.0), (1.0, 1.0), 5);
     assert!(!shown, "no data → no profile");
     assert!(!view.profile_window().is_open());
+}
+
+#[test]
+fn profile_mode_drag_samples_a_profile_and_opens_the_window() {
+    let rs = create_render_state(default_wgpu_setup());
+    siplot::install(&rs);
+
+    let mut view = ScatterView::new(&rs, 0);
+    let (x, y, values) = affine_scatter();
+    view.set_data(&x, &y, &values, Colormap::viridis(0.0, 12.0))
+        .expect("equal-length scatter data");
+    // Arm the interactive line-profile tool (silx `ScatterProfileToolBar`).
+    view.set_profile_mode(true);
+    assert!(view.profile_mode());
+
+    let app = Rc::new(RefCell::new(view));
+    let app_ui = app.clone();
+    let renderer = WgpuTestRenderer::from_render_state(rs.clone());
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .with_pixels_per_point(1.0)
+        .renderer(renderer)
+        .build_ui(move |ui| {
+            app_ui.borrow_mut().show(ui);
+        });
+
+    // Two frames so the plot caches its data area / transform.
+    harness.step();
+    harness.step();
+    assert!(
+        !app.borrow().profile_window().is_open(),
+        "window stays closed until a drag samples a profile"
+    );
+
+    // Pixel positions of two hull-interior data points (the quad hull is
+    // [0,4]×[0,4]); the segment (1,1)→(3,3) is fully inside.
+    let p0 = app
+        .borrow()
+        .data_to_pixel(1.0, 1.0, YAxis::Left)
+        .expect("data area cached after a frame");
+    let p1 = app
+        .borrow()
+        .data_to_pixel(3.0, 3.0, YAxis::Left)
+        .expect("data area cached after a frame");
+
+    // Simulate a continuous drag: press near p0, move incrementally to p1, then
+    // release (egui reports `drag_started` only on the first move clearing its
+    // click-vs-drag threshold, so the start stays near p0).
+    harness.drag_at(p0);
+    harness.step();
+    for t in [0.2f32, 0.5, 0.8, 1.0] {
+        harness.hover_at(p0 + (p1 - p0) * t);
+        harness.step();
+    }
+    harness.drop_at(p1);
+    harness.step();
+    harness.step();
+
+    assert!(
+        app.borrow().profile_window().is_open(),
+        "dragging the armed profile tool across the hull must sample a profile and open the window"
+    );
+}
+
+#[test]
+fn disarming_profile_mode_closes_the_window() {
+    let rs = create_render_state(default_wgpu_setup());
+    siplot::install(&rs);
+
+    let mut view = ScatterView::new(&rs, 0);
+    let (x, y, values) = affine_scatter();
+    view.set_data(&x, &y, &values, Colormap::viridis(0.0, 12.0))
+        .expect("equal-length scatter data");
+
+    view.set_profile_mode(true);
+    assert!(view.show_line_profile((0.5, 0.5), (3.5, 3.5), 9));
+    assert!(view.profile_window().is_open());
+
+    // Disarming the tool clears the profile (silx deselect behavior).
+    view.set_profile_mode(false);
+    assert!(!view.profile_mode());
+    assert!(
+        !view.profile_window().is_open(),
+        "disarming the profile tool closes the side window"
+    );
 }

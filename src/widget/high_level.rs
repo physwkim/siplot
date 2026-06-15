@@ -10172,6 +10172,10 @@ pub fn scatter_position_info(
 /// sv.show_toolbar(ui);
 /// sv.show(ui);
 /// ```
+/// Samples per scatter line profile (silx `_DefaultScatterProfileRoiMixIn`'s
+/// default `__nPoints = 1024`, `tools/profile/rois.py`).
+const SCATTER_PROFILE_NPOINTS: usize = 1024;
+
 pub struct ScatterView {
     inner: PlotWidget,
     scatter_handle: Option<ItemHandle>,
@@ -10226,6 +10230,14 @@ pub struct ScatterView {
     /// `ScatterProfileToolBar`'s profile window). Fed by [`Self::show_line_profile`]
     /// and drawn by [`Self::show`] when open.
     profile_window: crate::widget::profile_window::ProfileWindow,
+    /// Whether the interactive line-profile tool is armed (silx
+    /// `ScatterProfileToolBar` line-ROI tool). While armed, a primary drag on the
+    /// scatter samples a line profile between its endpoints into
+    /// [`Self::profile_window`].
+    profile_mode: bool,
+    /// Data-space start of the in-progress profile drag, or `None` (silx profile
+    /// ROI first point). Set on `drag_started`, cleared on `drag_stopped`.
+    profile_drag_start: Option<(f64, f64)>,
 }
 
 impl ScatterView {
@@ -10252,6 +10264,8 @@ impl ScatterView {
             alpha: None,
             cursor: None,
             profile_window: crate::widget::profile_window::ProfileWindow::new(render_state, id + 1),
+            profile_mode: false,
+            profile_drag_start: None,
         }
     }
 
@@ -10403,6 +10417,68 @@ impl ScatterView {
     /// / reduction method or to close it).
     pub fn profile_window_mut(&mut self) -> &mut crate::widget::profile_window::ProfileWindow {
         &mut self.profile_window
+    }
+
+    /// Whether the interactive line-profile tool is armed (silx
+    /// `ScatterProfileToolBar`).
+    pub fn profile_mode(&self) -> bool {
+        self.profile_mode
+    }
+
+    /// Arm or disarm the interactive line-profile tool (silx
+    /// `ScatterProfileToolBar`'s profile ROI). While armed, a primary drag across
+    /// the scatter samples a line profile between its data-space endpoints and
+    /// shows it in the side window (see [`Self::show_line_profile`]).
+    ///
+    /// Arming switches the plot to [`PlotInteractionMode::Select`] so the drag
+    /// neither pans nor box-zooms (and, with no ROI under the cursor, nothing else
+    /// consumes it); disarming restores the default [`PlotInteractionMode::Zoom`],
+    /// drops any in-progress drag, and closes the profile window (silx clears the
+    /// profile when its tool is deselected).
+    pub fn set_profile_mode(&mut self, enabled: bool) {
+        if self.profile_mode == enabled {
+            return;
+        }
+        self.profile_mode = enabled;
+        if enabled {
+            self.inner.set_interaction_mode(PlotInteractionMode::Select);
+        } else {
+            self.inner.set_interaction_mode(PlotInteractionMode::Zoom);
+            self.profile_drag_start = None;
+            self.profile_window.set_open(false);
+        }
+    }
+
+    /// Track a profile drag on the scatter plot and sample the line profile on
+    /// each dragged frame, mirroring `Plot2D::handle_profile_drag`. The drag
+    /// start/current pixels are mapped to data space via the plot transform and
+    /// fed to [`Self::show_line_profile`]; a no-op when the tool is disarmed or
+    /// there is no data.
+    fn handle_profile_drag(&mut self, plot_response: &PlotResponse) {
+        if !self.profile_mode || self.points.is_none() {
+            self.profile_drag_start = None;
+            return;
+        }
+        let response = &plot_response.response;
+        let transform = &plot_response.transform;
+
+        if response.drag_started()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.profile_drag_start = Some(transform.pixel_to_data(p));
+        }
+
+        if response.dragged()
+            && let (Some(start), Some(p)) =
+                (self.profile_drag_start, response.interact_pointer_pos())
+        {
+            let end = transform.pixel_to_data(p);
+            self.show_line_profile(start, end, SCATTER_PROFILE_NPOINTS);
+        }
+
+        if response.drag_stopped() {
+            self.profile_drag_start = None;
+        }
     }
 
     /// Set the scatter visualization mode (silx `Scatter.setVisualization`).
@@ -10966,6 +11042,9 @@ impl ScatterView {
                 response
             })
             .inner;
+        // Sample the line profile when the profile tool is armed and the user is
+        // dragging across the scatter (silx `ScatterProfileToolBar`).
+        self.handle_profile_drag(&response);
         // Draw the line-profile side window (silx `ScatterProfileToolBar`'s
         // profile window) when open; it lives in its own viewport beside the plot.
         self.profile_window.show(ui.ctx());
