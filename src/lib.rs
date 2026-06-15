@@ -99,7 +99,7 @@ pub use crate::render::save::{
     rgba_to_rgb, save_graph, save_graph_with_format,
 };
 pub use crate::render::scene3d_items::{
-    Box3D, ColormapMesh3D, CutPlane, Cylinder3D, DEFAULT_CUT_PLANE_RESOLUTION,
+    Box3D, ColormapMesh3D, ComplexField3D, CutPlane, Cylinder3D, DEFAULT_CUT_PLANE_RESOLUTION,
     DEFAULT_ISOSURFACE_COLOR, DEFAULT_SCATTER3D_SIZE, HeightMapData, HeightMapRGBA, Hexagon3D,
     ImageData3D, ImageRgba3D, Isosurface, Mesh3D, MeshColor, MeshDrawMode, ScalarField3D,
     Scatter3D, mean_plus_std,

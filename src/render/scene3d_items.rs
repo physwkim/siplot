@@ -9,6 +9,7 @@
 use egui::Color32;
 
 use crate::core::colormap::{AutoscaleMode, Colormap, ColormapName};
+use crate::core::complex::ComplexMode;
 use crate::core::scene3d::marching_cubes::isosurface as marching_cubes_isosurface;
 use crate::core::scene3d::mat4::{Mat4, Vec3, mat4_rotate};
 use crate::core::scene3d::plane::{Plane, box_plane_intersect};
@@ -2191,6 +2192,190 @@ fn compute_data_range(data: &[f32]) -> Option<(f32, f32, f32)> {
     Some((min, min_pos, max))
 }
 
+/// A 3D complex field on a regular grid, visualised by projecting each sample to
+/// a real scalar (the [`ComplexMode`]) and then reusing the [`ScalarField3D`]
+/// machinery — marching-cubes iso-surfaces and the colormapped cut plane.
+///
+/// Port of silx `plot3d.items.volume.ComplexField3D` (+ `ComplexMixIn`). Holds
+/// the `(depth, height, width)` complex field as parallel real/imaginary arrays
+/// (`zyx`, `width` contiguous) and an inner `ScalarField3D` carrying the current
+/// projection. [`set_complex_mode`](Self::set_complex_mode) reprojects and, as in
+/// silx, clears the iso-surfaces (their levels were tied to the old mode's
+/// range); the cut plane persists across a mode change. Iso-surface and cut-plane
+/// management is reached through [`field`](Self::field) / [`field_mut`](Self::field_mut).
+///
+/// The mode is the shared silx `ComplexMode` ([`crate::core::complex`]); the six
+/// scalar modes (`Absolute`, `Phase`, `Real`, `Imaginary`, `SquareAmplitude`,
+/// `Log10Amplitude`) project to a real field. Documented simplification (matches
+/// the rest of the port): silx's two hue-display modes (`AmplitudePhase`,
+/// `Log10AmplitudePhase`) colour an iso-surface by phase rather than extract a
+/// scalar; they are not ported and project to an all-zero field
+/// ([`ComplexMode::to_scalar`] returns `0.0` for them).
+#[derive(Clone, Debug)]
+pub struct ComplexField3D {
+    re: Vec<f32>,
+    im: Vec<f32>,
+    depth: usize,
+    height: usize,
+    width: usize,
+    mode: ComplexMode,
+    field: ScalarField3D,
+}
+
+impl Default for ComplexField3D {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ComplexField3D {
+    /// An empty complex field with the default mode (amplitude, silx
+    /// `ABSOLUTE`) and a hidden cut plane.
+    pub fn new() -> Self {
+        Self {
+            re: Vec::new(),
+            im: Vec::new(),
+            mode: ComplexMode::Absolute,
+            depth: 0,
+            height: 0,
+            width: 0,
+            field: ScalarField3D::new(),
+        }
+    }
+
+    /// Set the complex field from parallel real/imaginary arrays, both row-major
+    /// `(depth, height, width)` with `width` contiguous. Returns `false` (leaving
+    /// the field unchanged) when the lengths disagree, `re.len() !=
+    /// depth*height*width`, or any dimension is `< 2` (silx asserts
+    /// `min(shape) >= 2`). The current mode's projection is pushed into the inner
+    /// field (re-resolving auto-level iso-surfaces).
+    pub fn set_data(
+        &mut self,
+        re: &[f32],
+        im: &[f32],
+        depth: usize,
+        height: usize,
+        width: usize,
+    ) -> bool {
+        if depth < 2 || height < 2 || width < 2 {
+            return false;
+        }
+        let n = depth * height * width;
+        if re.len() != n || im.len() != n {
+            return false;
+        }
+        self.re = re.to_vec();
+        self.im = im.to_vec();
+        self.depth = depth;
+        self.height = height;
+        self.width = width;
+        self.reproject();
+        true
+    }
+
+    /// Builder form of [`set_data`](Self::set_data); inconsistent data leaves the
+    /// field empty.
+    pub fn with_data(
+        mut self,
+        re: &[f32],
+        im: &[f32],
+        depth: usize,
+        height: usize,
+        width: usize,
+    ) -> Self {
+        self.set_data(re, im, depth, height, width);
+        self
+    }
+
+    /// The current complex visualisation mode.
+    pub fn complex_mode(&self) -> ComplexMode {
+        self.mode
+    }
+
+    /// Set the complex visualisation mode (silx `setComplexMode`). Changing it
+    /// clears the iso-surfaces (their levels were tied to the previous mode's
+    /// value range) and reprojects the field; the cut plane is kept. A no-op when
+    /// the mode is unchanged.
+    pub fn set_complex_mode(&mut self, mode: ComplexMode) {
+        if mode == self.mode {
+            return;
+        }
+        self.mode = mode;
+        self.field.clear_isosurfaces();
+        self.reproject();
+    }
+
+    /// The projected real field of `mode` (silx `getData(mode=…)`), or `None`
+    /// when no data is set.
+    pub fn projected_data(&self, mode: ComplexMode) -> Option<Vec<f32>> {
+        if self.re.is_empty() {
+            return None;
+        }
+        Some(
+            self.re
+                .iter()
+                .zip(&self.im)
+                .map(|(&r, &i)| mode.to_scalar(r, i))
+                .collect(),
+        )
+    }
+
+    /// The `(min, min_positive, max)` range of `mode`'s projection over finite
+    /// samples (silx `getDataRange(mode=…)`), or `None` when empty / all
+    /// non-finite.
+    pub fn data_range_for(&self, mode: ComplexMode) -> Option<(f32, f32, f32)> {
+        let data = self.projected_data(mode)?;
+        compute_data_range(&data)
+    }
+
+    /// Field dimensions `(depth, height, width)`.
+    pub fn dimensions(&self) -> (usize, usize, usize) {
+        (self.depth, self.height, self.width)
+    }
+
+    /// True when no field data is set.
+    pub fn is_empty(&self) -> bool {
+        self.re.is_empty()
+    }
+
+    /// Read-only access to the inner scalar field (the current projection, its
+    /// iso-surfaces, and the cut plane).
+    pub fn field(&self) -> &ScalarField3D {
+        &self.field
+    }
+
+    /// Mutable access to the inner scalar field — add/remove iso-surfaces, set the
+    /// cut plane. The field data itself is owned here and refreshed on
+    /// `set_data`/`set_complex_mode`; do not call its `set_data` directly.
+    pub fn field_mut(&mut self) -> &mut ScalarField3D {
+        &mut self.field
+    }
+
+    /// The volume bounding box `(0,0,0)..(width,height,depth)`, or `None` when no
+    /// data is set.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        self.field.bounds()
+    }
+
+    /// Append the projected field's iso-surfaces and cut plane to `geometry`
+    /// (delegates to the inner [`ScalarField3D`]).
+    pub fn append_to(&self, geometry: &mut Scene3dGeometry) {
+        self.field.append_to(geometry);
+    }
+
+    /// Push the current mode's projection into the inner scalar field.
+    fn reproject(&mut self) {
+        let data: Vec<f32> = self
+            .re
+            .iter()
+            .zip(&self.im)
+            .map(|(&r, &i)| self.mode.to_scalar(r, i))
+            .collect();
+        self.field
+            .set_data(&data, self.depth, self.height, self.width);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3009,6 +3194,104 @@ mod tests {
         assert!(
             g.textured_meshes.is_empty(),
             "plane misses the volume → no mesh"
+        );
+    }
+
+    /// A 2×2×2 complex field with one distinctive sample (`3 + 4i`) so each
+    /// projection is checkable; the rest are zero.
+    fn complex_field() -> (Vec<f32>, Vec<f32>, usize, usize, usize) {
+        let (d, h, w) = (2usize, 2usize, 2usize);
+        let mut re = vec![0.0f32; d * h * w];
+        let mut im = vec![0.0f32; d * h * w];
+        re[0] = 3.0;
+        im[0] = 4.0;
+        (re, im, d, h, w)
+    }
+
+    #[test]
+    fn complex_mode_projections() {
+        // 3 + 4i: |z| = 5, |z|² = 25, phase = atan2(4,3), re = 3, im = 4.
+        assert_eq!(ComplexMode::Absolute.to_scalar(3.0, 4.0), 5.0);
+        assert_eq!(ComplexMode::SquareAmplitude.to_scalar(3.0, 4.0), 25.0);
+        assert_eq!(ComplexMode::Real.to_scalar(3.0, 4.0), 3.0);
+        assert_eq!(ComplexMode::Imaginary.to_scalar(3.0, 4.0), 4.0);
+        assert!((ComplexMode::Phase.to_scalar(3.0, 4.0) - 4.0f32.atan2(3.0)).abs() < 1e-6);
+        // The two hue-display modes have no scalar (project to 0.0).
+        assert_eq!(ComplexMode::AmplitudePhase.to_scalar(3.0, 4.0), 0.0);
+    }
+
+    #[test]
+    fn complex_field_rejects_bad_shape() {
+        let mut cf = ComplexField3D::new();
+        // re/im length disagree.
+        assert!(!cf.set_data(&[0.0; 8], &[0.0; 7], 2, 2, 2));
+        // Wrong length for the dims.
+        assert!(!cf.set_data(&[0.0; 7], &[0.0; 7], 2, 2, 2));
+        // A dimension < 2.
+        assert!(!cf.set_data(&[0.0; 2], &[0.0; 2], 1, 2, 1));
+        assert!(cf.is_empty());
+        // Valid.
+        assert!(cf.set_data(&[0.0; 8], &[0.0; 8], 2, 2, 2));
+        assert_eq!(cf.dimensions(), (2, 2, 2));
+    }
+
+    #[test]
+    fn complex_field_projects_into_inner_field_per_mode() {
+        let (re, im, d, h, w) = complex_field();
+        let cf = ComplexField3D::new().with_data(&re, &im, d, h, w);
+        // Default amplitude: sample 0 → 5, the rest 0 → range (0, 5, 5).
+        assert_eq!(cf.complex_mode(), ComplexMode::Absolute);
+        assert_eq!(cf.field().data()[0], 5.0);
+        assert_eq!(
+            cf.data_range_for(ComplexMode::Absolute),
+            Some((0.0, 5.0, 5.0))
+        );
+        assert_eq!(
+            cf.data_range_for(ComplexMode::SquareAmplitude),
+            Some((0.0, 25.0, 25.0))
+        );
+        // projected_data is independent of the current mode.
+        assert_eq!(cf.projected_data(ComplexMode::Real).unwrap()[0], 3.0);
+        assert_eq!(cf.projected_data(ComplexMode::Imaginary).unwrap()[0], 4.0);
+    }
+
+    #[test]
+    fn set_complex_mode_reprojects_and_clears_isosurfaces() {
+        let (re, im, d, h, w) = complex_field();
+        let mut cf = ComplexField3D::new().with_data(&re, &im, d, h, w);
+        cf.field_mut().add_isosurface(2.0, DEFAULT_ISOSURFACE_COLOR);
+        assert_eq!(cf.field().isosurfaces().len(), 1);
+        assert_eq!(cf.field().data()[0], 5.0); // amplitude
+
+        // Switching mode reprojects the inner field and clears iso-surfaces.
+        cf.set_complex_mode(ComplexMode::SquareAmplitude);
+        assert_eq!(cf.complex_mode(), ComplexMode::SquareAmplitude);
+        assert_eq!(cf.field().data()[0], 25.0);
+        assert!(
+            cf.field().isosurfaces().is_empty(),
+            "mode change clears iso-surfaces (silx setComplexMode)"
+        );
+
+        // Same-mode set is a no-op (keeps any newly added iso-surfaces).
+        cf.field_mut()
+            .add_isosurface(10.0, DEFAULT_ISOSURFACE_COLOR);
+        cf.set_complex_mode(ComplexMode::SquareAmplitude);
+        assert_eq!(
+            cf.field().isosurfaces().len(),
+            1,
+            "unchanged mode is a no-op"
+        );
+    }
+
+    #[test]
+    fn complex_field_cut_plane_persists_across_mode_change() {
+        let (re, im, d, h, w) = complex_field();
+        let mut cf = ComplexField3D::new().with_data(&re, &im, d, h, w);
+        cf.field_mut().cut_plane_mut().set_visible(true);
+        cf.set_complex_mode(ComplexMode::Phase);
+        assert!(
+            cf.field().cut_plane().is_visible(),
+            "the cut plane survives a mode change (only iso-surfaces are cleared)"
         );
     }
 }
