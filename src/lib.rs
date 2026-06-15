@@ -114,7 +114,9 @@ pub use crate::render::scene3d_items::{
 pub use crate::widget::actions;
 pub use crate::widget::actions::io::{SaveTarget, curve_to_csv};
 pub use crate::widget::actions::mode::{mask_draw_mode, pan_mode, select_mode, zoom_mode};
-pub use crate::widget::alpha_slider::{AlphaSlider, AlphaSliderOrientation};
+pub use crate::widget::alpha_slider::{
+    ActiveImageAlphaSlider, AlphaSlider, AlphaSliderOrientation, NamedItemAlphaSlider,
+};
 pub use crate::widget::colorbar::{ColorBarOrientation, ColorBarWidget};
 pub use crate::widget::colormap_dialog::ColormapDialog;
 pub use crate::widget::complex_image_view::{ComplexImageView, ComplexMode};

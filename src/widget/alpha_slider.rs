@@ -3,11 +3,21 @@
 //! [`AlphaSlider`] mirrors silx `BaseAlphaSlider` (`AlphaSlider.py:86-156`): a
 //! slider whose state is an integer in `0..=255`, exposing the corresponding
 //! opacity as a float in `[0.0, 1.0]` with a step of `1/255`. silx's concrete
-//! subclasses (`ActiveImageAlphaSlider`, `NamedItemAlphaSlider`) bind the value
-//! to a specific plot item; that binding needs the plot model and is deferred
-//! (see this wave's report) — this is the standalone base.
+//! subclasses bind the value to a specific plot item:
+//! [`ActiveImageAlphaSlider`] (silx `ActiveImageAlphaSlider`, the active image)
+//! and [`NamedItemAlphaSlider`] (silx `NamedImageAlphaSlider`, an image by
+//! legend) drive a [`PlotWidget`]'s image alpha through its retained
+//! [`set_image_alpha`](PlotWidget::set_image_alpha) path. silx's curve/scatter
+//! named bindings are not mirrored: siplot retains a re-applicable per-item
+//! alpha only for scalar images (a curve bakes opacity into its color and a
+//! scatter retains no data), so those sliders would have nothing to drive — the
+//! bindings disable when the named item is absent or carries no addressable
+//! alpha, mirroring silx's "no item → disabled" rule.
 
 use egui::{Response, Slider};
+
+use crate::core::backend::ItemHandle;
+use crate::widget::high_level::PlotWidget;
 
 /// Orientation of the slider track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -113,6 +123,162 @@ fn alpha_from_u8(value: u8) -> f32 {
 fn u8_from_alpha(alpha: f32) -> u8 {
     let clamped = alpha.clamp(0.0, 1.0);
     (clamped * 255.0).round() as u8
+}
+
+/// An [`AlphaSlider`] bound to a [`PlotWidget`]'s **active image** (silx
+/// `ActiveImageAlphaSlider`, `AlphaSlider.py:158-193`).
+///
+/// Like silx's slider it holds the plot's active image as its target
+/// (`getItem() = getActiveImage()`): the slider seeds from the bound image's
+/// alpha and writes every change back through
+/// [`PlotWidget::set_active_image_alpha`]. With no scalar active image present
+/// the slider disables (silx disables when `getItem()` is `None`).
+///
+/// Immediate-mode binding: the host calls [`show`](Self::show) each frame with
+/// the plot, instead of silx connecting to `sigActiveImageChanged`. One
+/// deliberate deviation from silx: when the active image *switches* to a
+/// different image, this re-seeds the slider from the new image's alpha (so the
+/// slider always shows the bound image's opacity), whereas silx pushes the
+/// slider's current value onto the newly-activated image. The first bind and
+/// the write-on-change paths match silx.
+#[derive(Clone, Debug, Default)]
+pub struct ActiveImageAlphaSlider {
+    slider: AlphaSlider,
+    /// The image handle the slider is currently seeded from, so a change of
+    /// active image triggers a re-seed (silx `_activeImageChanged`).
+    bound: Option<ItemHandle>,
+}
+
+impl ActiveImageAlphaSlider {
+    /// A new active-image alpha slider (unbound until [`show`](Self::show) sees a
+    /// plot with a scalar active image).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the track orientation (builder form), forwarded to the inner slider.
+    pub fn with_orientation(mut self, orientation: AlphaSliderOrientation) -> Self {
+        self.slider.orientation = orientation;
+        self
+    }
+
+    /// The current opacity as a float in `[0.0, 1.0]` (silx `getAlpha`).
+    pub fn alpha(&self) -> f32 {
+        self.slider.alpha()
+    }
+
+    /// The current opacity as a `0..=255` integer (silx slider value).
+    pub fn value(&self) -> u8 {
+        self.slider.value()
+    }
+
+    /// Show the slider bound to `plot`'s active image; returns its [`Response`].
+    ///
+    /// Seeds from the bound image's alpha on (re)binding, disables when there is
+    /// no scalar active image, and on a value change applies the new opacity to
+    /// the active image (silx `_updateItem` → `item.setAlpha`).
+    pub fn show(&mut self, ui: &mut egui::Ui, plot: &mut PlotWidget) -> Response {
+        let item = plot.active_image_handle();
+        if item != self.bound {
+            self.bound = item;
+            if let Some(alpha) = plot.active_image_alpha() {
+                self.slider.set_alpha(alpha);
+            }
+        }
+        let enabled = item.is_some();
+        let response = ui.add_enabled_ui(enabled, |ui| self.slider.ui(ui)).inner;
+        if enabled && response.changed() {
+            plot.set_active_image_alpha(self.slider.alpha());
+        }
+        response
+    }
+}
+
+/// An [`AlphaSlider`] bound to a [`PlotWidget`]'s **image identified by legend**
+/// (silx `NamedItemAlphaSlider` / `NamedImageAlphaSlider`,
+/// `AlphaSlider.py:196-285`).
+///
+/// silx's `NamedItemAlphaSlider` is addressed by `(kind, legend)` and can target
+/// an image, scatter, or curve. siplot retains a re-applicable per-item alpha
+/// only for scalar images, so this binds to the image carrying `legend`
+/// (silx `NamedImageAlphaSlider`); the scatter/curve named bindings are deferred
+/// (those items carry no addressable per-item alpha here). The slider disables
+/// when no image with that legend exists, mirroring silx's
+/// `_updateState`/`_onContentChanged` enable/disable on item add/remove.
+#[derive(Clone, Debug, Default)]
+pub struct NamedItemAlphaSlider {
+    slider: AlphaSlider,
+    /// Legend of the image whose opacity this slider controls (silx
+    /// `_item_legend`).
+    legend: String,
+    /// The resolved image handle the slider is currently seeded from, so a
+    /// change of target (new legend, item add/remove) triggers a re-seed.
+    bound: Option<ItemHandle>,
+}
+
+impl NamedItemAlphaSlider {
+    /// A slider controlling the opacity of the image with `legend` (silx
+    /// `NamedImageAlphaSlider(legend=...)`).
+    pub fn new(legend: impl Into<String>) -> Self {
+        Self {
+            slider: AlphaSlider::default(),
+            legend: legend.into(),
+            bound: None,
+        }
+    }
+
+    /// Set the track orientation (builder form), forwarded to the inner slider.
+    pub fn with_orientation(mut self, orientation: AlphaSliderOrientation) -> Self {
+        self.slider.orientation = orientation;
+        self
+    }
+
+    /// The legend of the image currently controlled by this slider (silx
+    /// `getLegend`).
+    pub fn legend(&self) -> &str {
+        &self.legend
+    }
+
+    /// Associate a different image legend with the slider (silx `setLegend`);
+    /// the next [`show`](Self::show) re-seeds from the new target.
+    pub fn set_legend(&mut self, legend: impl Into<String>) {
+        self.legend = legend.into();
+    }
+
+    /// The current opacity as a float in `[0.0, 1.0]` (silx `getAlpha`).
+    pub fn alpha(&self) -> f32 {
+        self.slider.alpha()
+    }
+
+    /// The current opacity as a `0..=255` integer (silx slider value).
+    pub fn value(&self) -> u8 {
+        self.slider.value()
+    }
+
+    /// Show the slider bound to the image named [`legend`](Self::legend) in
+    /// `plot`; returns its [`Response`]. Seeds from the bound image on
+    /// (re)binding, disables when no such image exists, and applies a value
+    /// change to that image (silx `_updateItem` → `item.setAlpha`).
+    pub fn show(&mut self, ui: &mut egui::Ui, plot: &mut PlotWidget) -> Response {
+        let item = plot.image_by_legend(&self.legend);
+        if item != self.bound {
+            self.bound = item;
+            if let Some(handle) = item
+                && let Some(alpha) = plot.image_alpha(handle)
+            {
+                self.slider.set_alpha(alpha);
+            }
+        }
+        let enabled = item.is_some();
+        let response = ui.add_enabled_ui(enabled, |ui| self.slider.ui(ui)).inner;
+        if enabled
+            && response.changed()
+            && let Some(handle) = item
+        {
+            plot.set_image_alpha(handle, self.slider.alpha());
+        }
+        response
+    }
 }
 
 #[cfg(test)]

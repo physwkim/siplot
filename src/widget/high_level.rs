@@ -2121,6 +2121,7 @@ fn image_spec_retained_data(spec: &ImageSpec<'_>) -> Option<RetainedItemData> {
             origin: spec.origin,
             scale: spec.scale,
             colormap: colormap.clone(),
+            alpha: spec.alpha,
         }),
         ImagePixelsSpec::Rgba { .. } => None,
     }
@@ -2394,11 +2395,11 @@ fn marker_spec_from_data(marker: &Marker) -> MarkerSpec<'_> {
 enum RetainedItemData {
     /// A curve's `(x, y)` arrays.
     Curve { x: Vec<f64>, y: Vec<f64> },
-    /// A scalar image's row-major pixels (as `f64`), its geometry, and its
-    /// colormap (retained so a raw-pixel autoscale can re-upload the image with
-    /// new value limits without depending on transient render state). The
-    /// colormap is boxed: its 256-entry LUT would otherwise dominate the enum's
-    /// size and bloat every `Curve` variant too.
+    /// A scalar image's row-major pixels (as `f64`), its geometry, its
+    /// colormap, and its global opacity (retained so a raw-pixel autoscale can
+    /// re-upload the image with new value limits without depending on transient
+    /// render state). The colormap is boxed: its 256-entry LUT would otherwise
+    /// dominate the enum's size and bloat every `Curve` variant too.
     Image {
         data: Vec<f64>,
         width: usize,
@@ -2406,6 +2407,15 @@ enum RetainedItemData {
         origin: (f64, f64),
         scale: (f64, f64),
         colormap: Box<Colormap>,
+        /// Global image opacity in `[0, 1]` (silx image `alpha`, `AlphaMixIn`).
+        /// Retained so every re-upload path (autoscale, level edit, median
+        /// filter, the [`ActiveImageAlphaSlider`]/[`NamedItemAlphaSlider`]
+        /// bindings) preserves the current alpha instead of resetting it to the
+        /// `ImageSpec::scalar` default of `1.0`.
+        ///
+        /// [`ActiveImageAlphaSlider`]: crate::widget::alpha_slider::ActiveImageAlphaSlider
+        /// [`NamedItemAlphaSlider`]: crate::widget::alpha_slider::NamedItemAlphaSlider
+        alpha: f32,
     },
 }
 
@@ -6448,7 +6458,7 @@ impl PlotWidget {
     /// `None` when the active item is not a scalar image with retained data.
     pub fn autoscale_active_image(&mut self, mode: AutoscaleMode) -> Option<(f64, f64)> {
         let handle = self.active_item?;
-        let (data, width, height, origin, scale, base) = match self.retained_data(handle)? {
+        let (data, width, height, origin, scale, base, alpha) = match self.retained_data(handle)? {
             RetainedItemData::Image {
                 data,
                 width,
@@ -6456,6 +6466,7 @@ impl PlotWidget {
                 origin,
                 scale,
                 colormap,
+                alpha,
             } => (
                 data.clone(),
                 *width,
@@ -6463,6 +6474,7 @@ impl PlotWidget {
                 *origin,
                 *scale,
                 (**colormap).clone(),
+                *alpha,
             ),
             RetainedItemData::Curve { .. } => return None,
         };
@@ -6472,6 +6484,7 @@ impl PlotWidget {
         let mut spec = ImageSpec::scalar(width as u32, height as u32, &pixels, cm);
         spec.origin = origin;
         spec.scale = scale;
+        spec.alpha = alpha;
         self.update_image_spec(handle, spec);
         Some(limits)
     }
@@ -6488,7 +6501,7 @@ impl PlotWidget {
         let Some(handle) = self.active_item else {
             return false;
         };
-        let (data, width, height, origin, scale, mut cm) = match self.retained_data(handle) {
+        let (data, width, height, origin, scale, mut cm, alpha) = match self.retained_data(handle) {
             Some(RetainedItemData::Image {
                 data,
                 width,
@@ -6496,6 +6509,69 @@ impl PlotWidget {
                 origin,
                 scale,
                 colormap,
+                alpha,
+            }) => (
+                data.clone(),
+                *width,
+                *height,
+                *origin,
+                *scale,
+                (**colormap).clone(),
+                *alpha,
+            ),
+            _ => return false,
+        };
+        cm.vmin = vmin;
+        cm.vmax = vmax;
+        let pixels: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+        let mut spec = ImageSpec::scalar(width as u32, height as u32, &pixels, cm);
+        spec.origin = origin;
+        spec.scale = scale;
+        spec.alpha = alpha;
+        self.update_image_spec(handle, spec)
+    }
+
+    /// The global opacity of the scalar image at `handle` (silx image
+    /// `getAlpha`, `AlphaMixIn`), or `None` when the item is not a scalar image
+    /// with retained data.
+    ///
+    /// This is the read side of the [`AlphaSlider`](crate::widget::alpha_slider::AlphaSlider)
+    /// item bindings ([`ActiveImageAlphaSlider`]/[`NamedItemAlphaSlider`]):
+    /// `getItem().getAlpha()`. Only images carry a retained, re-applicable
+    /// alpha — curves bake opacity into their color and scatters retain no
+    /// data, so neither is addressable here (the bindings disable for them,
+    /// mirroring silx's "no item → disabled" rule).
+    ///
+    /// [`ActiveImageAlphaSlider`]: crate::widget::alpha_slider::ActiveImageAlphaSlider
+    /// [`NamedItemAlphaSlider`]: crate::widget::alpha_slider::NamedItemAlphaSlider
+    pub fn image_alpha(&self, handle: ItemHandle) -> Option<f32> {
+        match self.retained_data(handle) {
+            Some(RetainedItemData::Image { alpha, .. }) => Some(*alpha),
+            _ => None,
+        }
+    }
+
+    /// Set the global opacity of the scalar image at `handle`, re-uploading it
+    /// with the new alpha and the same pixels / geometry / colormap (silx image
+    /// `setAlpha`, `AlphaMixIn`). Returns `true` when a scalar image with
+    /// retained data was updated, `false` otherwise.
+    ///
+    /// `alpha` is clamped to `[0, 1]` (silx `AlphaMixIn.setAlpha`). This is the
+    /// write side of the [`ActiveImageAlphaSlider`]/[`NamedItemAlphaSlider`]
+    /// bindings (`getItem().setAlpha(value)`).
+    ///
+    /// [`ActiveImageAlphaSlider`]: crate::widget::alpha_slider::ActiveImageAlphaSlider
+    /// [`NamedItemAlphaSlider`]: crate::widget::alpha_slider::NamedItemAlphaSlider
+    pub fn set_image_alpha(&mut self, handle: ItemHandle, alpha: f32) -> bool {
+        let (data, width, height, origin, scale, cm) = match self.retained_data(handle) {
+            Some(RetainedItemData::Image {
+                data,
+                width,
+                height,
+                origin,
+                scale,
+                colormap,
+                ..
             }) => (
                 data.clone(),
                 *width,
@@ -6506,13 +6582,44 @@ impl PlotWidget {
             ),
             _ => return false,
         };
-        cm.vmin = vmin;
-        cm.vmax = vmax;
         let pixels: Vec<f32> = data.iter().map(|&v| v as f32).collect();
         let mut spec = ImageSpec::scalar(width as u32, height as u32, &pixels, cm);
         spec.origin = origin;
         spec.scale = scale;
+        spec.alpha = alpha.clamp(0.0, 1.0);
         self.update_image_spec(handle, spec)
+    }
+
+    /// The active item's handle when it is a scalar image with retained data,
+    /// else `None` (silx `getActiveImage()` restricted to images that carry an
+    /// addressable alpha). Used by [`ActiveImageAlphaSlider`] to detect when the
+    /// active-image binding changes and re-seed the slider from the new item.
+    ///
+    /// [`ActiveImageAlphaSlider`]: crate::widget::alpha_slider::ActiveImageAlphaSlider
+    pub fn active_image_handle(&self) -> Option<ItemHandle> {
+        let handle = self.active_item?;
+        matches!(
+            self.retained_data(handle),
+            Some(RetainedItemData::Image { .. })
+        )
+        .then_some(handle)
+    }
+
+    /// The active image's global opacity (silx `ActiveImageAlphaSlider`
+    /// `getItem().getAlpha()` = `getActiveImage().getAlpha()`), or `None` when
+    /// the active item is not a scalar image with retained data.
+    pub fn active_image_alpha(&self) -> Option<f32> {
+        self.active_item.and_then(|handle| self.image_alpha(handle))
+    }
+
+    /// Set the active image's global opacity (silx `ActiveImageAlphaSlider`
+    /// `getItem().setAlpha(value)`). Returns `true` when a scalar active image
+    /// was updated, `false` otherwise. `alpha` is clamped to `[0, 1]`.
+    pub fn set_active_image_alpha(&mut self, alpha: f32) -> bool {
+        match self.active_item {
+            Some(handle) => self.set_image_alpha(handle, alpha),
+            None => false,
+        }
     }
 
     /// Apply a median filter to the active image and replace it in place (silx
@@ -6557,7 +6664,8 @@ impl PlotWidget {
             Some(h) => h,
             None => return false,
         };
-        let (data, width, height, origin, scale, colormap) = match self.retained_data(handle) {
+        let (data, width, height, origin, scale, colormap, alpha) = match self.retained_data(handle)
+        {
             Some(RetainedItemData::Image {
                 data,
                 width,
@@ -6565,6 +6673,7 @@ impl PlotWidget {
                 origin,
                 scale,
                 colormap,
+                alpha,
             }) => (
                 data.clone(),
                 *width,
@@ -6572,6 +6681,7 @@ impl PlotWidget {
                 *origin,
                 *scale,
                 (**colormap).clone(),
+                *alpha,
             ),
             _ => return false,
         };
@@ -6589,6 +6699,7 @@ impl PlotWidget {
         let mut spec = ImageSpec::scalar(width as u32, height as u32, &pixels, colormap);
         spec.origin = origin;
         spec.scale = scale;
+        spec.alpha = alpha;
         self.update_image_spec(handle, spec);
         true
     }
@@ -14300,6 +14411,7 @@ mod tests {
             origin: (0.0, 0.0),
             scale: (1.0, 1.0),
             colormap: Box::new(Colormap::viridis(0.0, 1.0)),
+            alpha: 1.0,
         };
         let input = retained_data_to_stats_input(&data);
         let mut w = StatsWidget::new();
@@ -14332,6 +14444,7 @@ mod tests {
             origin: (0.0, 0.0),
             scale: (1.0, 1.0),
             colormap: Box::new(Colormap::viridis(0.0, 1.0)),
+            alpha: 1.0,
         };
         let mut named = ManagedRoi::new(Roi::Rect {
             x: (0.0, 2.0),
@@ -14473,6 +14586,7 @@ mod tests {
             origin: (0.0, 0.0),
             scale: (1.0, 1.0),
             colormap: Box::new(Colormap::viridis(0.0, 1.0)),
+            alpha: 1.0,
         };
         assert!(retained_curve_xy(&image).is_none());
     }
