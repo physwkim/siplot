@@ -187,6 +187,9 @@ The `high_level_*` examples deliberately mirror common silx examples from
 | `cargo run --example high_level_fit_widget` | Iterative curve fitting (Gaussian / Lorentzian / Pseudo-Voigt). |
 | `cargo run --example high_level_roi_manager` | Styled, named, selectable ROIs on the plot. |
 | `cargo run --example high_level_colormap_dialog` | Runtime colormap / vmin / vmax / normalization picker. |
+| `cargo run --example scene3d` | Low-level 3D scene: colormapped `Scatter3D` helix + lit `Mesh3D` saddle, with orbit/pan/zoom. |
+| `cargo run --example scalar_field_view` | `ScalarFieldView` flagship — `sinc` volume iso-surface (silx `viewer3DVolume`). |
+| `cargo run --example scene_window` | `SceneWindow` — iso-surfaces + jet cut plane + viewpoint toolbar, properties panel, and X/Y/Z/Data pick readout. |
 
 See [`doc/high-level-api.md`](doc/high-level-api.md) for the full silx-example
 mapping.

@@ -225,3 +225,15 @@ path = "examples/high_level_roi_manager.rs"
 [[example]]
 name = "gallery"
 path = "examples/gallery.rs"
+
+[[example]]
+name = "scene3d"
+path = "examples/scene3d.rs"
+
+[[example]]
+name = "scalar_field_view"
+path = "examples/scalar_field_view.rs"
+
+[[example]]
+name = "scene_window"
+path = "examples/scene_window.rs"
