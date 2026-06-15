@@ -132,7 +132,10 @@ fn scene3d_image_quad_projects_its_texels() {
         v[ch] > 200 && v[(ch + 1) % 3] < 70 && v[(ch + 2) % 3] < 70
     };
     assert!(dominant(red, 0), "bottom-left should be red; got {red:?}");
-    assert!(dominant(green, 1), "bottom-right should be green; got {green:?}");
+    assert!(
+        dominant(green, 1),
+        "bottom-right should be green; got {green:?}"
+    );
     assert!(dominant(blue, 2), "top-left should be blue; got {blue:?}");
     assert!(
         white.0 > 200 && white.1 > 200 && white.2 > 200,
