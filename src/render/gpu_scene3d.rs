@@ -146,6 +146,40 @@ const SCENE3D_POINT_ATTRS: [wgpu::VertexAttribute; 4] = [
     },
 ];
 
+/// One shaded-mesh vertex: world-space position, linear-premultiplied RGBA, and
+/// a world-space normal for lighting. `repr(C)` so the 40-byte stride matches
+/// [`SCENE3D_MESH_ATTRS`] and `scene3d_mesh.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Scene3dMeshVertex {
+    /// World-space position (model is identity; items bake world coordinates).
+    pub pos: [f32; 3],
+    /// Linear color space, premultiplied alpha — same convention as the 2D path.
+    pub color: [f32; 4],
+    /// World-space surface normal (need not be unit; the shader normalizes).
+    pub normal: [f32; 3],
+}
+
+/// Per-vertex attributes for [`Scene3dMeshVertex`]: pos at location 0 (offset 0),
+/// color at 1 (offset 12), normal at 2 (offset 28).
+const SCENE3D_MESH_ATTRS: [wgpu::VertexAttribute; 3] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 28,
+        shader_location: 2,
+    },
+];
+
 /// Uniform block for `scene3d.wgsl`: the column-major, clip-corrected MVP.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -153,6 +187,15 @@ struct Scene3dParams {
     /// `camera.matrix() × model`, transposed to column-major and depth-corrected
     /// for wgpu z∈[0,1] (see [`crate::core::scene3d::mat4::Mat4::to_gpu_clip_cols`]).
     mvp: [[f32; 4]; 4],
+}
+
+/// Uniform block for `scene3d_mesh.wgsl`: the clip MVP plus the camera-space
+/// normal transform (the view matrix, column-major, no depth correction).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Scene3dMeshParams {
+    mvp: [[f32; 4]; 4],
+    normal_mat: [[f32; 4]; 4],
 }
 
 /// Uniform block for `scene3d_points.wgsl`: the MVP plus the offscreen viewport
@@ -173,10 +216,14 @@ struct Scene3dPointParams {
 pub struct Scene3dGeometry {
     /// Pairs of vertices, each pair one line segment (`LineList` topology).
     pub(crate) lines: Vec<Scene3dVertex>,
-    /// Triples of vertices, each triple one triangle (`TriangleList` topology).
+    /// Triples of vertices, each triple one triangle (`TriangleList` topology),
+    /// flat-shaded (no lighting) — chrome and simple fills.
     pub(crate) triangles: Vec<Scene3dVertex>,
     /// Scatter points, each drawn as a billboarded marker sprite.
     pub(crate) points: Vec<Scene3dPoint>,
+    /// Triples of vertices, each triple one triangle of a **lit** mesh (carries
+    /// per-vertex normals; `TriangleList` topology).
+    pub(crate) meshes: Vec<Scene3dMeshVertex>,
 }
 
 impl Scene3dGeometry {
@@ -185,9 +232,12 @@ impl Scene3dGeometry {
         Self::default()
     }
 
-    /// True when there is nothing to draw (no lines, triangles, or points).
+    /// True when there is nothing to draw.
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.triangles.is_empty() && self.points.is_empty()
+        self.lines.is_empty()
+            && self.triangles.is_empty()
+            && self.points.is_empty()
+            && self.meshes.is_empty()
     }
 
     /// Drop all geometry, keeping allocated capacity for reuse.
@@ -195,6 +245,7 @@ impl Scene3dGeometry {
         self.lines.clear();
         self.triangles.clear();
         self.points.clear();
+        self.meshes.clear();
     }
 
     /// Append a line segment `a→b` in one solid [`Color32`].
@@ -249,6 +300,49 @@ impl Scene3dGeometry {
             size,
             marker: marker.id(),
         });
+    }
+
+    /// Append one lit-mesh triangle with explicit per-vertex positions, linear-
+    /// premultiplied RGBA colors, and world-space normals.
+    pub fn add_mesh_triangle_rgba(
+        &mut self,
+        positions: [[f32; 3]; 3],
+        rgba: [[f32; 4]; 3],
+        normals: [[f32; 3]; 3],
+    ) {
+        for i in 0..3 {
+            self.meshes.push(Scene3dMeshVertex {
+                pos: positions[i],
+                color: rgba[i],
+                normal: normals[i],
+            });
+        }
+    }
+
+    /// Append one lit-mesh triangle in a single solid [`Color32`] with explicit
+    /// per-vertex normals.
+    pub fn add_mesh_triangle(
+        &mut self,
+        positions: [[f32; 3]; 3],
+        color: Color32,
+        normals: [[f32; 3]; 3],
+    ) {
+        let rgba = egui::Rgba::from(color).to_array();
+        self.add_mesh_triangle_rgba(positions, [rgba; 3], normals);
+    }
+
+    /// Append one lit-mesh triangle `a, b, c` in a solid [`Color32`], using the
+    /// geometric (flat) face normal `(b−a)×(c−a)` for all three vertices — the
+    /// fallback when a mesh provides no per-vertex normals.
+    pub fn add_mesh_triangle_flat(
+        &mut self,
+        a: [f32; 3],
+        b: [f32; 3],
+        c: [f32; 3],
+        color: Color32,
+    ) {
+        let n = flat_normal(a, b, c);
+        self.add_mesh_triangle([a, b, c], color, [n; 3]);
     }
 
     /// Append the bounding-box wireframe + RGB axes for `bounds`, the scene's
@@ -325,6 +419,10 @@ struct Scene3dPipeline {
     point_bgl: wgpu::BindGroupLayout,
     /// Depth-tested, alpha-blended billboarded point-sprite pipeline.
     point_pipeline: wgpu::RenderPipeline,
+    /// `group(0)` layout for the mesh uniform (MVP + normal matrix, vertex stage).
+    mesh_bgl: wgpu::BindGroupLayout,
+    /// Depth-tested, headlight-shaded `TriangleList` mesh pipeline (no culling).
+    mesh_pipeline: wgpu::RenderPipeline,
     /// `group(0)` layout for the blit (sampled texture + sampler, fragment stage).
     blit_bgl: wgpu::BindGroupLayout,
     /// Depth-less full-screen blit pipeline (offscreen color → egui pass).
@@ -346,6 +444,10 @@ impl Scene3dPipeline {
         let point_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("siplot scene3d points"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene3d_points.wgsl").into()),
+        });
+        let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("siplot scene3d mesh"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scene3d_mesh.wgsl").into()),
         });
 
         let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -486,6 +588,68 @@ impl Scene3dPipeline {
             cache: None,
         });
 
+        // Shaded meshes: their own uniform (MVP + normal matrix, 128 bytes) and a
+        // depth-tested, opaque, double-sided triangle pipeline with headlight
+        // lighting in the fragment shader.
+        let mesh_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("siplot scene3d mesh bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(
+                        std::mem::size_of::<Scene3dMeshParams>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("siplot scene3d mesh layout"),
+            bind_group_layouts: &[Some(&mesh_bgl)],
+            immediate_size: 0,
+        });
+        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("siplot scene3d mesh"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module: &mesh_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Scene3dMeshVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &SCENE3D_MESH_ATTRS,
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &mesh_shader,
+                entry_point: Some("fs_main"),
+                // Opaque (blend None): depth testing resolves occlusion.
+                targets: &[Some(target_format.into())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                // No culling: silx lights one-sided but does not cull, so a face
+                // seen from behind shows at ambient (its normal faces away).
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("siplot scene3d blit bgl"),
             entries: &[
@@ -557,6 +721,8 @@ impl Scene3dPipeline {
             tri_pipeline,
             point_bgl,
             point_pipeline,
+            mesh_bgl,
+            mesh_pipeline,
             blit_bgl,
             blit_pipeline,
             sampler,
@@ -584,6 +750,13 @@ struct Scene3dGpu {
     /// Per-instance scatter points; `None` while empty (skip the draw).
     point_vbuf: Option<wgpu::Buffer>,
     point_count: u32,
+    /// Mesh uniform (MVP + normal matrix), written each frame.
+    mesh_params_buf: wgpu::Buffer,
+    /// `group(0)` bind group over `mesh_params_buf` for the mesh pipeline.
+    mesh_bind_group: wgpu::BindGroup,
+    /// Lit-mesh vertices; `None` while empty (skip the draw).
+    mesh_vbuf: Option<wgpu::Buffer>,
+    mesh_count: u32,
     /// Pixel size of the current offscreen target (`[0, 0]` until first sized).
     size: [u32; 2],
     /// Offscreen color view (target format); the blit samples this.
@@ -624,6 +797,20 @@ impl Scene3dGpu {
                 resource: point_params_buf.as_entire_binding(),
             }],
         });
+        let mesh_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("siplot scene3d mesh params"),
+            size: std::mem::size_of::<Scene3dMeshParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("siplot scene3d mesh bind group"),
+            layout: &pipeline.mesh_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: mesh_params_buf.as_entire_binding(),
+            }],
+        });
         Self {
             params_buf,
             scene_bind_group,
@@ -635,6 +822,10 @@ impl Scene3dGpu {
             point_bind_group,
             point_vbuf: None,
             point_count: 0,
+            mesh_params_buf,
+            mesh_bind_group,
+            mesh_vbuf: None,
+            mesh_count: 0,
             size: [0, 0],
             color_view: None,
             depth_view: None,
@@ -652,6 +843,9 @@ impl Scene3dGpu {
         self.point_vbuf =
             make_vertex_buffer(device, queue, &geometry.points, "siplot scene3d points");
         self.point_count = geometry.points.len() as u32;
+        self.mesh_vbuf =
+            make_vertex_buffer(device, queue, &geometry.meshes, "siplot scene3d meshes");
+        self.mesh_count = geometry.meshes.len() as u32;
     }
 
     /// Ensure the offscreen color+depth target matches `size` (in physical
@@ -763,6 +957,14 @@ impl Scene3dGpu {
             rp.set_vertex_buffer(0, buf.slice(..));
             rp.draw(0..self.line_count, 0..1);
         }
+        // Shaded meshes (own bind group: MVP + normal matrix). Opaque; depth test
+        // resolves occlusion against the flat triangles and lines above.
+        if let (Some(buf), true) = (&self.mesh_vbuf, self.mesh_count > 0) {
+            rp.set_pipeline(&pipeline.mesh_pipeline);
+            rp.set_bind_group(0, &self.mesh_bind_group, &[]);
+            rp.set_vertex_buffer(0, buf.slice(..));
+            rp.draw(0..self.mesh_count, 0..1);
+        }
         // Point sprites last: alpha-blended billboards over the opaque geometry.
         // Six vertices (two triangles) per instance, one instance per point.
         if let (Some(buf), true) = (&self.point_vbuf, self.point_count > 0) {
@@ -772,6 +974,16 @@ impl Scene3dGpu {
             rp.draw(0..6, 0..self.point_count);
         }
     }
+}
+
+/// The geometric (flat) face normal of triangle `a, b, c`: the normalized cross
+/// product `(b−a) × (c−a)`. A degenerate triangle yields a zero vector (the
+/// mesh shader's `normalize` then leaves the face at ambient only).
+fn flat_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
+    let va = Vec3::new(a[0], a[1], a[2]);
+    let vb = Vec3::new(b[0], b[1], b[2]);
+    let vc = Vec3::new(c[0], c[1], c[2]);
+    (vb - va).cross(vc - va).normalized().to_array()
 }
 
 /// Create a `VERTEX | COPY_DST` buffer holding `verts`, or `None` when empty.
@@ -837,6 +1049,11 @@ impl Scene3dResources {
             0,
             bytemuck::bytes_of(&point_params),
         );
+        let mesh_params = Scene3dMeshParams {
+            mvp: frame.mvp,
+            normal_mat: frame.view,
+        };
+        queue.write_buffer(&scene.mesh_params_buf, 0, bytemuck::bytes_of(&mesh_params));
         scene.encode_offscreen(encoder, pipeline, frame.background);
     }
 }
@@ -889,6 +1106,9 @@ pub fn paint_scene3d(
     let mut cam = *camera;
     cam.set_size((w as f32, h as f32));
     let mvp = cam.matrix().to_gpu_clip_cols();
+    // The view matrix (camera-space transform) drives mesh-normal lighting; it
+    // carries no projection, so plain column-major, no depth correction.
+    let view = cam.extrinsic.matrix().to_gpu_cols();
     let background = egui::Rgba::from(background).to_array();
     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -896,6 +1116,7 @@ pub fn paint_scene3d(
             frame: Scene3dFrame {
                 id,
                 mvp,
+                view,
                 size_px: [w, h],
                 background,
             },
@@ -911,6 +1132,9 @@ struct Scene3dFrame {
     id: Scene3dId,
     /// Column-major, clip-corrected MVP for this frame.
     mvp: [[f32; 4]; 4],
+    /// Column-major view matrix (no depth correction); the camera-space normal
+    /// transform for mesh lighting.
+    view: [[f32; 4]; 4],
     /// Offscreen target size in physical pixels.
     size_px: [u32; 2],
     /// Clear color, linear premultiplied.

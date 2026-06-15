@@ -94,3 +94,11 @@ fn scene3d_points_wgsl_is_valid() {
         include_str!("shaders/scene3d_points.wgsl"),
     );
 }
+
+#[test]
+fn scene3d_mesh_wgsl_is_valid() {
+    validate_wgsl(
+        "scene3d_mesh.wgsl",
+        include_str!("shaders/scene3d_mesh.wgsl"),
+    );
+}
