@@ -12,7 +12,7 @@ use crate::core::colormap::{AutoscaleMode, Colormap, ColormapName};
 use crate::core::complex::ComplexMode;
 use crate::core::scene3d::marching_cubes::isosurface as marching_cubes_isosurface;
 use crate::core::scene3d::mat4::{Mat4, Vec3, mat4_rotate};
-use crate::core::scene3d::plane::{Plane, box_plane_intersect};
+use crate::core::scene3d::plane::{Plane, box_plane_intersect, segment_plane_intersect};
 use crate::render::gpu_scene3d::{
     ImageInterpolation, PointMarker, Scene3dGeometry, Scene3dImageLayer, Scene3dTexturedMesh,
     flat_normal,
@@ -2105,6 +2105,49 @@ impl ScalarField3D {
         ))
     }
 
+    /// Sample the field value at world position `world`, or `None` when the field
+    /// is empty or `world` lies outside the volume box. Uses the cut plane's
+    /// interpolation (nearest vs trilinear) so a picked value matches the slice
+    /// the user sees. The single field sampler ([`sample_field_value`], the same
+    /// owner the cut-plane raster uses), with an explicit box test so a point
+    /// past the edge reads `None` rather than the clamped edge voxel.
+    pub fn value_at(&self, world: Vec3) -> Option<f32> {
+        let (min, max) = self.bounds()?;
+        if world.x < min.x
+            || world.y < min.y
+            || world.z < min.z
+            || world.x > max.x
+            || world.y > max.y
+            || world.z > max.z
+        {
+            return None;
+        }
+        Some(sample_field_value(
+            &self.data,
+            self.depth,
+            self.height,
+            self.width,
+            world,
+            self.cut_plane.interpolation(),
+        ))
+    }
+
+    /// Intersect the picking `segment` (`(near, far)` in world space) with the cut
+    /// plane, returning the world position of the hit when the cut plane is
+    /// **visible** and the hit lies inside the volume box, else `None`. Port of
+    /// silx `items.volume.CutPlane._pickFull` (segment/plane intersection, then a
+    /// data-bounds test). Pair with [`value_at`](Self::value_at) for the sampled
+    /// value at the hit — the value the colormapped slice shows there.
+    pub fn pick_cut_plane(&self, segment: (Vec3, Vec3)) -> Option<Vec3> {
+        if !self.cut_plane.is_visible() || self.data.is_empty() {
+            return None;
+        }
+        let plane = self.cut_plane.plane();
+        segment_plane_intersect(segment.0, segment.1, plane.normal(), plane.point())
+            .into_iter()
+            .find(|&hit| self.value_at(hit).is_some())
+    }
+
     /// Append every iso-surface's triangles to `geometry`. Iso-surfaces are
     /// emitted from highest level to lowest (silx `_updateIsosurfaces` sorts by
     /// `-level`); a non-finite level or an empty surface is skipped.
@@ -2379,6 +2422,80 @@ impl ComplexField3D {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 3×3×3 ramp field whose value equals its `z` index (so a known world
+    /// position has a predictable sample): `data[z][y][x] = z`.
+    fn ramp_field() -> ScalarField3D {
+        let (d, h, w) = (3usize, 3usize, 3usize);
+        let mut data = vec![0.0f32; d * h * w];
+        for z in 0..d {
+            for y in 0..h {
+                for x in 0..w {
+                    data[(z * h + y) * w + x] = z as f32;
+                }
+            }
+        }
+        ScalarField3D::new().with_data(&data, d, h, w)
+    }
+
+    #[test]
+    fn value_at_samples_inside_and_rejects_outside_the_box() {
+        let field = ramp_field();
+        // Voxel-centre convention: world (·,·,1.5) is exactly z-index 1 → value 1.0
+        // (the cut plane's default interpolation is trilinear).
+        let v = field
+            .value_at(Vec3::new(1.5, 1.5, 1.5))
+            .expect("inside the box");
+        assert!((v - 1.0).abs() < 1e-5, "sampled {v}");
+        // World z = 2.0 is half-way between z-index 1 (=1) and 2 (=2) → 1.5.
+        let mid = field.value_at(Vec3::new(1.5, 1.5, 2.0)).expect("inside");
+        assert!((mid - 1.5).abs() < 1e-5, "sampled {mid}");
+        // The voxel centre at z-index 2 reads exactly 2.0.
+        let top = field.value_at(Vec3::new(1.5, 1.5, 2.5)).expect("inside");
+        assert!((top - 2.0).abs() < 1e-5, "sampled {top}");
+        // Outside the (0,0,0)..(3,3,3) box → None (no edge-clamp leak).
+        assert!(field.value_at(Vec3::new(3.5, 1.0, 1.0)).is_none());
+        assert!(field.value_at(Vec3::new(-0.1, 1.0, 1.0)).is_none());
+        // Empty field → None.
+        assert!(
+            ScalarField3D::new()
+                .value_at(Vec3::new(1.0, 1.0, 1.0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pick_cut_plane_hidden_is_none_visible_hits_inside_box() {
+        let mut field = ramp_field();
+        // Default cut plane: normal (0,1,0) through the origin — through y = 0.
+        // Move it to y = 1.5 (mid-volume) so a ray along -Y crosses it inside the box.
+        field.cut_plane_mut().set_point(Vec3::new(0.0, 1.5, 0.0));
+
+        // A segment piercing the plane at world (1.5, 1.5, 1.5).
+        let seg = (Vec3::new(1.5, 3.0, 1.5), Vec3::new(1.5, 0.0, 1.5));
+
+        // Hidden by default → no pick.
+        assert!(field.pick_cut_plane(seg).is_none());
+
+        field.cut_plane_mut().set_visible(true);
+        let hit = field
+            .pick_cut_plane(seg)
+            .expect("visible plane is crossed inside the box");
+        assert!((hit.y - 1.5).abs() < 1e-5, "hit on the plane: {hit:?}");
+        // The sampled value there matches value_at: world z = 1.5 is z-index 1 → 1.0.
+        let value = field.value_at(hit).expect("hit is inside the box");
+        assert!((value - 1.0).abs() < 1e-5, "value {value}");
+    }
+
+    #[test]
+    fn pick_cut_plane_outside_box_is_none() {
+        let mut field = ramp_field();
+        field.cut_plane_mut().set_visible(true);
+        // Plane at y = 1.5, but the ray crosses it far outside the x/z box extent.
+        field.cut_plane_mut().set_point(Vec3::new(0.0, 1.5, 0.0));
+        let seg = (Vec3::new(9.0, 3.0, 9.0), Vec3::new(9.0, 0.0, 9.0));
+        assert!(field.pick_cut_plane(seg).is_none());
+    }
 
     #[test]
     fn set_data_rejects_length_mismatch() {
