@@ -113,6 +113,17 @@ impl SceneWidget {
         self.upload(render_state);
     }
 
+    /// Set the scene bounds and re-upload the chrome **without** re-framing the
+    /// camera, so the user's current orbit/zoom is preserved. Used when the data
+    /// changes but the viewpoint should stay put — silx re-frames (`centerScene`)
+    /// only on the first `setData`, not on subsequent updates. The depth frustum
+    /// is still adjusted so the new bounds stay clipped correctly.
+    pub fn set_bounds_keep_view(&mut self, render_state: &RenderState, bounds: (Vec3, Vec3)) {
+        self.bounds = bounds;
+        self.camera.adjust_depth_extent(bounds);
+        self.upload(render_state);
+    }
+
     /// Replace the data-item geometry (the box/axes chrome is kept) and re-upload.
     pub fn set_geometry(&mut self, render_state: &RenderState, geometry: Scene3dGeometry) {
         self.content = geometry;

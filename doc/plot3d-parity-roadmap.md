@@ -110,7 +110,31 @@ a later enhancement).
 |---|---|---|---|
 | P2.1 | Marching-cubes isosurface + ScalarField3D | items/volume.py, silx.math.marchingcubes | ✅ |
 | P2.2 | Cut planes + colormap | scene/cutplane.py, primitives PlaneInGroup/ClipPlane | ✅ |
-| P2.3 | ScalarFieldView widget + ComplexField3D | ScalarFieldView.py, items/volume.py | ☐ |
+| P2.3 | ScalarFieldView widget + ComplexField3D | ScalarFieldView.py, items/volume.py | ✅ |
+
+P2.3 notes: shipped in three waves. **P2.3a** closed a latent `SceneWidget` bug —
+`upload` forwarded only the lines/triangles channels, silently dropping
+points/meshes/images/textured-meshes — by adding `Scene3dGeometry::extend_from`
+(`render::gpu_scene3d`), the single owner that merges all six channels; the widget
+now appends every data-item channel beneath the chrome. **P2.3b** ports silx
+`items.volume.ComplexField3D`: a complex field `(re, im)` projected to a real
+scalar through a `ComplexMode` feeding an inner `ScalarField3D`. The shared
+`ComplexMixIn.ComplexMode` enum (silx puts it on the base shared by the 2D
+`ImageComplexData` and 3D `ComplexField3D`) was relocated from
+`widget::complex_image_view` to `core::complex` so 2D + 3D share one enum without
+inverting the `core → render → widget` layering; `set_complex_mode` clears the
+iso-surfaces and keeps the cut plane (silx `setComplexMode`), the two
+amplitude-phase composites have no scalar (`to_scalar → 0.0`). **P2.3c** ports the
+`ScalarFieldView` flagship widget (`src/widget/scalar_field_view.rs`): it owns one
+`ScalarField3D` (iso-surfaces + a cut plane) rendered through a `SceneWidget`,
+mirroring silx — `set_data` frames the camera to the volume box only on the
+**first** data (silx `centerScene`-once; subsequent updates keep the viewpoint via
+the new `SceneWidget::set_bounds_keep_view`), with `add_isosurface` /
+`add_auto_isosurface` / `remove_isosurface` / `clear_isosurfaces` mapping 1:1 to
+silx, the cut plane configured via `field_mut` + `rebuild`. Geometry is uploaded
+eagerly on data-layer change (not per frame), matching `SceneWidget`. **Deferred
+(documented):** the `setComplexMode`/iso-surface re-resolve UI panel and 3D
+picking remain with the Phase 3 tools and the standing GPU-picking deferral.
 
 P2.2 notes: the plane math (`src/core/scene3d/plane.rs`) ports silx
 `scene.utils.Plane` + the box/segment intersection helpers (`boxPlaneIntersect`,
