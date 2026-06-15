@@ -180,8 +180,10 @@ const SCENE3D_MESH_ATTRS: [wgpu::VertexAttribute; 3] = [
     },
 ];
 
-/// One textured-quad vertex: world-space position + texture UV. `repr(C)` so the
-/// 20-byte stride matches [`SCENE3D_IMAGE_ATTRS`] and `scene3d_image.wgsl`.
+/// One textured-primitive vertex: world-space position + texture UV. Shared by
+/// the image quad and the arbitrary-triangle textured mesh (the cut plane).
+/// `repr(C)` so the 20-byte stride matches [`SCENE3D_IMAGE_ATTRS`] and
+/// `scene3d_image.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Scene3dImageVertex {
@@ -236,6 +238,32 @@ pub struct Scene3dImageLayer {
     pub interpolation: ImageInterpolation,
 }
 
+/// One textured arbitrary-triangle mesh: a `width × height` premultiplied-linear
+/// RGBA8 raster sampled across a triangle list at explicit world positions. This
+/// is the general case of [`Scene3dImageLayer`] (whose geometry is fixed to an
+/// axis-aligned quad) — used by the cut plane, which maps a colormapped slice of
+/// the volume onto the (arbitrary) plane∩box contour polygon.
+///
+/// `vertices` is a flat triangle list (every three a triangle, `TriangleList`
+/// topology); `uvs` carries the matching per-vertex texture coordinate into
+/// `pixels` (same length as `vertices`). `pixels` is row-major (row 0 first),
+/// length `width · height · 4`.
+#[derive(Clone, Debug)]
+pub struct Scene3dTexturedMesh {
+    /// Premultiplied-linear RGBA8, row-major, length `width · height · 4`.
+    pub pixels: Vec<u8>,
+    /// Texture width in pixels.
+    pub width: u32,
+    /// Texture height in pixels.
+    pub height: u32,
+    /// World-space triangle-list vertices (length a multiple of 3).
+    pub vertices: Vec<[f32; 3]>,
+    /// Per-vertex texture UV (same length as `vertices`).
+    pub uvs: Vec<[f32; 2]>,
+    /// Nearest vs linear sampling.
+    pub interpolation: ImageInterpolation,
+}
+
 /// Uniform block for `scene3d.wgsl`: the column-major, clip-corrected MVP.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -282,6 +310,9 @@ pub struct Scene3dGeometry {
     pub(crate) meshes: Vec<Scene3dMeshVertex>,
     /// Textured image quads (one texture each), drawn after the opaque geometry.
     pub(crate) images: Vec<Scene3dImageLayer>,
+    /// Textured arbitrary-triangle meshes (one texture each), drawn in the same
+    /// alpha-blended textured pass as the image quads. Used by the cut plane.
+    pub(crate) textured_meshes: Vec<Scene3dTexturedMesh>,
 }
 
 impl Scene3dGeometry {
@@ -297,6 +328,7 @@ impl Scene3dGeometry {
             && self.points.is_empty()
             && self.meshes.is_empty()
             && self.images.is_empty()
+            && self.textured_meshes.is_empty()
     }
 
     /// Drop all geometry, keeping allocated capacity for reuse.
@@ -306,11 +338,17 @@ impl Scene3dGeometry {
         self.points.clear();
         self.meshes.clear();
         self.images.clear();
+        self.textured_meshes.clear();
     }
 
     /// Append a textured image layer (see [`Scene3dImageLayer`]).
     pub fn add_image_layer(&mut self, layer: Scene3dImageLayer) {
         self.images.push(layer);
+    }
+
+    /// Append a textured arbitrary-triangle mesh (see [`Scene3dTexturedMesh`]).
+    pub fn add_textured_mesh(&mut self, mesh: Scene3dTexturedMesh) {
+        self.textured_meshes.push(mesh);
     }
 
     /// Append a line segment `a→b` in one solid [`Color32`].
@@ -900,12 +938,14 @@ impl Scene3dPipeline {
     }
 }
 
-/// One uploaded image layer: its quad vertex buffer (6 verts) and the group(1)
-/// bind group over its texture + the chosen sampler. Rebuilt on each
+/// One uploaded textured primitive: its vertex buffer (`vertex_count` verts —
+/// 6 for an image quad, `3·triangles` for a textured mesh) and the group(1) bind
+/// group over its texture + the chosen sampler. Rebuilt on each
 /// [`Scene3dGpu::upload`].
 struct Scene3dImageGpu {
     vbuf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    vertex_count: u32,
 }
 
 /// Per-scene GPU data: vertex buffers, the MVP uniform, and the offscreen
@@ -1034,10 +1074,19 @@ impl Scene3dGpu {
         self.mesh_vbuf =
             make_vertex_buffer(device, queue, &geometry.meshes, "siplot scene3d meshes");
         self.mesh_count = geometry.meshes.len() as u32;
+        // Image quads and textured meshes both upload to a `Scene3dImageGpu`
+        // (texture + vertex buffer) and draw through the one textured pipeline;
+        // collect them into a single list (quads first, then meshes).
         self.images = geometry
             .images
             .iter()
             .filter_map(|layer| build_image_gpu(device, queue, pipeline, layer))
+            .chain(
+                geometry
+                    .textured_meshes
+                    .iter()
+                    .filter_map(|mesh| build_textured_mesh_gpu(device, queue, pipeline, mesh)),
+            )
             .collect();
     }
 
@@ -1158,16 +1207,17 @@ impl Scene3dGpu {
             rp.set_vertex_buffer(0, buf.slice(..));
             rp.draw(0..self.mesh_count, 0..1);
         }
-        // Textured image quads (group 0 = scene MVP, group 1 = per-image texture).
-        // Premultiplied-alpha blended and depth-tested; drawn after the opaque
-        // geometry, before the point overlays.
+        // Textured primitives — image quads and textured meshes (cut planes) —
+        // share one pipeline (group 0 = scene MVP, group 1 = per-primitive
+        // texture). Premultiplied-alpha blended and depth-tested; drawn after the
+        // opaque geometry, before the point overlays.
         if !self.images.is_empty() {
             rp.set_pipeline(&pipeline.image_pipeline);
             rp.set_bind_group(0, &self.scene_bind_group, &[]);
             for image in &self.images {
                 rp.set_bind_group(1, &image.bind_group, &[]);
                 rp.set_vertex_buffer(0, image.vbuf.slice(..));
-                rp.draw(0..6, 0..1);
+                rp.draw(0..image.vertex_count, 0..1);
             }
         }
         // Point sprites last: alpha-blended billboards over the opaque geometry.
@@ -1215,24 +1265,26 @@ fn make_vertex_buffer<T: bytemuck::Pod>(
     Some(buffer)
 }
 
-/// Build the per-image GPU state for one [`Scene3dImageLayer`]: upload its pixels
-/// to an `Rgba8Unorm` texture, build the group(1) bind group (texture + the
-/// nearest/linear sampler), and the six-vertex quad (two triangles) at the
-/// layer's world rect with corner UVs. Returns `None` for a degenerate layer
-/// (zero dimensions or a pixel buffer of the wrong length).
-fn build_image_gpu(
+/// Upload a `width × height` premultiplied-linear RGBA8 raster to an
+/// `Rgba8Unorm` texture and build the group(1) bind group (texture + the
+/// nearest/linear sampler). The single owner of the textured-primitive texture
+/// path, shared by [`build_image_gpu`] and [`build_textured_mesh_gpu`]. Returns
+/// `None` for zero dimensions or a pixel buffer of the wrong length.
+fn build_image_texture_bind_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &Scene3dPipeline,
-    layer: &Scene3dImageLayer,
-) -> Option<Scene3dImageGpu> {
-    let (w, h) = (layer.width, layer.height);
-    if w == 0 || h == 0 || layer.pixels.len() != (w as usize * h as usize * 4) {
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    interpolation: ImageInterpolation,
+) -> Option<wgpu::BindGroup> {
+    if width == 0 || height == 0 || pixels.len() != (width as usize * height as usize * 4) {
         return None;
     }
     let extent = wgpu::Extent3d {
-        width: w,
-        height: h,
+        width,
+        height,
         depth_or_array_layers: 1,
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1254,20 +1306,20 @@ fn build_image_gpu(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &layer.pixels,
+        pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(w * 4),
-            rows_per_image: Some(h),
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
         },
         extent,
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let sampler = match layer.interpolation {
+    let sampler = match interpolation {
         ImageInterpolation::Nearest => &pipeline.image_sampler_nearest,
         ImageInterpolation::Linear => &pipeline.image_sampler_linear,
     };
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("siplot scene3d image bind group"),
         layout: &pipeline.image_tex_bgl,
         entries: &[
@@ -1280,7 +1332,29 @@ fn build_image_gpu(
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
         ],
-    });
+    }))
+}
+
+/// Build the per-image GPU state for one [`Scene3dImageLayer`]: its texture bind
+/// group plus the six-vertex quad (two triangles) at the layer's world rect with
+/// corner UVs. Returns `None` for a degenerate layer (zero dimensions or a pixel
+/// buffer of the wrong length).
+fn build_image_gpu(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &Scene3dPipeline,
+    layer: &Scene3dImageLayer,
+) -> Option<Scene3dImageGpu> {
+    let (w, h) = (layer.width, layer.height);
+    let bind_group = build_image_texture_bind_group(
+        device,
+        queue,
+        pipeline,
+        &layer.pixels,
+        w,
+        h,
+        layer.interpolation,
+    )?;
 
     // Quad corners in the z = origin.z plane: (0,0) → (w·sx, h·sy). UV (0,0) at
     // the origin corner, (1,1) at the far corner (row 0 first → v increases with
@@ -1301,7 +1375,50 @@ fn build_image_gpu(
         v(ox, y1, 0.0, 1.0),
     ];
     let vbuf = make_vertex_buffer(device, queue, &verts, "siplot scene3d image quad")?;
-    Some(Scene3dImageGpu { vbuf, bind_group })
+    Some(Scene3dImageGpu {
+        vbuf,
+        bind_group,
+        vertex_count: 6,
+    })
+}
+
+/// Build the per-mesh GPU state for one [`Scene3dTexturedMesh`]: its texture bind
+/// group plus the world-space triangle-list vertex buffer (UVs paired in).
+/// Returns `None` for a degenerate mesh (empty, vertex/uv length mismatch, a
+/// vertex count not a multiple of three, or a bad texture).
+fn build_textured_mesh_gpu(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &Scene3dPipeline,
+    mesh: &Scene3dTexturedMesh,
+) -> Option<Scene3dImageGpu> {
+    if mesh.vertices.is_empty()
+        || mesh.vertices.len() != mesh.uvs.len()
+        || !mesh.vertices.len().is_multiple_of(3)
+    {
+        return None;
+    }
+    let bind_group = build_image_texture_bind_group(
+        device,
+        queue,
+        pipeline,
+        &mesh.pixels,
+        mesh.width,
+        mesh.height,
+        mesh.interpolation,
+    )?;
+    let verts: Vec<Scene3dImageVertex> = mesh
+        .vertices
+        .iter()
+        .zip(&mesh.uvs)
+        .map(|(&pos, &uv)| Scene3dImageVertex { pos, uv })
+        .collect();
+    let vbuf = make_vertex_buffer(device, queue, &verts, "siplot scene3d textured mesh")?;
+    Some(Scene3dImageGpu {
+        vbuf,
+        bind_group,
+        vertex_count: verts.len() as u32,
+    })
 }
 
 /// Persistent 3D GPU resources, stored in `egui_wgpu`'s `callback_resources`.
