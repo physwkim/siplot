@@ -3136,6 +3136,17 @@ pub struct PlotWidget {
     /// Printer-selection dialog opened by the toolbar Print button (silx
     /// `PrintAction`'s `QPrintDialog` analogue).
     print_dialog: crate::widget::print_dialog::PrintDialog,
+    /// Ruler measurement tool (silx `RulerToolButton` / `_RulerROI`): while
+    /// armed, a primary drag draws a line ROI whose name is its measured length
+    /// (`RulerToolButton::distance_text`), recomputed live in [`show`](Self::show)
+    /// as the line is (re)drawn.
+    ruler_active: bool,
+    /// Index of the live ruler line ROI in [`Plot::rois`], or `None` (no ruler
+    /// line drawn yet / ruler disarmed). One ruler line at a time — a new draw
+    /// replaces the previous (silx single-measurement `RulerToolButton`).
+    ruler_roi: Option<usize>,
+    /// Interaction mode in effect before the ruler was armed, restored on disarm.
+    ruler_prev_mode: Option<PlotInteractionMode>,
 }
 
 impl PlotWidget {
@@ -3166,6 +3177,9 @@ impl PlotWidget {
             events: Vec::new(),
             rename_state: None,
             print_dialog: crate::widget::print_dialog::PrintDialog::new(),
+            ruler_active: false,
+            ruler_roi: None,
+            ruler_prev_mode: None,
         }
     }
 
@@ -3220,6 +3234,27 @@ impl PlotWidget {
             // mirroring silx's `sigRoiAdded` → `sigInteractiveRoiFinalized` order.
             self.events.push(PlotEvent::RoiAdded { index });
             self.events.push(PlotEvent::RoiCreated { index });
+        }
+        // Ruler tool (silx `RulerToolButton` / `_RulerROI`): while armed, a
+        // completed line draw becomes *the* ruler line, labeled with its measured
+        // length; a new measurement replaces the previous one, and editing the
+        // line relabels it live.
+        if self.ruler_active {
+            if response.roi_created.is_some() {
+                // A new measurement replaces the previous ruler line. Remove the
+                // old one first; the freshly-drawn line is always the last ROI, so
+                // its index is `rois.len() - 1` whether or not a removal shifted it.
+                if let Some(old) = self.ruler_roi.take() {
+                    self.remove_roi(old);
+                }
+                let index = self.backend.plot().rois.len().saturating_sub(1);
+                self.ruler_roi = Some(index);
+                self.relabel_ruler(index);
+            } else if let Some(index) = response.roi_changed
+                && Some(index) == self.ruler_roi
+            {
+                self.relabel_ruler(index);
+            }
         }
         // ROI context-menu choices (silx `_createMenuForRoi`): the plot only
         // signals intent; the mutation + event emission happens here through the
@@ -6642,6 +6677,65 @@ impl PlotWidget {
         let index = self.backend.plot().rois.len() - 1;
         self.events.push(PlotEvent::RoiAdded { index });
         index
+    }
+
+    /// Whether the ruler measurement tool is armed (silx
+    /// `RulerToolButton.isChecked`).
+    pub fn ruler_active(&self) -> bool {
+        self.ruler_active
+    }
+
+    /// The index of the live ruler line ROI in [`rois`](Self::rois), or `None`
+    /// when no ruler line has been drawn (or the ruler is disarmed).
+    pub fn ruler_roi(&self) -> Option<usize> {
+        self.ruler_roi
+    }
+
+    /// Arm or disarm the ruler measurement tool (silx `RulerToolButton` toggle).
+    ///
+    /// Arming enters a line-ROI draw
+    /// ([`PlotInteractionMode::RoiCreate(RoiDrawKind::Line)`](PlotInteractionMode::RoiCreate)),
+    /// remembering the prior mode; each completed drag draws a line ROI whose
+    /// name is its measured length ([`RulerToolButton::distance_text`]), recomputed
+    /// in [`show`](Self::show) — a new measurement replaces the previous ruler
+    /// line. Disarming removes the ruler line and restores the prior interaction
+    /// mode (silx deselect). A no-op if already in the requested state.
+    ///
+    /// [`RulerToolButton::distance_text`]: crate::widget::tool_buttons::RulerToolButton::distance_text
+    pub fn set_ruler_active(&mut self, active: bool) {
+        if active == self.ruler_active {
+            return;
+        }
+        self.ruler_active = active;
+        if active {
+            self.ruler_prev_mode = Some(self.interaction_mode);
+            self.set_interaction_mode(PlotInteractionMode::RoiCreate(RoiDrawKind::Line));
+        } else {
+            if let Some(index) = self.ruler_roi.take() {
+                self.remove_roi(index);
+            }
+            let restore = self
+                .ruler_prev_mode
+                .take()
+                .unwrap_or(PlotInteractionMode::Zoom);
+            self.set_interaction_mode(restore);
+        }
+    }
+
+    /// Recompute the ruler line ROI's name from its current endpoints (silx
+    /// `RulerToolButton.buildDistanceText` on `_RulerROI`). No-op if the index is
+    /// out of range or the ROI is not a [`Roi::Line`].
+    fn relabel_ruler(&mut self, index: usize) {
+        let label = match self.backend.plot().rois.get(index).map(|r| &r.roi) {
+            Some(Roi::Line { start, end }) => {
+                crate::widget::tool_buttons::RulerToolButton::distance_text(
+                    [start.0, start.1],
+                    [end.0, end.1],
+                )
+            }
+            _ => return,
+        };
+        self.set_roi_name(index, label);
     }
 
     /// The current handle-editing interaction mode of the ROI at `index` (silx
