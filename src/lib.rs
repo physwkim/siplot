@@ -93,6 +93,7 @@ pub use crate::render::save::{
     SaveError, SaveFormat, encode_eps, encode_pdf, encode_png, encode_ppm, encode_svg, encode_tiff,
     rgba_to_rgb, save_graph, save_graph_with_format,
 };
+pub use crate::render::scene3d_items::{DEFAULT_SCATTER3D_SIZE, Scatter3D};
 pub use crate::widget::actions;
 pub use crate::widget::actions::io::{SaveTarget, curve_to_csv};
 pub use crate::widget::actions::mode::{mask_draw_mode, pan_mode, select_mode, zoom_mode};

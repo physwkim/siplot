@@ -756,6 +756,21 @@ impl Colormap {
             _ => ratio,
         }
     }
+
+    /// Map a data value to its straight-alpha `[r, g, b, a]` color under this
+    /// colormap — the CPU mirror of the image shader's LUT lookup, the single
+    /// value→color entry point for items that colour their geometry on the CPU
+    /// (e.g. 3D scatter). A non-finite `v` yields [`nan_color`](Self::nan_color)
+    /// (silx's NaN handling); a finite value is normalised (see
+    /// [`normalize`](Self::normalize)) and looked up in the 256-entry
+    /// [`lut`](Self::lut).
+    pub fn color_at(&self, v: f64) -> [u8; 4] {
+        if !v.is_finite() {
+            return self.nan_color;
+        }
+        let idx = (self.normalize(v) * 255.0).clamp(0.0, 255.0) as usize;
+        self.lut[idx]
+    }
 }
 
 /// silx's default `(low, high)` percentiles for [`AutoscaleMode::Percentile`]
@@ -1430,6 +1445,23 @@ mod tests {
             AutoscaleMode::Stddev3.range(&all_nan, DEFAULT_PERCENTILES),
             (0.0, 1.0)
         );
+    }
+
+    #[test]
+    fn color_at_looks_up_lut_and_uses_nan_color_for_nonfinite() {
+        let cmap = Colormap::new(ColormapName::Viridis, 0.0, 4.0).with_nan_color([1, 2, 3, 4]);
+        // Endpoints hit the first/last LUT entries; the midpoint the middle.
+        assert_eq!(cmap.color_at(0.0), cmap.lut[0]);
+        assert_eq!(cmap.color_at(4.0), cmap.lut[255]);
+        // Midpoint: normalize(2.0)=0.5 → 0.5*255=127.5 → index 127 (truncated).
+        assert_eq!(cmap.color_at(2.0), cmap.lut[127]);
+        // Out-of-range values clamp to the endpoints (normalize clamps to [0, 1]).
+        assert_eq!(cmap.color_at(-10.0), cmap.lut[0]);
+        assert_eq!(cmap.color_at(10.0), cmap.lut[255]);
+        // Non-finite values take the NaN color, not a LUT entry.
+        assert_eq!(cmap.color_at(f64::NAN), [1, 2, 3, 4]);
+        assert_eq!(cmap.color_at(f64::INFINITY), [1, 2, 3, 4]);
+        assert_eq!(cmap.color_at(f64::NEG_INFINITY), [1, 2, 3, 4]);
     }
 
     // --- Custom LUT registration -----------------------------------------

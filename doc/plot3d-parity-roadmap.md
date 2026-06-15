@@ -63,9 +63,18 @@ Legend: ✅ done · ◐ partial · ☐ not started
 
 | Wave | Item | silx source | Status |
 |---|---|---|---|
-| P1.1 | Scatter3D (points / spheres) | items/scatter.py, primitives Points/ColorPoints/Spheres | ☐ |
+| P1.1 | Scatter3D (points / spheres) | items/scatter.py, primitives Points/ColorPoints/Spheres | ✅ |
 | P1.2 | Mesh / Box / Cylinder / Hexagon | items/mesh.py, primitives Mesh3D/ColormapMesh3D + Geometry | ☐ |
 | P1.3 | 3D ImageData / ImageRgba / HeightMap | items/image.py, items/_pick.py, primitives ImageData/ImageRgba | ☐ |
+
+P1.1 notes: `Scatter3D` ports silx's `Points`/`_Points` faithfully — billboarded,
+pixel-sized markers (all eight `_Points` symbols) via `scene3d_points.wgsl`.
+Documented simplifications: colour is mapped through the colormap on the CPU
+(`Colormap::color_at`) at geometry-build time rather than in a GPU colormap
+texture (points are few vs image rasters); per-point picking (`_pickFull`) is
+deferred with the rest of GPU picking (see Architecture); the `Spheres` primitive
+(shaded 3D spheres — not used by silx `Scatter3D`, which renders `Points`) is not
+yet ported.
 
 ### Phase 2 — `ScalarFieldView` flagship
 
