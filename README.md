@@ -19,9 +19,10 @@ License: MIT OR Apache-2.0.
 
 ## Gallery
 
-A few of the high-level widgets, captured headlessly from the matching
-`high_level_*` examples. Each image is rendered to an offscreen wgpu texture
-by [`examples/gallery.rs`](examples/gallery.rs) — full egui chrome plus the
+A few of the high-level widgets and the true-3D scene widgets, captured
+headlessly from the matching `high_level_*` / `scene3d_*` examples. Each image
+is rendered to an offscreen wgpu texture by
+[`examples/gallery.rs`](examples/gallery.rs) — full egui chrome plus the
 `egui_wgpu` data layer, no window — so the gallery can be regenerated with
 `cargo run --example gallery`.
 
@@ -35,6 +36,10 @@ by [`examples/gallery.rs`](examples/gallery.rs) — full egui chrome plus the
 | **StackView** — a 3D volume browsed as 2D frames, with perspective selection | **CompareImages** — half-split A vs B comparison |
 | ![FitWidget](doc/images/fit_widget.png) | ![ROI manager](doc/images/roi_manager.png) |
 | **FitWidget** — an iterative Gaussian curve fit with parameter errors | **ROI manager** — styled, named ROIs rendered on the plot |
+| ![ScalarFieldView](doc/images/scalar_field_view.png) | ![3D mesh & volumes](doc/images/scene3d_mesh.png) |
+| **ScalarFieldView** — the plot3d flagship: a sinc-volume iso-surface | **3D mesh & volumes** — a colormapped surface with box / cylinder / hexagon solids |
+| ![3D scatter](doc/images/scene3d_scatter.png) | |
+| **3D scatter** — a value-coloured point cloud in a 3D scene | |
 
 ---
 

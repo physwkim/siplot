@@ -17,8 +17,10 @@ use egui_kittest::Harness;
 use egui_kittest::wgpu::{WgpuTestRenderer, create_render_state, default_wgpu_setup};
 use siplot::egui_wgpu::RenderState;
 use siplot::{
-    Colormap, CompareImages, FitModelChoice, FitWidget, GraphGrid, ImageGeometry, ImageView,
-    Plot2D, PlotInteractionMode, PlotWidget, Roi, ScatterView, StackView, YAxis, egui,
+    Box3D, Colormap, ColormapMesh3D, ColormapName, CompareImages, Cylinder3D, FitModelChoice,
+    FitWidget, GraphGrid, Hexagon3D, ImageGeometry, ImageView, MeshDrawMode, Plot2D,
+    PlotInteractionMode, PlotWidget, PointMarker, Roi, ScalarFieldView, Scatter3D, ScatterView,
+    Scene3dGeometry, SceneWidget, StackView, Vec3, YAxis, egui, mean_plus_std,
 };
 
 /// A scene is a closure that draws into the harness root `Ui` each frame.
@@ -280,9 +282,55 @@ fn main() {
             });
         })
     });
+
+    // 9. ScalarFieldView — the plot3d flagship: a sinc volume iso-surface
+    //    (mirrors scalar_field_view / silx viewer3DVolume).
+    capture("scalar_field_view", (720.0, 600.0), 1.5, |rs| {
+        let n = 48;
+        let data = build_sinc_volume_cube(n);
+        let mut view = ScalarFieldView::new(rs, 0);
+        assert!(view.set_data(rs, &data, n, n, n), "cubic volume is valid");
+        view.add_auto_isosurface(rs, mean_plus_std, egui::Color32::from_rgb(255, 70, 90));
+        Box::new(move |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                view.show(ui);
+            });
+        })
+    });
+
+    // 10. SceneWidget — a lit ColormapMesh3D ripple surface + the cylindrical
+    //     volumes (mirrors scene3d_mesh).
+    capture("scene3d_mesh", (720.0, 600.0), 1.5, |rs| {
+        let mut geometry = Scene3dGeometry::new();
+        build_ripple_mesh().append_to(&mut geometry);
+        append_cylindrical_volumes(&mut geometry);
+        let mut scene = SceneWidget::new(rs, 0);
+        scene.set_bounds(rs, (Vec3::new(-4.0, -4.0, -1.5), Vec3::new(4.0, 4.0, 3.0)));
+        scene.set_geometry(rs, geometry);
+        Box::new(move |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                scene.show(ui);
+            });
+        })
+    });
+
+    // 11. SceneWidget — a value-coloured 3D scatter cloud (mirrors
+    //     scene3d_scatter / silx plot3dSceneWindow scatter).
+    capture("scene3d_scatter", (720.0, 600.0), 1.5, |rs| {
+        let mut geometry = Scene3dGeometry::new();
+        build_scatter3d().append_to(&mut geometry);
+        let mut scene = SceneWidget::new(rs, 0);
+        scene.set_bounds(rs, (Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)));
+        scene.set_geometry(rs, geometry);
+        Box::new(move |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                scene.show(ui);
+            });
+        })
+    });
 }
 
-// --- scene data builders (mirror the matching high_level_* examples) ---
+// --- scene data builders (mirror the matching high_level_* / scene3d_* examples) ---
 
 /// `sin(r)/r` sinc image over a (width, height) grid (high_level_plot_widget).
 fn build_sinc_image(width: u32, height: u32) -> Vec<f32> {
@@ -402,4 +450,107 @@ fn build_fit_data() -> (Vec<f64>, Vec<f64>) {
         x.push(xi);
     }
     (x, y)
+}
+
+/// The silx dummy `sinc(x·y·z)` volume over `[-10, 10]³`, row-major
+/// `(depth, height, width)`; `sin(t)/t → 1` at `t → 0` (scalar_field_view).
+fn build_sinc_volume_cube(n: usize) -> Vec<f32> {
+    let coord = |i: usize| -10.0 + 20.0 * i as f32 / (n - 1) as f32;
+    let mut data = vec![0.0f32; n * n * n];
+    for z in 0..n {
+        for y in 0..n {
+            for x in 0..n {
+                let t = coord(x) * coord(y) * coord(z);
+                data[(z * n + y) * n + x] = if t.abs() < 1e-9 { 1.0 } else { t.sin() / t };
+            }
+        }
+    }
+    data
+}
+
+/// A radial ripple `z = cos(2r)/(1+r)` over `[-4, 4]²` as a per-vertex
+/// colormapped triangle mesh (value = height, viridis) (scene3d_mesh).
+fn build_ripple_mesh() -> ColormapMesh3D {
+    const G: usize = 60;
+    let span = 4.0f32;
+    let at = |ix: usize, iy: usize| -> ([f32; 3], f64) {
+        let u = -span + 2.0 * span * ix as f32 / G as f32;
+        let v = -span + 2.0 * span * iy as f32 / G as f32;
+        let r = (u * u + v * v).sqrt();
+        let z = (r * 2.0).cos() / (1.0 + r);
+        ([u, v, z], z as f64)
+    };
+    let (mut positions, mut values) = (Vec::new(), Vec::new());
+    let mut push = |p: ([f32; 3], f64)| {
+        positions.push(p.0);
+        values.push(p.1);
+    };
+    for iy in 0..G {
+        for ix in 0..G {
+            push(at(ix, iy));
+            push(at(ix + 1, iy));
+            push(at(ix + 1, iy + 1));
+            push(at(ix, iy));
+            push(at(ix + 1, iy + 1));
+            push(at(ix, iy + 1));
+        }
+    }
+    ColormapMesh3D::new()
+        .with_colormap(Colormap::new(ColormapName::Viridis, -0.5, 1.0))
+        .with_data(&positions, &values, None, MeshDrawMode::Triangles, None)
+}
+
+/// A box, a cylinder, and a hexagonal prism standing in a row at `z ≈ 2`
+/// (scene3d_mesh).
+fn append_cylindrical_volumes(geometry: &mut Scene3dGeometry) {
+    let no_rotation = (0.0, [0.0, 0.0, 1.0]);
+    let mut cube = Box3D::new();
+    cube.set_data(
+        [1.2, 1.2, 1.2],
+        &[egui::Color32::from_rgb(220, 90, 90)],
+        &[[-2.5, 0.0, 2.0]],
+        no_rotation,
+    );
+    cube.append_to(geometry);
+    let mut cyl = Cylinder3D::new();
+    cyl.set_data(
+        0.7,
+        1.4,
+        &[egui::Color32::from_rgb(90, 200, 130)],
+        48,
+        &[[0.0, 0.0, 2.0]],
+        no_rotation,
+    );
+    cyl.append_to(geometry);
+    let mut hex = Hexagon3D::new();
+    hex.set_data(
+        0.8,
+        1.4,
+        &[egui::Color32::from_rgb(120, 130, 230)],
+        &[[2.5, 0.0, 2.0]],
+        no_rotation,
+    );
+    hex.append_to(geometry);
+}
+
+/// A value-coloured point cloud in the unit cube, Halton-sampled for a stable
+/// spread, valued by a centred Gaussian (scene3d_scatter).
+fn build_scatter3d() -> Scatter3D {
+    let n = 1000usize;
+    let (mut xs, mut ys, mut zs, mut vs) = (vec![], vec![], vec![], vec![]);
+    for i in 0..n {
+        let x = halton(i + 1, 2) as f32;
+        let y = halton(i + 1, 3) as f32;
+        let z = halton(i + 1, 5) as f32;
+        let r2 = (x - 0.5).powi(2) + (y - 0.5).powi(2) + (z - 0.5).powi(2);
+        xs.push(x);
+        ys.push(y);
+        zs.push(z);
+        vs.push((-11.0 * r2 as f64).exp());
+    }
+    Scatter3D::new()
+        .with_data(&xs, &ys, &zs, &vs)
+        .with_colormap(Colormap::new(ColormapName::Magma, 0.0, 1.0))
+        .with_marker(PointMarker::Diamond)
+        .with_size(11.0)
 }
