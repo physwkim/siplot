@@ -36,6 +36,7 @@ pub mod spinbox;
 pub mod symbol;
 pub mod time_plot;
 pub mod waveform_plot;
+pub mod waveform_table;
 
 pub use base::{
     AlarmPalette, BorderMode, BorderStyle, ChannelBase, alarm_border, control_range,
@@ -72,6 +73,9 @@ pub use time_plot::{
     update_interval,
 };
 pub use waveform_plot::{RedrawMode, SidmWaveformPlot, mode_allows, value_to_waveform};
+pub use waveform_table::{
+    DEFAULT_COLUMN_COUNT, SidmWaveformTable, apply_cell_edit, cell_index, row_count,
+};
 
 // The siplot data-margin type accepted by every plot widget's
 // `with_data_margins` (time / waveform / scatter / event), re-exported so callers

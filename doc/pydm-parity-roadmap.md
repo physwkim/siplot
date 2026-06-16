@@ -39,16 +39,15 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
   repeater / related-display navigation / shell command / log display.
 - **Deferred channel widgets, each blocked on a new structural surface**
   (genuine PyDM widgets, not silently dropped — they need more than a widget
-  module): `PyDMWaveformTable` (an editable N-column array grid — needs a table
-  UI primitive sidm does not use); `PyDMNTTable` (a PVA `NTTable` view — needs a
-  structured-table channel type, but `PvValue` models only scalars and 1-D
-  arrays, so the engine delivers no `NTTable` data); `PyDMTabWidget`/`PyDMTabBar`
-  (a per-tab-channel-gated tab container — a Qt navigation container);
-  `PyDMTerminator` (closes the display after inactivity — a session/runtime
-  behaviour, not a display widget). Drawing `Arc`/`Pie`/`Chord`/`Polygon`/
-  `Polyline`/`Image` subclasses remain T4's documented deviation. Qt-Designer
-  plugins, `*CurvesModel` table models, and `PyDMPrimitive*` bases are N/A
-  (no Qt Designer). All other PyDM channel widgets are ported (W/P/T/PT rows).
+  module): `PyDMNTTable` (a PVA `NTTable` view — needs a structured-table channel
+  type, but `PvValue` models only scalars and 1-D arrays, so the engine delivers
+  no `NTTable` data); `PyDMTabWidget`/`PyDMTabBar` (a per-tab-channel-gated tab
+  container — a Qt navigation container); `PyDMTerminator` (closes the display
+  after inactivity — a session/runtime behaviour, not a display widget). Drawing
+  `Arc`/`Pie`/`Chord`/`Polygon`/`Polyline`/`Image` subclasses remain T4's
+  documented deviation. Qt-Designer plugins, `*CurvesModel` table models, and
+  `PyDMPrimitive*` bases are N/A (no Qt Designer). All other PyDM channel widgets
+  are ported (W/P/T/PT rows).
 
 ## Status legend
 
@@ -104,6 +103,7 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
 | T6 | SidmAnalogIndicator / SidmScaleIndicator | ✅ | `widgets/scale_indicator.rs`; `SidmScaleIndicator` drawing the value as a filled bar (`barIndicator`) or pointer on a `num_divisions` tick scale, horizontal or vertical, porting `QScale` + `PyDMScaleIndicator`. Pure `value_proportion` (mirrors PyDM `calculate_position_for_value`: non-finite / out-of-`[lower,upper]` / zero-span → off-scale `None`) + `division_proportions` (i/n ticks). Limits resolve via `control_range` (user override → PV control limits); optional `format_value` label; the bar is alarm-coloured when `alarmSensitiveContent` is set (folding in the analog indicator's alarm colouring). 3 unit tests + headless wgpu readback (`tests/widget_scale_indicator_render.rs`: bar grows with value, off-scale renders no bar). **Consolidation:** one widget covers the plain scale and the alarm-coloured bar; the analog indicator's separate set-point pointer and multi-region alarm shading are not ported |
 | T7 | SidmMultiStateIndicator | ✅ | `widgets/multi_state.rs`; `SidmMultiStateIndicator` painting one of 16 configurable state colours selected by the channel value, as a filled circle (default) or rectangle with PyDM's red border (PyDM `PyDMMultiStateIndicator`). Pure `state_for_value` mirrors PyDM `value_changed`: the value must be numeric and `0 <= v <= 15` (a string fails the comparison in PyDM and is ignored), the state is `int(v)` (truncation toward zero), and an out-of-range / non-finite / non-numeric value leaves the state — and so the colour — unchanged. The 16 state colours default to opaque black (`[QColor(Qt.black)]*16`); before any in-range value the indicator shows black, matching PyDM's `_curr_color` initialisation (independent of state 0's colour). `renderAsRectangle` and per-state colours are builder methods. 5 unit tests + headless wgpu readback (`tests/widget_multi_state_render.rs`: an in-range value renders its state colour, an out-of-range value stays black; probed in green so the intrinsic red border is not mistaken for a state fill) |
 | T8 | SidmDateTimeEdit | ✅ | `widgets/datetime_edit.rs`; the writable counterpart of T5's `SidmDateTimeLabel` (PyDM `PyDMDateTimeEdit`). Shows the numeric time channel as a date/time string (reusing the label's `value_epoch_ms`+`format_datetime_ms`) and, on Enter, parses the typed string and writes PyDM `send_value`'s value: `relative` (default) sends ms-from-now (`now.msecsTo(val)`), else absolute ms since epoch, ÷1000 for `TimeBase::Seconds`, coerced to the channel's numeric type (`channeltype`). `blockPastDate` (default on) refuses a time earlier than now. Pure `parse_datetime_ms` (inverse of `format_datetime_ms`, using the new shared `days_from_civil`, optional/padded fractional seconds, range-checked fields) + `send_value_epoch_ms` (relative/absolute, ms/s, block-past-date) + `coerce_send_value` (int truncates, else float). 10 unit tests (parse round-trip / known string / malformed rejects, absolute & relative & seconds send values, block-past-date, channel-type coercion, full commit pipeline) + `days_from_civil` round-trip in `datetime_label`. Reuses `SidmLineEdit`'s focus-frozen-buffer / Enter-commit / no-local-echo mechanism. **Deviation:** a text entry of the `YYYY/MM/DD hh:mm:ss.zzz` string, not Qt's calendar-popup / field-spin editor; only that default format is accepted (matching T5's format deviation) |
+| T9 | SidmWaveformTable | ✅ | `widgets/waveform_table.rs`; an editable grid of a numeric array channel's elements (PyDM `PyDMWaveformTable`). The array is laid across `column_count` columns (rows = `ceil(len/cols)`, PyDM `value_changed`); editing a cell and pressing Enter parses the text as the element type, sets that one element, and writes the **whole** array back (PyDM `send_waveform` emits `self.waveform`). Pure `row_count` (ceiling division) + `cell_index` (row-major) + `apply_cell_edit` (parse-and-replace for `FloatArray`/`IntArray`, rejecting non-numeric / out-of-range / non-array) + `cell_strings` (PyDM `str(element)`). Optional column/row header labels fall back to 1-based indices (Qt's default numeric headers). Renders with egui's built-in `Grid` (no new dep), one focus-frozen `SidmLineEdit`-style cell per element, no local echo. 7 unit tests + headless render smoke test (`tests/widget_waveform_table_render.rs`: the `Grid` path runs without panicking and a populated table draws more than an empty one). **Deviation:** only numeric arrays are editable; the per-element display is the value's plain string, not a precision/format-spec rendering |
 
 ## Tier 3 — plot features (one commit each)
 
