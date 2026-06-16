@@ -457,10 +457,11 @@ pub fn decode_mask_tiff(bytes: &[u8]) -> std::io::Result<(u32, u32, Vec<u8>)> {
 /// codecs — it operates on a file path rather than `impl Write`, via the
 /// pure-Rust `rust-hdf5` crate.
 ///
-/// Divergence from silx: silx opens an existing file in append mode ("a") so the
-/// mask is added alongside existing data; siplot writes a fresh standalone HDF5
-/// file ([`H5File::create`](rust_hdf5::H5File::create) truncates an existing file
-/// at `path`). The save dialog confirms overwrite at the file level.
+/// Faithful to silx's "a" mode: an existing file is opened for append
+/// ([`H5File::open_rw`](rust_hdf5::H5File::open_rw)) so its other datasets are
+/// preserved, and an existing dataset at `data_path` is deleted first (silx's
+/// overwrite branch); a missing file is created. The file is finalized with
+/// `close()` before it can be read back.
 pub fn write_mask_hdf5(
     path: &std::path::Path,
     data_path: &str,
@@ -470,7 +471,16 @@ pub fn write_mask_hdf5(
 ) -> std::io::Result<()> {
     use rust_hdf5::H5File;
     let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
-    let file = H5File::create(path).map_err(to_io)?;
+    // silx opens an existing file in append mode ("a"), else creates it.
+    let file = if path.exists() {
+        H5File::open_rw(path).map_err(to_io)?
+    } else {
+        H5File::create(path).map_err(to_io)?
+    };
+    // silx deletes an existing dataset at the path before recreating it.
+    if file.dataset_names().iter().any(|n| n == data_path) {
+        file.delete_dataset(data_path).map_err(to_io)?;
+    }
     let ds = file
         .new_dataset::<u8>()
         .shape([height as usize, width as usize])

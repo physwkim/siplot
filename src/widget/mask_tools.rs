@@ -1485,8 +1485,10 @@ impl MaskToolsWidget {
     /// [`load_h5_dataset`](Self::load_h5_dataset)).
     ///
     /// HDF5 is a random-access container, not a byte stream, so this takes a path
-    /// rather than `impl Write`. Backed by the pure-Rust `rust-hdf5` crate; it
-    /// writes a fresh standalone HDF5 file (silx appends into an existing file).
+    /// rather than `impl Write`. Backed by the pure-Rust `rust-hdf5` crate;
+    /// faithful to silx's `h5py.File(filename, "a")` open mode — an existing file
+    /// is appended to (its other datasets preserved, the `mask` dataset
+    /// overwritten), a missing file is created.
     pub fn save_h5(&self, path: impl AsRef<std::path::Path>) -> io::Result<()> {
         crate::render::save::write_mask_hdf5(
             path.as_ref(),
@@ -2991,6 +2993,58 @@ mod tests {
             .expect("load named dataset");
         assert!(!resized);
         assert_eq!(dst.mask, vec![10, 20, 30, 40]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn h5_save_append_preserves_existing_dataset() {
+        // silx "a" mode: saving the mask into an existing HDF5 file keeps the
+        // other datasets already in it (open_rw, not truncate). Seed an unrelated
+        // 2D dataset, save the mask, then both must survive and read back intact.
+        use crate::render::save::{read_mask_hdf5, write_mask_hdf5};
+        let path = h5_temp_path("append");
+        let pathbuf = std::path::Path::new(&path);
+        write_mask_hdf5(pathbuf, "keep", 2, 2, &[5, 6, 7, 8]).expect("seed keep dataset");
+
+        let mut src = MaskToolsWidget::new(2, 2);
+        src.mask = vec![10, 20, 30, 40];
+        src.save_h5(&path).expect("append mask into existing file");
+
+        let mut datasets = src.mask_datasets(&path).expect("enumerate datasets");
+        datasets.sort();
+        assert_eq!(
+            datasets,
+            vec!["keep".to_string(), "mask".to_string()],
+            "append must preserve the pre-existing dataset alongside the mask"
+        );
+        let (_, _, keep) = read_mask_hdf5(pathbuf, "keep").expect("read preserved dataset");
+        assert_eq!(
+            keep,
+            vec![5, 6, 7, 8],
+            "pre-existing data must be untouched"
+        );
+        let (_, _, mask) = read_mask_hdf5(pathbuf, "mask").expect("read appended mask");
+        assert_eq!(mask, vec![10, 20, 30, 40]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn h5_resave_overwrites_existing_mask_dataset() {
+        // silx deletes an existing dataset at the path before recreating it: a
+        // second save to the same file must replace the mask, not error on a
+        // duplicate name or leave the stale data.
+        let path = h5_temp_path("resave");
+        let mut first = MaskToolsWidget::new(2, 2);
+        first.mask = vec![1, 1, 1, 1];
+        first.save_h5(&path).expect("first save");
+
+        let mut second = MaskToolsWidget::new(2, 2);
+        second.mask = vec![9, 8, 7, 6];
+        second.save_h5(&path).expect("re-save overwrites mask");
+
+        let mut dst = MaskToolsWidget::new(2, 2);
+        dst.load_h5(&path).expect("load h5");
+        assert_eq!(dst.mask, vec![9, 8, 7, 6], "re-save must replace the mask");
         let _ = std::fs::remove_file(&path);
     }
 
