@@ -449,6 +449,113 @@ pub fn decode_mask_tiff(bytes: &[u8]) -> std::io::Result<(u32, u32, Vec<u8>)> {
     Ok((height, width, data))
 }
 
+/// Write the 2D `uint8` mask to an HDF5 dataset at `data_path` inside `path`.
+///
+/// Mirrors silx `MaskToolsWidget._saveToHdf5` (gui/plot/MaskToolsWidget.py:143-174),
+/// writing the mask as a `(height, width)` `uint8` dataset. HDF5 is a
+/// random-access container, not a byte stream, so — unlike the npy/edf/tiff
+/// codecs — it operates on a file path rather than `impl Write`, via the
+/// pure-Rust `rust-hdf5` crate.
+///
+/// Divergence from silx: silx opens an existing file in append mode ("a") so the
+/// mask is added alongside existing data; siplot writes a fresh standalone HDF5
+/// file ([`H5File::create`](rust_hdf5::H5File::create) truncates an existing file
+/// at `path`). The save dialog confirms overwrite at the file level.
+pub fn write_mask_hdf5(
+    path: &std::path::Path,
+    data_path: &str,
+    height: u32,
+    width: u32,
+    data: &[u8],
+) -> std::io::Result<()> {
+    use rust_hdf5::H5File;
+    let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
+    let file = H5File::create(path).map_err(to_io)?;
+    let ds = file
+        .new_dataset::<u8>()
+        .shape([height as usize, width as usize])
+        .create(data_path)
+        .map_err(to_io)?;
+    ds.write_raw(data).map_err(to_io)?;
+    // Finalize the file (superblock/headers) before it can be read back.
+    file.close().map_err(to_io)?;
+    Ok(())
+}
+
+/// List the paths of every 2D dataset in the HDF5 file at `path`, sorted.
+///
+/// This is the data source for silx's "Select a 2D dataset" dialog
+/// (`_selectDataset` / `DatasetDialog`, gui/plot/MaskToolsWidget.py:63-78): the
+/// dialog browses the file tree and offers the 2D datasets a mask can be loaded
+/// from. `rust-hdf5`'s [`dataset_names`](rust_hdf5::H5File::dataset_names)
+/// enumerates every dataset (full paths, nested included); the result is sorted
+/// so the auto-selection ([`read_mask_hdf5_auto`]) is deterministic.
+pub fn list_mask_datasets_hdf5(path: &std::path::Path) -> std::io::Result<Vec<String>> {
+    use rust_hdf5::H5File;
+    let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
+    let file = H5File::open(path).map_err(to_io)?;
+    let mut out = Vec::new();
+    for name in file.dataset_names() {
+        let ds = file.dataset(&name).map_err(to_io)?;
+        if ds.ndims() == 2 {
+            out.push(name);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Read the 2D `uint8` mask stored at `data_path` in the HDF5 file at `path`,
+/// returning `(height, width, data)` in C (row-major) order.
+///
+/// Mirrors silx `MaskToolsWidget._loadFromHdf5` (gui/plot/MaskToolsWidget.py:679-696):
+/// the dataset is opened and read; a non-2D dataset is rejected. The samples are
+/// read as `uint8` (a mask is `uint8`); a dataset whose element size is not one
+/// byte is a [`rust_hdf5::Hdf5Error`] type mismatch surfaced as an I/O error. A
+/// body whose length is not `width * height` is an
+/// [`std::io::ErrorKind::InvalidData`] error.
+pub fn read_mask_hdf5(
+    path: &std::path::Path,
+    data_path: &str,
+) -> std::io::Result<(u32, u32, Vec<u8>)> {
+    use rust_hdf5::H5File;
+    let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
+    let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string());
+    let file = H5File::open(path).map_err(to_io)?;
+    let ds = file.dataset(data_path).map_err(to_io)?;
+    if ds.ndims() != 2 {
+        return Err(invalid("HDF5 mask dataset must be 2-dimensional"));
+    }
+    let shape = ds.shape();
+    let (height, width) = (shape[0], shape[1]);
+    let data: Vec<u8> = ds.read_raw().map_err(to_io)?;
+    if data.len() != height * width {
+        return Err(invalid(
+            "HDF5 mask body length does not match its (height, width) shape",
+        ));
+    }
+    Ok((height as u32, width as u32, data))
+}
+
+/// Read the first (lexicographically smallest path) 2D `uint8` dataset in the
+/// HDF5 file at `path`.
+///
+/// Convenience over [`read_mask_hdf5`] for the common single-dataset file:
+/// silx's `_selectDataset` dialog would auto-resolve when there is one choice.
+/// When several 2D datasets exist, the first by sorted path is read; callers that
+/// need an explicit choice enumerate with [`list_mask_datasets_hdf5`] and call
+/// [`read_mask_hdf5`]. An error is returned when the file holds no 2D dataset.
+pub fn read_mask_hdf5_auto(path: &std::path::Path) -> std::io::Result<(u32, u32, Vec<u8>)> {
+    let datasets = list_mask_datasets_hdf5(path)?;
+    let first = datasets.first().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "HDF5 file contains no 2D dataset to load a mask from",
+        )
+    })?;
+    read_mask_hdf5(path, first)
+}
+
 /// Standard base64 alphabet (RFC 4648), used by [`encode_svg`].
 const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

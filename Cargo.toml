@@ -33,6 +33,10 @@ png = "0.18"
 # uint8 image — exactly a 2D uint8 mask. Default features cover the common
 # compressions (deflate/lzw/packbits) so masks other tools wrote still load.
 tiff = "0.11"
+# HDF5 mask save/load (silx MaskToolsWidget HDF5 branch, via h5py). The
+# pure-Rust `rust-hdf5` crate reads/writes HDF5 with no native libhdf5
+# dependency, so it is a plain build-everywhere dependency.
+rust-hdf5 = "0.2"
 # Native Save/load file dialog for the toolbar Save action (mirrors silx's QFileDialog).
 rfd = "0.17"
 # System clipboard for the toolbar Copy action (set_image with the wgpu readback RGBA).

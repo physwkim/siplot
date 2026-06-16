@@ -1409,11 +1409,88 @@ impl MaskToolsWidget {
         self.load_tiff(path)
     }
 
+    /// Save the current mask to an HDF5 file, into a dataset named `mask`.
+    ///
+    /// Mirrors silx `MaskToolsWidget.save(filename, "h5")` →
+    /// `_saveToHdf5` (gui/plot/MaskToolsWidget.py:128-174). silx prompts for the
+    /// dataset path via its "Select a 2D dataset" dialog; this writes to the
+    /// fixed default `mask` (the interactive dataset picker is the remaining
+    /// Qt-specific gap — the selection *mechanism*, enumerating and reading a
+    /// chosen dataset, is ported as [`mask_datasets`](Self::mask_datasets) /
+    /// [`load_h5_dataset`](Self::load_h5_dataset)).
+    ///
+    /// HDF5 is a random-access container, not a byte stream, so this takes a path
+    /// rather than `impl Write`. Backed by the pure-Rust `rust-hdf5` crate; it
+    /// writes a fresh standalone HDF5 file (silx appends into an existing file).
+    pub fn save_h5(&self, path: impl AsRef<std::path::Path>) -> io::Result<()> {
+        crate::render::save::write_mask_hdf5(
+            path.as_ref(),
+            "mask",
+            self.height,
+            self.width,
+            &self.mask,
+        )
+    }
+
+    /// Load a mask from the first 2D dataset of an HDF5 file, cropping/padding to
+    /// the current image geometry (silx `MaskToolsWidget.load`, HDF5 branch →
+    /// `_loadFromHdf5`).
+    ///
+    /// When the file holds several 2D datasets, the first by sorted path is used;
+    /// enumerate with [`mask_datasets`](Self::mask_datasets) and call
+    /// [`load_h5_dataset`](Self::load_h5_dataset) to choose explicitly. Returns
+    /// `Ok(true)` when the loaded shape differed from the current image (resize
+    /// occurred). Backed by the pure-Rust `rust-hdf5` crate.
+    pub fn load_h5(&mut self, path: impl AsRef<std::path::Path>) -> io::Result<bool> {
+        let (height, width, data) = crate::render::save::read_mask_hdf5_auto(path.as_ref())?;
+        Ok(self.apply_loaded_mask(height, width, data))
+    }
+
+    /// Load a mask from the named 2D dataset `data_path` of an HDF5 file
+    /// (silx `_loadFromHdf5` with an explicit `_selectDataset` choice).
+    ///
+    /// The explicit-selection counterpart of [`load_h5`](Self::load_h5); pair with
+    /// [`mask_datasets`](Self::mask_datasets) to present the available datasets.
+    /// Returns `Ok(true)` when the loaded shape differed from the current image.
+    pub fn load_h5_dataset(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+        data_path: &str,
+    ) -> io::Result<bool> {
+        let (height, width, data) = crate::render::save::read_mask_hdf5(path.as_ref(), data_path)?;
+        Ok(self.apply_loaded_mask(height, width, data))
+    }
+
+    /// List the full paths of every 2D dataset in an HDF5 file (the choices silx's
+    /// "Select a 2D dataset" dialog would offer for load/save).
+    pub fn mask_datasets(&self, path: impl AsRef<std::path::Path>) -> io::Result<Vec<String>> {
+        crate::render::save::list_mask_datasets_hdf5(path.as_ref())
+    }
+
+    /// Save the current mask to an HDF5 file at the given in-app path string
+    /// (silx `MaskToolsWidget.save(filename, "h5")`).
+    ///
+    /// Takes a plain `&str` path entered in-app rather than opening a native file
+    /// dialog. Thin shim over [`save_h5`](Self::save_h5).
+    pub fn save_mask_h5(&self, path: &str) -> io::Result<()> {
+        self.save_h5(path)
+    }
+
+    /// Load a mask from an HDF5 file at the given in-app path string, cropping or
+    /// padding to the current image geometry (silx `MaskToolsWidget.load`, HDF5
+    /// branch).
+    ///
+    /// Takes a plain `&str` path entered in-app rather than opening a native file
+    /// dialog. Thin shim over [`load_h5`](Self::load_h5).
+    pub fn load_mask_h5(&mut self, path: &str) -> io::Result<bool> {
+        self.load_h5(path)
+    }
+
     /// Open a native save-file dialog (silx `MaskToolsWidget._saveMask`) and
     /// write the current mask to the chosen path, dispatching to the `.npy`,
-    /// `.edf`, or `.tif`/`.tiff` codec by file extension (silx also offers
-    /// HDF5/msk, which remain unsupported here). An extensionless path defaults
-    /// to `.npy` (silx's default kind); an unsupported extension is rejected
+    /// `.edf`, `.tif`/`.tiff`, or `.h5` (HDF5) codec by file extension (silx also
+    /// offers fit2d `.msk`, unsupported here). An extensionless path defaults to
+    /// `.npy` (silx's default kind); an unsupported extension is rejected
     /// (faithful to silx `save` raising on an unknown kind). Returns `Ok(true)`
     /// when a file was written, `Ok(false)` on cancel. The picker is a native
     /// shim; the codecs and the extension dispatch ([`resolve_mask_save_format`])
@@ -1423,6 +1500,7 @@ impl MaskToolsWidget {
             .add_filter("NumPy mask", &["npy"])
             .add_filter("EDF mask", &["edf"])
             .add_filter("TIFF mask", &["tif", "tiff"])
+            .add_filter("HDF5 mask", &["h5", "nx5", "nxs", "hdf", "hdf5", "cxi"])
             .save_file()
         else {
             return Ok(false);
@@ -1431,13 +1509,15 @@ impl MaskToolsWidget {
             MaskFileFormat::Npy => self.save_npy(&path)?,
             MaskFileFormat::Edf => self.save_edf(&path)?,
             MaskFileFormat::Tiff => self.save_tiff(&path)?,
+            MaskFileFormat::H5 => self.save_h5(&path)?,
         }
         Ok(true)
     }
 
     /// Open a native open-file dialog (silx `MaskToolsWidget._loadMask`) and load
     /// a mask from the chosen path, dispatching by extension
-    /// (`.npy`/`.edf`/`.tif`/`.tiff`) and cropping/padding to the current image.
+    /// (`.npy`/`.edf`/`.tif`/`.tiff`/`.h5`) and cropping/padding to the current
+    /// image.
     /// Returns `Ok(Some(resized))` — where `resized` is `true` when the loaded
     /// shape differed from the current image — or `Ok(None)` on cancel. An
     /// unknown extension is rejected (faithful to silx `load` raising on an
@@ -1448,6 +1528,7 @@ impl MaskToolsWidget {
             .add_filter("NumPy mask", &["npy"])
             .add_filter("EDF mask", &["edf"])
             .add_filter("TIFF mask", &["tif", "tiff"])
+            .add_filter("HDF5 mask", &["h5", "nx5", "nxs", "hdf", "hdf5", "cxi"])
             .pick_file()
         else {
             return Ok(None);
@@ -1456,19 +1537,21 @@ impl MaskToolsWidget {
             MaskFileFormat::Npy => self.load_npy(&path)?,
             MaskFileFormat::Edf => self.load_edf(&path)?,
             MaskFileFormat::Tiff => self.load_tiff(&path)?,
+            MaskFileFormat::H5 => self.load_h5(&path)?,
         };
         Ok(Some(resized))
     }
 }
 
-/// The mask file formats siplot can encode/decode (silx `MaskToolsWidget`
-/// save/load additionally handle HDF5 and fit2d `.msk`, which remain
-/// unsupported here).
+/// The mask file formats siplot can encode/decode. HDF5 is handled by the
+/// pure-Rust `rust-hdf5` crate. silx also handles fit2d `.msk` via fabio, which
+/// remains unsupported here (no local fabio reference for its binary layout).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MaskFileFormat {
     Npy,
     Edf,
     Tiff,
+    H5,
 }
 
 /// Map a (case-insensitive) file extension to its [`MaskFileFormat`], or `None`
@@ -1480,6 +1563,8 @@ fn mask_format_for_ext(ext: &str) -> Option<MaskFileFormat> {
         "npy" => Some(MaskFileFormat::Npy),
         "edf" => Some(MaskFileFormat::Edf),
         "tif" | "tiff" => Some(MaskFileFormat::Tiff),
+        // silx NEXUS_HDF5_EXT (silx/io/utils.py): .h5 .nx5 .nxs .hdf .hdf5 .cxi
+        "h5" | "nx5" | "nxs" | "hdf" | "hdf5" | "cxi" => Some(MaskFileFormat::H5),
         _ => None,
     }
 }
@@ -1493,7 +1578,7 @@ fn resolve_mask_save_format(path: &std::path::Path) -> io::Result<MaskFileFormat
         Some(ext) => mask_format_for_ext(ext).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unsupported mask format: .{ext} (siplot writes .npy/.edf/.tif)"),
+                format!("unsupported mask format: .{ext} (siplot writes .npy/.edf/.tif/.h5)"),
             )
         }),
     }
@@ -1509,7 +1594,7 @@ fn resolve_mask_load_format(path: &std::path::Path) -> io::Result<MaskFileFormat
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "unsupported mask format (siplot reads .npy/.edf/.tif)",
+                "unsupported mask format (siplot reads .npy/.edf/.tif/.h5)",
             )
         })
 }
@@ -1867,8 +1952,16 @@ mod tests {
             resolve_mask_save_format(Path::new("M.TIFF")).unwrap(),
             MaskFileFormat::Tiff
         );
-        // A still-unsupported extension is rejected, not silently written as npy.
-        assert!(resolve_mask_save_format(Path::new("m.h5")).is_err());
+        // HDF5 extensions (silx NEXUS_HDF5_EXT) resolve to the H5 format.
+        assert_eq!(
+            resolve_mask_save_format(Path::new("m.h5")).unwrap(),
+            MaskFileFormat::H5
+        );
+        assert_eq!(
+            resolve_mask_save_format(Path::new("m.NXS")).unwrap(),
+            MaskFileFormat::H5
+        );
+        // fit2d .msk stays unsupported (no local fabio reference for its layout).
         assert!(resolve_mask_save_format(Path::new("m.msk")).is_err());
     }
 
@@ -1892,10 +1985,18 @@ mod tests {
             resolve_mask_load_format(Path::new("m.tiff")).unwrap(),
             MaskFileFormat::Tiff
         );
+        // HDF5 extensions resolve to the H5 format.
+        assert_eq!(
+            resolve_mask_load_format(Path::new("m.h5")).unwrap(),
+            MaskFileFormat::H5
+        );
+        assert_eq!(
+            resolve_mask_load_format(Path::new("m.HDF5")).unwrap(),
+            MaskFileFormat::H5
+        );
         // A file's format cannot be guessed: a missing or unsupported extension
         // errors (faithful to silx `load` raising on an unknown extension).
         assert!(resolve_mask_load_format(Path::new("mask")).is_err());
-        assert!(resolve_mask_load_format(Path::new("m.h5")).is_err());
         assert!(resolve_mask_load_format(Path::new("m.msk")).is_err());
     }
 
@@ -2705,6 +2806,72 @@ mod tests {
         let resized = small.read_tiff(buf.as_slice()).unwrap();
         assert!(resized, "shape mismatch must report a resize");
         assert_eq!(small.mask, vec![1, 2, 4, 5]);
+    }
+
+    fn h5_temp_path(tag: &str) -> String {
+        let mut path = std::env::temp_dir();
+        path.push(format!("siplot_mask_h5_{}_{}.h5", tag, std::process::id()));
+        // save_h5 opens in append mode (silx "a"); start from a clean file so a
+        // stale dataset from a previous run cannot shadow this test.
+        let _ = std::fs::remove_file(&path);
+        path.to_str().expect("utf-8 temp path").to_string()
+    }
+
+    #[test]
+    fn h5_round_trips_via_save_load() {
+        // A same-shape HDF5 write -> auto-load is bit-identical with no resize.
+        let path = h5_temp_path("roundtrip");
+        let mut src = MaskToolsWidget::new(3, 2); // width 3, height 2
+        src.mask = vec![0, 1, 2, 200, 254, 255];
+        src.save_h5(&path).expect("save h5");
+
+        let mut dst = MaskToolsWidget::new(3, 2);
+        let resized = dst.load_h5(&path).expect("load h5");
+        assert!(!resized, "same shape must not report a resize");
+        assert_eq!(dst.mask, vec![0, 1, 2, 200, 254, 255]);
+        assert!(dst.can_undo(), "load must commit to history");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn h5_load_crops_larger_mask() {
+        // A 3x3 HDF5 mask loaded into a 2x2 widget crops to the top-left 2x2 and
+        // reports a resize (the shared apply_loaded_mask crop/pad owner).
+        let path = h5_temp_path("crop");
+        let mut big = MaskToolsWidget::new(3, 3);
+        big.mask = vec![
+            1, 2, 3, //
+            4, 5, 6, //
+            7, 8, 9, //
+        ];
+        big.save_h5(&path).expect("save h5");
+
+        let mut small = MaskToolsWidget::new(2, 2);
+        let resized = small.load_h5(&path).expect("load h5");
+        assert!(resized, "shape mismatch must report a resize");
+        assert_eq!(small.mask, vec![1, 2, 4, 5]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn h5_enumerates_then_loads_named_dataset() {
+        // The dataset-selection mechanism: a saved mask is enumerated by full path
+        // and loaded back by that explicit name (silx _selectDataset + _loadFromHdf5).
+        let path = h5_temp_path("select");
+        let mut src = MaskToolsWidget::new(2, 2);
+        src.mask = vec![10, 20, 30, 40];
+        src.save_h5(&path).expect("save h5");
+
+        let datasets = src.mask_datasets(&path).expect("enumerate datasets");
+        assert_eq!(datasets, vec!["mask".to_string()]);
+
+        let mut dst = MaskToolsWidget::new(2, 2);
+        let resized = dst
+            .load_h5_dataset(&path, &datasets[0])
+            .expect("load named dataset");
+        assert!(!resized);
+        assert_eq!(dst.mask, vec![10, 20, 30, 40]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
