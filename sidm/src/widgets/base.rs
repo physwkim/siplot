@@ -234,7 +234,7 @@ impl egui::plugin::Plugin for MiddleClickCopy {
 /// the full address(es) as a tooltip, newline-joined like PyDM's. On Linux the
 /// copy also owns the X11 PRIMARY selection (both references do — middle-paste
 /// into a terminal). Overlapping widgets resolve through the
-/// [`MiddleClickCopy`] plugin.
+/// `MiddleClickCopy` plugin.
 ///
 /// Every framed channel widget gets this through [`ChannelBase`]; a custom
 /// widget that draws its own response wires it explicitly (the plots do).

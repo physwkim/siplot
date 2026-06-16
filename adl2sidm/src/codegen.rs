@@ -37,7 +37,7 @@ pub struct Options {
     pub protocol: String,
     /// `$(name)` / `${name}` macro substitutions, baked into every MEDM string
     /// (channels and user-visible text: labels, captions, shell commands,
-    /// related-display targets) by [`expand_macros`], mirroring MEDM's lexer.
+    /// related-display targets) by `expand_macros`, mirroring MEDM's lexer.
     pub macros: Vec<(String, String)>,
     /// Translate `cartesian plot` as a scatter plot rather than a waveform plot
     /// (mirrors adl2pydm's `--use-scatterplot`).
