@@ -1305,6 +1305,113 @@ pub fn split_lorentzian_model(x: &[f64], params: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// Evaluate a pseudo-Voigt peak (area parameterisation) plus flat background.
+///
+/// `params = [area, centroid, fwhm, eta, background]`. Mirrors C `sum_apvoigt`:
+/// `sigma = fwhm/(2*sqrt(2*LOG2))`, `height = area/(sigma*sqrt(2*pi))`; the
+/// Lorentzian term is `eta * area/(0.5*pi*fwhm*(1+((x-c)/(0.5*fwhm))^2))` and the
+/// Gaussian term `(1-eta)*height*exp(-0.5*((x-c)/sigma)^2)` (C guard
+/// `(x-c)/sigma <= 35`).
+pub fn pseudo_voigt_area_model(x: &[f64], params: &[f64]) -> Vec<f64> {
+    let (area, centroid, fwhm, eta, bg) = (params[0], params[1], params[2], params[3], params[4]);
+    let sigma = fwhm / fwhm_to_sigma_factor();
+    let half_pi = 0.5 * std::f64::consts::PI;
+    let sqrt2pi = (2.0 * std::f64::consts::PI).sqrt();
+    x.iter()
+        .map(|&xi| {
+            let mut y = bg;
+            if fwhm != 0.0 {
+                // Lorentzian term (area-normalised).
+                let dl = (xi - centroid) / (0.5 * fwhm);
+                y += eta * (area / (half_pi * fwhm * (1.0 + dl * dl)));
+            }
+            if sigma != 0.0 {
+                // Gaussian term (area-normalised height).
+                let height = area / (sigma * sqrt2pi);
+                let dg = (xi - centroid) / sigma;
+                if dg <= 35.0 {
+                    y += (1.0 - eta) * height * (-0.5 * dg * dg).exp();
+                }
+            }
+            y
+        })
+        .collect()
+}
+
+/// Evaluate an asymmetric (split) pseudo-Voigt peak plus flat background.
+///
+/// `params = [height, centroid, fwhm1, fwhm2, eta, background]`. Mirrors C
+/// `sum_splitpvoigt`: the low side (`x <= centroid`) uses `fwhm1`/`sigma1`, the
+/// high side (`x > centroid`) `fwhm2`/`sigma2`; per side `PV = eta*L + (1-eta)*G`
+/// with `L = height/(1+((x-c)/(0.5*fwhm))^2)` and the Gaussian C guard
+/// `(x-c)/sigma <= 35`.
+pub fn split_pseudo_voigt_model(x: &[f64], params: &[f64]) -> Vec<f64> {
+    let (height, centroid, fwhm1, fwhm2, eta, bg) = (
+        params[0], params[1], params[2], params[3], params[4], params[5],
+    );
+    let sigma1 = fwhm1 / fwhm_to_sigma_factor();
+    let sigma2 = fwhm2 / fwhm_to_sigma_factor();
+    x.iter()
+        .map(|&xi| {
+            let mut y = bg;
+            let diff = xi - centroid;
+            let (fwhm, sigma) = if diff > 0.0 {
+                (fwhm2, sigma2)
+            } else {
+                (fwhm1, sigma1)
+            };
+            if fwhm != 0.0 {
+                let dl = diff / (0.5 * fwhm);
+                y += eta * height / (1.0 + dl * dl);
+            }
+            if sigma != 0.0 {
+                let dg = diff / sigma;
+                if dg <= 35.0 {
+                    y += (1.0 - eta) * height * (-0.5 * dg * dg).exp();
+                }
+            }
+            y
+        })
+        .collect()
+}
+
+/// Evaluate a split pseudo-Voigt peak with a per-side eta, plus flat background.
+///
+/// `params = [height, centroid, fwhm1, fwhm2, eta1, eta2, background]`. Mirrors C
+/// `sum_splitpvoigt2`: the low side (`x <= centroid`) uses `fwhm1`/`eta1`, the
+/// high side `fwhm2`/`eta2`. C writes the Lorentzian argument as
+/// `2*(x-c)/fwhm` (identical to `(x-c)/(0.5*fwhm)`); the Gaussian C guard is
+/// `(x-c)/sigma <= 35`.
+pub fn split_pseudo_voigt2_model(x: &[f64], params: &[f64]) -> Vec<f64> {
+    let (height, centroid, fwhm1, fwhm2, eta1, eta2, bg) = (
+        params[0], params[1], params[2], params[3], params[4], params[5], params[6],
+    );
+    let sigma1 = fwhm1 / fwhm_to_sigma_factor();
+    let sigma2 = fwhm2 / fwhm_to_sigma_factor();
+    x.iter()
+        .map(|&xi| {
+            let mut y = bg;
+            let diff = xi - centroid;
+            let (fwhm, sigma, eta) = if diff > 0.0 {
+                (fwhm2, sigma2, eta2)
+            } else {
+                (fwhm1, sigma1, eta1)
+            };
+            if fwhm != 0.0 {
+                let dl = (2.0 * diff) / fwhm;
+                y += eta * height / (1.0 + dl * dl);
+            }
+            if sigma != 0.0 {
+                let dg = diff / sigma;
+                if dg <= 35.0 {
+                    y += (1.0 - eta) * height * (-0.5 * dg * dg).exp();
+                }
+            }
+            y
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Step / slit models (non-peak fit theories).
 //
@@ -1547,6 +1654,39 @@ pub fn estimate_split_lorentzian(x: &[f64], y: &[f64]) -> Option<Vec<f64>> {
     Some(vec![h, c, f, f, bg])
 }
 
+/// Seed for [`pseudo_voigt_area_model`]: `[area, centroid, fwhm, eta, background]`.
+///
+/// Mirrors silx `estimate_apvoigt`, which estimates the pseudo-Voigt height seed
+/// then converts it to an area assuming the area is split half/half between the
+/// Lorentzian and Gaussian contributions:
+/// `area = 0.5*(h*fwhm*0.5*pi) + 0.5*(h*fwhm/(2*sqrt(2*ln2)))*sqrt(2*pi)`.
+/// Eta seeds to 0.5.
+pub fn estimate_pseudo_voigt_area(x: &[f64], y: &[f64]) -> Option<Vec<f64>> {
+    let (h, c, f, bg) = estimate_height_position_fwhm(x, y)?;
+    let lorentz_area = h * f * 0.5 * std::f64::consts::PI;
+    let gauss_area = (h * f / fwhm_to_sigma_factor()) * (2.0 * std::f64::consts::PI).sqrt();
+    let area = 0.5 * lorentz_area + 0.5 * gauss_area;
+    Some(vec![area, c, f, 0.5, bg])
+}
+
+/// Seed for [`split_pseudo_voigt_model`]:
+/// `[height, centroid, fwhm1, fwhm2, eta, background]`.
+///
+/// Mirrors silx `estimate_splitpvoigt`: `fwhm2 = fwhm1` and `eta = 0.5`.
+pub fn estimate_split_pseudo_voigt(x: &[f64], y: &[f64]) -> Option<Vec<f64>> {
+    let (h, c, f, bg) = estimate_height_position_fwhm(x, y)?;
+    Some(vec![h, c, f, f, 0.5, bg])
+}
+
+/// Seed for [`split_pseudo_voigt2_model`]:
+/// `[height, centroid, fwhm1, fwhm2, eta1, eta2, background]`.
+///
+/// Mirrors silx `estimate_splitpvoigt2`: `fwhm2 = fwhm1`, `eta1 = eta2 = 0.5`.
+pub fn estimate_split_pseudo_voigt2(x: &[f64], y: &[f64]) -> Option<Vec<f64>> {
+    let (h, c, f, bg) = estimate_height_position_fwhm(x, y)?;
+    Some(vec![h, c, f, f, 0.5, 0.5, bg])
+}
+
 /// `numpy.convolve(y, kernel, mode="valid")`: the kernel is applied reversed,
 /// and the output length is `y.len() - kernel.len() + 1` (empty when `y` is
 /// shorter than `kernel`).
@@ -1680,6 +1820,13 @@ pub enum PeakModel {
     SplitLorentzian,
     /// Pseudo-Voigt: `[height, centroid, fwhm, eta, bg]`.
     PseudoVoigt,
+    /// Pseudo-Voigt, area parameterisation: `[area, centroid, fwhm, eta, bg]`.
+    AreaPseudoVoigt,
+    /// Asymmetric (split) pseudo-Voigt: `[height, centroid, fwhm1, fwhm2, eta, bg]`.
+    SplitPseudoVoigt,
+    /// Asymmetric split pseudo-Voigt with per-side eta:
+    /// `[height, centroid, fwhm1, fwhm2, eta1, eta2, bg]`.
+    SplitPseudoVoigt2,
     /// Step down (descending erf edge): `[height, centroid, fwhm, bg]`.
     StepDown,
     /// Step up (ascending erf edge): `[height, centroid, fwhm, bg]`.
@@ -1701,6 +1848,9 @@ impl PeakModel {
             PeakModel::LorentzianArea => "Lorentzian (Area)",
             PeakModel::SplitLorentzian => "Split Lorentzian",
             PeakModel::PseudoVoigt => "Pseudo-Voigt",
+            PeakModel::AreaPseudoVoigt => "Pseudo-Voigt (Area)",
+            PeakModel::SplitPseudoVoigt => "Split Pseudo-Voigt",
+            PeakModel::SplitPseudoVoigt2 => "Split Pseudo-Voigt 2",
             PeakModel::StepDown => "Step Down",
             PeakModel::StepUp => "Step Up",
             PeakModel::Slit => "Slit",
@@ -1750,6 +1900,30 @@ impl PeakModel {
                 owned("Eta"),
                 owned("Background"),
             ],
+            PeakModel::AreaPseudoVoigt => vec![
+                owned("Area"),
+                owned("Center"),
+                owned("FWHM"),
+                owned("Eta"),
+                owned("Background"),
+            ],
+            PeakModel::SplitPseudoVoigt => vec![
+                owned("Height"),
+                owned("Center"),
+                owned("FWHM1"),
+                owned("FWHM2"),
+                owned("Eta"),
+                owned("Background"),
+            ],
+            PeakModel::SplitPseudoVoigt2 => vec![
+                owned("Height"),
+                owned("Center"),
+                owned("FWHM1"),
+                owned("FWHM2"),
+                owned("Eta1"),
+                owned("Eta2"),
+                owned("Background"),
+            ],
             PeakModel::StepDown | PeakModel::StepUp => vec![
                 owned("Height"),
                 owned("Center"),
@@ -1782,6 +1956,9 @@ impl PeakModel {
             PeakModel::LorentzianArea => lorentzian_area_model(x, params),
             PeakModel::SplitLorentzian => split_lorentzian_model(x, params),
             PeakModel::PseudoVoigt => pseudo_voigt_model(x, params),
+            PeakModel::AreaPseudoVoigt => pseudo_voigt_area_model(x, params),
+            PeakModel::SplitPseudoVoigt => split_pseudo_voigt_model(x, params),
+            PeakModel::SplitPseudoVoigt2 => split_pseudo_voigt2_model(x, params),
             PeakModel::StepDown => stepdown_model(x, params),
             PeakModel::StepUp => stepup_model(x, params),
             PeakModel::Slit => slit_model(x, params),
@@ -1799,6 +1976,9 @@ impl PeakModel {
             PeakModel::LorentzianArea => estimate_lorentzian_area(x, y),
             PeakModel::SplitLorentzian => estimate_split_lorentzian(x, y),
             PeakModel::PseudoVoigt => estimate_pseudo_voigt(x, y),
+            PeakModel::AreaPseudoVoigt => estimate_pseudo_voigt_area(x, y),
+            PeakModel::SplitPseudoVoigt => estimate_split_pseudo_voigt(x, y),
+            PeakModel::SplitPseudoVoigt2 => estimate_split_pseudo_voigt2(x, y),
             PeakModel::StepDown => estimate_stepdown(x, y),
             PeakModel::StepUp => estimate_stepup(x, y),
             PeakModel::Slit => estimate_slit(x, y),
@@ -2516,6 +2696,75 @@ mod tests {
         let l = lorentzian_model(&xs, &[5.0, 10.0, 3.0, 0.0]);
         for (a, b) in sl.iter().zip(&l) {
             assert!((a - b).abs() < 1e-12, "split lorentz {a} vs lorentz {b}");
+        }
+    }
+
+    #[test]
+    fn pseudo_voigt_area_model_recovers_own_peak() {
+        let xs = linspace(0.0, 20.0, 401);
+        let area = 10.0;
+        let ys = pseudo_voigt_area_model(&xs, &[area, 10.0, 2.5, 0.4, 0.3]);
+        let fit = IterativeFit::new(PeakModel::AreaPseudoVoigt)
+            .fit_full(&xs, &ys)
+            .unwrap();
+        let p = &fit.fit.parameters;
+        assert!((p[0] - area).abs() < 1e-1, "area {}", p[0]);
+        assert!((p[1] - 10.0).abs() < 1e-2, "center {}", p[1]);
+        assert!((p[2] - 2.5).abs() < 5e-2, "fwhm {}", p[2]);
+        assert!((p[3] - 0.4).abs() < 5e-2, "eta {}", p[3]);
+        assert!((p[4] - 0.3).abs() < 1e-2, "bg {}", p[4]);
+        assert!(fit.reduced_chisq().unwrap() < 1e-4);
+    }
+
+    #[test]
+    fn split_pseudo_voigt_model_recovers_asymmetric_peak() {
+        let xs = linspace(0.0, 20.0, 501);
+        let ys = split_pseudo_voigt_model(&xs, &[5.0, 10.0, 2.0, 4.0, 0.4, 0.3]);
+        let fit = IterativeFit::new(PeakModel::SplitPseudoVoigt)
+            .fit_full(&xs, &ys)
+            .unwrap();
+        let p = &fit.fit.parameters;
+        assert!((p[1] - 10.0).abs() < 2e-2, "center {}", p[1]);
+        assert!((p[2] - 2.0).abs() < 1e-1, "fwhm1 {}", p[2]);
+        assert!((p[3] - 4.0).abs() < 1e-1, "fwhm2 {}", p[3]);
+        assert!((p[5] - 0.3).abs() < 2e-2, "bg {}", p[5]);
+        assert!(fit.reduced_chisq().unwrap() < 1e-4);
+    }
+
+    #[test]
+    fn split_pseudo_voigt2_model_recovers_per_side_eta() {
+        let xs = linspace(0.0, 20.0, 501);
+        let ys = split_pseudo_voigt2_model(&xs, &[5.0, 10.0, 2.5, 4.0, 0.2, 0.7, 0.3]);
+        let fit = IterativeFit::new(PeakModel::SplitPseudoVoigt2)
+            .fit_full(&xs, &ys)
+            .unwrap();
+        let p = &fit.fit.parameters;
+        assert!((p[1] - 10.0).abs() < 2e-2, "center {}", p[1]);
+        assert!((p[2] - 2.5).abs() < 1e-1, "fwhm1 {}", p[2]);
+        assert!((p[3] - 4.0).abs() < 1e-1, "fwhm2 {}", p[3]);
+        assert!((p[6] - 0.3).abs() < 2e-2, "bg {}", p[6]);
+        assert!(fit.reduced_chisq().unwrap() < 1e-4);
+    }
+
+    #[test]
+    fn split_pseudo_voigt_reduces_to_pseudo_voigt_when_symmetric() {
+        let xs = linspace(0.0, 20.0, 101);
+        let spv = split_pseudo_voigt_model(&xs, &[5.0, 10.0, 3.0, 3.0, 0.4, 0.0]);
+        let pv = pseudo_voigt_model(&xs, &[5.0, 10.0, 3.0, 0.4, 0.0]);
+        for (a, b) in spv.iter().zip(&pv) {
+            assert!((a - b).abs() < 1e-12, "split pvoigt {a} vs pvoigt {b}");
+        }
+    }
+
+    #[test]
+    fn split_pseudo_voigt2_reduces_to_pseudo_voigt_when_symmetric() {
+        // fwhm1==fwhm2 and eta1==eta2 collapses splitpvoigt2 onto the symmetric
+        // pseudo-Voigt (the C arg 2*(x-c)/fwhm == (x-c)/(0.5*fwhm)).
+        let xs = linspace(0.0, 20.0, 101);
+        let spv2 = split_pseudo_voigt2_model(&xs, &[5.0, 10.0, 3.0, 3.0, 0.4, 0.4, 0.0]);
+        let pv = pseudo_voigt_model(&xs, &[5.0, 10.0, 3.0, 0.4, 0.0]);
+        for (a, b) in spv2.iter().zip(&pv) {
+            assert!((a - b).abs() < 1e-12, "split pvoigt2 {a} vs pvoigt {b}");
         }
     }
 
