@@ -25,7 +25,9 @@ use crate::core::plot::{DataMargins, DataRange, GraphGrid, Plot, PlotId};
 use crate::core::roi::{ManagedRoi, Roi, RoiInteractionMode, RoiLineStyle};
 use crate::core::scatter_viz::{GridImage, ScatterLineProfile};
 use crate::core::shape::{Shape, ShapeKind};
-use crate::core::sift_align::{AffineTransformation, SiftAlignment, sift_auto_align};
+use crate::core::sift_align::{
+    AffineTransformation, MatchedKeypoint, SiftAlignment, sift_auto_align,
+};
 use crate::core::transform::{AxisSide, Margins, Scale, YAxis};
 use crate::core::triangles::Triangles;
 use crate::render::backend_wgpu::WgpuBackend;
@@ -8127,6 +8129,10 @@ pub enum CompareAlignment {
     Auto,
 }
 
+/// Colour of the matched-keypoint scatter overlay (silx renders the keypoints
+/// with a dedicated colormap; siplot uses one conspicuous colour).
+const KEYPOINT_COLOR: Color32 = Color32::from_rgb(255, 0, 255);
+
 /// A retained widget that displays two co-registered images with a draggable
 /// split slider, mirroring silx `CompareImages`.
 ///
@@ -8184,6 +8190,13 @@ pub struct CompareImages {
     /// alignment change (SIFT is expensive); `None` in every other alignment mode
     /// and when registration found too few keypoints.
     auto: Option<SiftAlignment>,
+    /// Whether the matched SIFT keypoints are drawn as a scatter overlay (silx
+    /// `setKeypointsVisible`/`getKeypointsVisible`). Off by default, matching silx
+    /// (`__init__` calls `setKeypointsVisible(False)`).
+    keypoints_visible: bool,
+    /// Handle of the live keypoint scatter overlay (silx `__scatter`), or `None`
+    /// when hidden / no registration is in effect. Rebuilt with the composite.
+    keypoint_overlay: Option<ItemHandle>,
 }
 
 impl CompareImages {
@@ -8212,6 +8225,8 @@ impl CompareImages {
             composite_w: 0,
             composite_h: 0,
             auto: None,
+            keypoints_visible: false,
+            keypoint_overlay: None,
         }
     }
 
@@ -8282,6 +8297,33 @@ impl CompareImages {
     /// non-SIFT mode.
     pub fn transformation(&self) -> Option<AffineTransformation> {
         self.auto.as_ref().map(|a| a.transformation)
+    }
+
+    /// Whether the matched SIFT keypoints are drawn over the images — silx
+    /// `getKeypointsVisible`.
+    pub fn keypoints_visible(&self) -> bool {
+        self.keypoints_visible
+    }
+
+    /// Show or hide the matched SIFT keypoints overlay — silx
+    /// `setKeypointsVisible`. The overlay only ever has points to draw in
+    /// [`CompareAlignment::Auto`] (it is fed by the registration's matched
+    /// keypoints); in the other modes this flag has no visible effect.
+    pub fn set_keypoints_visible(&mut self, visible: bool) {
+        if visible != self.keypoints_visible {
+            self.keypoints_visible = visible;
+            self.dirty = true;
+        }
+    }
+
+    /// The matched SIFT keypoint pairs from the active registration (silx
+    /// `__matching_keypoints`), or an empty slice when no registration is in
+    /// effect.
+    pub fn matched_keypoints(&self) -> &[MatchedKeypoint] {
+        self.auto
+            .as_ref()
+            .map(|a| a.matches.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Current split position in [0, 1] — fraction of the width shown as A.
@@ -8402,6 +8444,18 @@ impl CompareImages {
                     self.dirty = true;
                 }
             }
+
+            // Keypoint-overlay toggle (silx `setKeypointsVisible`); only has
+            // matched keypoints to show in the AUTO alignment.
+            ui.add_space(8.0);
+            let mut visible = self.keypoints_visible;
+            if ui
+                .checkbox(&mut visible, "kp")
+                .on_hover_text("Show the matched SIFT keypoints (AUTO alignment)")
+                .changed()
+            {
+                self.set_keypoints_visible(visible);
+            }
         });
 
         self.mode
@@ -8434,6 +8488,7 @@ impl CompareImages {
                 let handle = self.inner.add_rgba_image(cw, ch, &composite);
                 self.composite_handle = Some(handle);
             }
+            self.sync_keypoint_overlay();
             self.dirty = false;
         }
         // Place/reposition the on-plot draggable split separator before drawing
@@ -8636,6 +8691,30 @@ impl CompareImages {
             self.width_b as usize,
             self.height_b as usize,
         )
+    }
+
+    /// Rebuild the matched-keypoint scatter overlay (silx `__updateKeyPoints`):
+    /// remove the previous overlay, then — when keypoints are visible and a SIFT
+    /// registration is in effect — add a point scatter at the matched keypoints'
+    /// image-A coordinates (the same common-grid data space the composite and the
+    /// separator use). Hidden / non-AUTO modes leave no overlay.
+    fn sync_keypoint_overlay(&mut self) {
+        if let Some(handle) = self.keypoint_overlay.take() {
+            self.inner.remove(handle);
+        }
+        if !self.keypoints_visible {
+            return;
+        }
+        let Some(al) = self.auto.as_ref() else { return };
+        if al.matches.is_empty() {
+            return;
+        }
+        let xs: Vec<f64> = al.matches.iter().map(|m| m.ax as f64).collect();
+        let ys: Vec<f64> = al.matches.iter().map(|m| m.ay as f64).collect();
+        let handle =
+            self.inner
+                .add_scatter_with_symbol(&xs, &ys, KEYPOINT_COLOR, Symbol::Cross, 6.0);
+        self.keypoint_overlay = Some(handle);
     }
 
     fn build_composite(&self) -> (Vec<[u8; 4]>, u32, u32) {

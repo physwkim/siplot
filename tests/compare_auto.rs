@@ -135,6 +135,43 @@ fn auto_alignment_registers_a_shifted_image() {
 }
 
 #[test]
+fn auto_alignment_keypoint_overlay_toggles() {
+    let (w, h) = (96usize, 96usize);
+    let a = blob_image(w, h);
+    let b = shift_image(&a, w, h, 3, 2);
+
+    let (app, mut harness) = harness_auto(w, h, a, b);
+
+    {
+        let cmp = app.borrow();
+        // silx default: keypoints hidden.
+        assert!(!cmp.keypoints_visible());
+        // A successful registration produced matched keypoints to show.
+        assert!(
+            cmp.matched_keypoints().len() >= 3,
+            "expected matched keypoints, got {}",
+            cmp.matched_keypoints().len()
+        );
+    }
+
+    // Toggle the overlay on and render a frame — the overlay is rebuilt without
+    // disturbing the cached registration.
+    app.borrow_mut().set_keypoints_visible(true);
+    harness.step();
+    {
+        let cmp = app.borrow();
+        assert!(cmp.keypoints_visible());
+        assert_eq!(cmp.alignment(), CompareAlignment::Auto);
+        assert!(cmp.matched_keypoints().len() >= 3);
+    }
+
+    // Toggle back off.
+    app.borrow_mut().set_keypoints_visible(false);
+    harness.step();
+    assert!(!app.borrow().keypoints_visible());
+}
+
+#[test]
 fn auto_alignment_falls_back_to_origin_without_features() {
     let (w, h) = (32usize, 32usize);
     let flat = vec![0.5f32; w * h];
