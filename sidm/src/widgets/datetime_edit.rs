@@ -34,7 +34,7 @@ use crate::widgets::datetime_label::{
 };
 
 /// Parse a `YYYY/MM/DD hh:mm:ss[.zzz]` UTC string to epoch milliseconds — the
-/// inverse of [`format_datetime_ms`](crate::widgets::format_datetime_ms).
+/// inverse of [`format_datetime_ms`].
 /// Returns `None` when the string is not in that form or carries an out-of-range
 /// field. The fractional second is optional and is read as up to three digits
 /// (`.5` → 500 ms, `.45` → 450 ms, `.456` → 456 ms).
