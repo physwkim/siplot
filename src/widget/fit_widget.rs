@@ -284,6 +284,14 @@ pub enum FitModelChoice {
     IterativeSlit,
     /// Iterative arctan step up.
     IterativeAtanStepUp,
+    /// Degree-2 polynomial fit.
+    IterativePolynomial2,
+    /// Degree-3 polynomial fit.
+    IterativePolynomial3,
+    /// Degree-4 polynomial fit.
+    IterativePolynomial4,
+    /// Degree-5 polynomial fit.
+    IterativePolynomial5,
     /// Multi-peak Gaussian fit with automatic peak search (silx `sum_gauss`
     /// theory): locate N peaks and fit them simultaneously.
     MultiGaussian,
@@ -291,7 +299,7 @@ pub enum FitModelChoice {
 
 impl FitModelChoice {
     /// All choices, in display order.
-    pub const ALL: [FitModelChoice; 17] = [
+    pub const ALL: [FitModelChoice; 21] = [
         FitModelChoice::Linear,
         FitModelChoice::GaussianEstimate,
         FitModelChoice::IterativeGaussian,
@@ -308,6 +316,10 @@ impl FitModelChoice {
         FitModelChoice::IterativeStepUp,
         FitModelChoice::IterativeSlit,
         FitModelChoice::IterativeAtanStepUp,
+        FitModelChoice::IterativePolynomial2,
+        FitModelChoice::IterativePolynomial3,
+        FitModelChoice::IterativePolynomial4,
+        FitModelChoice::IterativePolynomial5,
         FitModelChoice::MultiGaussian,
     ];
 
@@ -330,6 +342,10 @@ impl FitModelChoice {
             FitModelChoice::IterativeStepUp => "Step Up (Iterative)",
             FitModelChoice::IterativeSlit => "Slit (Iterative)",
             FitModelChoice::IterativeAtanStepUp => "Arctan Step Up (Iterative)",
+            FitModelChoice::IterativePolynomial2 => "Degree 2 Polynomial",
+            FitModelChoice::IterativePolynomial3 => "Degree 3 Polynomial",
+            FitModelChoice::IterativePolynomial4 => "Degree 4 Polynomial",
+            FitModelChoice::IterativePolynomial5 => "Degree 5 Polynomial",
             FitModelChoice::MultiGaussian => "Gaussians (Multi-peak)",
         }
     }
@@ -352,6 +368,10 @@ impl FitModelChoice {
             FitModelChoice::IterativeStepUp => Some(PeakModel::StepUp),
             FitModelChoice::IterativeSlit => Some(PeakModel::Slit),
             FitModelChoice::IterativeAtanStepUp => Some(PeakModel::AtanStepUp),
+            FitModelChoice::IterativePolynomial2 => Some(PeakModel::Polynomial2),
+            FitModelChoice::IterativePolynomial3 => Some(PeakModel::Polynomial3),
+            FitModelChoice::IterativePolynomial4 => Some(PeakModel::Polynomial4),
+            FitModelChoice::IterativePolynomial5 => Some(PeakModel::Polynomial5),
             // Composite / analytical choices have no single peak model.
             FitModelChoice::Linear
             | FitModelChoice::GaussianEstimate
@@ -1070,17 +1090,29 @@ mod tests {
             FitModelChoice::IterativeSplitPseudoVoigt2.peak_model(),
             Some(PeakModel::SplitPseudoVoigt2)
         );
+        assert_eq!(
+            FitModelChoice::IterativePolynomial2.peak_model(),
+            Some(PeakModel::Polynomial2)
+        );
+        assert_eq!(
+            FitModelChoice::IterativePolynomial5.peak_model(),
+            Some(PeakModel::Polynomial5)
+        );
         assert_eq!(FitModelChoice::Linear.peak_model(), None);
         assert_eq!(FitModelChoice::GaussianEstimate.peak_model(), None);
     }
 
     #[test]
     fn all_choices_listed_once_in_order() {
-        assert_eq!(FitModelChoice::ALL.len(), 17);
+        assert_eq!(FitModelChoice::ALL.len(), 21);
         assert_eq!(FitModelChoice::ALL[0], FitModelChoice::Linear);
         assert_eq!(FitModelChoice::ALL[8], FitModelChoice::IterativePseudoVoigt);
         assert_eq!(FitModelChoice::ALL[15], FitModelChoice::IterativeAtanStepUp);
-        assert_eq!(FitModelChoice::ALL[16], FitModelChoice::MultiGaussian);
+        assert_eq!(
+            FitModelChoice::ALL[16],
+            FitModelChoice::IterativePolynomial2
+        );
+        assert_eq!(FitModelChoice::ALL[20], FitModelChoice::MultiGaussian);
         // Only the single-peak iterative choices map to one `PeakModel`; the
         // analytical (Linear / Gaussian-estimate) and composite (multi-peak)
         // choices have none.

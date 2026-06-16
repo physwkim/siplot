@@ -1835,9 +1835,27 @@ pub enum PeakModel {
     Slit,
     /// Arctan step up: `[height, position, width, bg]`.
     AtanStepUp,
+    /// Degree-2 polynomial: 3 coefficients highest-power-first (`a*x^2+b*x+c`).
+    Polynomial2,
+    /// Degree-3 polynomial: 4 coefficients highest-power-first.
+    Polynomial3,
+    /// Degree-4 polynomial: 5 coefficients highest-power-first.
+    Polynomial4,
+    /// Degree-5 polynomial: 6 coefficients highest-power-first.
+    Polynomial5,
 }
 
 impl PeakModel {
+    /// Polynomial degree for the `PolynomialN` variants, else `None`.
+    fn poly_degree(self) -> Option<usize> {
+        match self {
+            PeakModel::Polynomial2 => Some(2),
+            PeakModel::Polynomial3 => Some(3),
+            PeakModel::Polynomial4 => Some(4),
+            PeakModel::Polynomial5 => Some(5),
+            _ => None,
+        }
+    }
     /// Display name for this model.
     pub fn name(self) -> &'static str {
         match self {
@@ -1855,6 +1873,10 @@ impl PeakModel {
             PeakModel::StepUp => "Step Up",
             PeakModel::Slit => "Slit",
             PeakModel::AtanStepUp => "Arctan Step Up",
+            PeakModel::Polynomial2 => "Degree 2 Polynomial",
+            PeakModel::Polynomial3 => "Degree 3 Polynomial",
+            PeakModel::Polynomial4 => "Degree 4 Polynomial",
+            PeakModel::Polynomial5 => "Degree 5 Polynomial",
         }
     }
 
@@ -1943,6 +1965,18 @@ impl PeakModel {
                 owned("Width"),
                 owned("Background"),
             ],
+            PeakModel::Polynomial2
+            | PeakModel::Polynomial3
+            | PeakModel::Polynomial4
+            | PeakModel::Polynomial5 => {
+                // Highest-power-first coefficient labels a, b, c, … (numpy
+                // `poly1d` order): `degree + 1` of them. The polynomial absorbs
+                // the baseline, so there is no trailing background parameter.
+                let degree = self.poly_degree().expect("polynomial variant");
+                (0..=degree)
+                    .map(|i| ((b'a' + i as u8) as char).to_string())
+                    .collect()
+            }
         }
     }
 
@@ -1963,6 +1997,12 @@ impl PeakModel {
             PeakModel::StepUp => stepup_model(x, params),
             PeakModel::Slit => slit_model(x, params),
             PeakModel::AtanStepUp => atan_stepup_model(x, params),
+            // silx `poly` theory: `numpy.poly1d(params)(x)`, coefficients
+            // highest-power-first.
+            PeakModel::Polynomial2
+            | PeakModel::Polynomial3
+            | PeakModel::Polynomial4
+            | PeakModel::Polynomial5 => crate::core::background::poly_eval(params, x),
         }
     }
 
@@ -1983,6 +2023,15 @@ impl PeakModel {
             PeakModel::StepUp => estimate_stepup(x, y),
             PeakModel::Slit => estimate_slit(x, y),
             PeakModel::AtanStepUp => estimate_atan_stepup(x, y),
+            // silx `estimate_poly`: `numpy.polyfit(x, y, degree)`, coefficients
+            // highest-power-first (exact least-squares; the LM then confirms it).
+            PeakModel::Polynomial2
+            | PeakModel::Polynomial3
+            | PeakModel::Polynomial4
+            | PeakModel::Polynomial5 => {
+                let degree = self.poly_degree().expect("polynomial variant");
+                crate::core::background::polyfit(x, y, degree)
+            }
         }
     }
 }
@@ -2766,6 +2815,59 @@ mod tests {
         for (a, b) in spv2.iter().zip(&pv) {
             assert!((a - b).abs() < 1e-12, "split pvoigt2 {a} vs pvoigt {b}");
         }
+    }
+
+    #[test]
+    fn polynomial_models_recover_their_coefficients() {
+        let xs = linspace(-3.0, 3.0, 81);
+        // Degree 2 (well-conditioned): exact coefficient recovery.
+        let q = [1.5, -2.0, 0.7];
+        let ys = PeakModel::Polynomial2.eval(&xs, &q);
+        let fit = IterativeFit::new(PeakModel::Polynomial2)
+            .fit_full(&xs, &ys)
+            .unwrap();
+        for (got, want) in fit.fit.parameters.iter().zip(&q) {
+            assert!((got - want).abs() < 1e-6, "deg2 coef {got} vs {want}");
+        }
+        assert!(fit.reduced_chisq().unwrap() < 1e-9);
+
+        // Degree 3: exact coefficient recovery.
+        let c3 = [0.4, -0.5, 0.6, -0.7];
+        let ys3 = PeakModel::Polynomial3.eval(&xs, &c3);
+        let fit3 = IterativeFit::new(PeakModel::Polynomial3)
+            .fit_full(&xs, &ys3)
+            .unwrap();
+        for (got, want) in fit3.fit.parameters.iter().zip(&c3) {
+            assert!((got - want).abs() < 1e-5, "deg3 coef {got} vs {want}");
+        }
+
+        // Degree 5: assert curve reproduction (the normal-equations polyfit
+        // minimises the residual even where high-degree conditioning blurs the
+        // individual coefficients).
+        let c5 = [0.05, -0.1, 0.2, -0.3, 0.4, -0.5];
+        let ys5 = PeakModel::Polynomial5.eval(&xs, &c5);
+        let fit5 = IterativeFit::new(PeakModel::Polynomial5)
+            .fit_full(&xs, &ys5)
+            .unwrap();
+        assert!(
+            fit5.reduced_chisq().unwrap() < 1e-6,
+            "deg5 chisq {}",
+            fit5.reduced_chisq().unwrap()
+        );
+    }
+
+    #[test]
+    fn polynomial_param_names_match_degree() {
+        assert_eq!(PeakModel::Polynomial2.param_names(), ["a", "b", "c"]);
+        assert_eq!(PeakModel::Polynomial3.param_names(), ["a", "b", "c", "d"]);
+        assert_eq!(
+            PeakModel::Polynomial4.param_names(),
+            ["a", "b", "c", "d", "e"]
+        );
+        assert_eq!(
+            PeakModel::Polynomial5.param_names(),
+            ["a", "b", "c", "d", "e", "f"]
+        );
     }
 
     #[test]
