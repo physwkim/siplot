@@ -25,7 +25,7 @@ use crate::core::plot::{DataMargins, DataRange, GraphGrid, Plot, PlotId};
 use crate::core::roi::{ManagedRoi, Roi, RoiInteractionMode, RoiLineStyle};
 use crate::core::scatter_viz::{GridImage, ScatterLineProfile};
 use crate::core::shape::{Shape, ShapeKind};
-use crate::core::sift_align::{SiftAlignment, sift_auto_align};
+use crate::core::sift_align::{AffineTransformation, SiftAlignment, sift_auto_align};
 use crate::core::transform::{AxisSide, Margins, Scale, YAxis};
 use crate::core::triangles::Triangles;
 use crate::render::backend_wgpu::WgpuBackend;
@@ -8121,10 +8121,9 @@ pub enum CompareAlignment {
     /// SIFT keypoint registration: both images are padded to the common
     /// `max × max` grid, SIFT-matched, and image B is affine-warped onto image
     /// A's frame (silx `AUTO`: `__createSiftData` → `LinearAlign`). The estimated
-    /// affine transform and matched keypoints are computed and cached for
-    /// read-out (silx `getTransformation`). If fewer than three keypoints match,
-    /// the widget falls back to [`Origin`](Self::Origin) (silx
-    /// `__setDefaultAlignmentMode`).
+    /// affine transform is read out via [`CompareImages::transformation`] (silx
+    /// `getTransformation`). If fewer than three keypoints match, the widget
+    /// falls back to [`Origin`](Self::Origin) (silx `__setDefaultAlignmentMode`).
     Auto,
 }
 
@@ -8269,6 +8268,20 @@ impl CompareImages {
             self.alignment = alignment;
             self.dirty = true;
         }
+    }
+
+    /// The affine transform applied to image B to align it onto image A, or
+    /// `None` when no SIFT registration is in effect — silx
+    /// `CompareImages.getTransformation`.
+    ///
+    /// silx populates the transform *only* from the `AUTO`/SIFT path
+    /// (`__createSiftData`); `getTransformation` is `None` for ORIGIN/CENTER/
+    /// STRETCH. siplot matches this: the value is `Some` exactly while
+    /// [`CompareAlignment::Auto`] registration has succeeded (it is cleared when
+    /// the mode changes or registration fails), so it reads as `None` in every
+    /// non-SIFT mode.
+    pub fn transformation(&self) -> Option<AffineTransformation> {
+        self.auto.as_ref().map(|a| a.transformation)
     }
 
     /// Current split position in [0, 1] — fraction of the width shown as A.
@@ -8573,12 +8586,13 @@ impl CompareImages {
 
     /// Show a status bar with the cursor's data coordinate and the raw A / B
     /// pixel values under it (silx `CompareImagesStatusBar`, the `ImageA:`/
-    /// `ImageB:` labels). silx additionally shows an affine-transform label, but
-    /// silx populates that transform only from its SIFT (`AUTO`) alignment —
-    /// `getTransformation` is `None` for ORIGIN/CENTER/STRETCH — and siplot does
-    /// not provide the SIFT path, so the label has nothing to show and is
-    /// omitted. Call after [`Self::show`], which updates the tracked cursor.
-    /// GPU/UI — not covered by the tests.
+    /// `ImageB:` labels), plus an `Align:` label summarising the SIFT affine when
+    /// one is in effect. silx populates that transform only from its `AUTO`/SIFT
+    /// alignment ([`Self::transformation`] is `None` for ORIGIN/CENTER/STRETCH),
+    /// so the label appears only in `AUTO`, with the per-component breakdown
+    /// (translation px / scale / rotation degrees) on hover. Call after
+    /// [`Self::show`], which updates the tracked cursor. GPU/UI — not covered by
+    /// the tests.
     pub fn show_status_bar(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -8595,6 +8609,10 @@ impl CompareImages {
             };
             ui.label(format!("ImageA: {a_text}"));
             ui.label(format!("ImageB: {b_text}"));
+            if let Some(t) = self.transformation() {
+                ui.label(format!("Align: {}", align_summary(&t)))
+                    .on_hover_text(align_tooltip(&t));
+            }
         });
     }
 
@@ -8900,6 +8918,79 @@ fn format_compare_value(no_image: bool, value: Option<f32>) -> String {
             Some(v) => format!("{v:.6}"),
             None => "NA".to_string(),
         }
+    }
+}
+
+/// numpy `isclose(a, b)` with its default tolerances (`rtol=1e-5`, `atol=1e-8`).
+fn isclose(a: f64, b: f64, atol: f64) -> bool {
+    (a - b).abs() <= atol + 1e-5 * b.abs()
+}
+
+/// The status-bar "Align:" summary of a SIFT affine, mirroring silx
+/// `CompareImagesStatusBar._updateStatusBar`: the `+`-joined list of which of
+/// `Translation`/`Scale`/`Rotation` deviate *notably* (`atol=0.01`) from
+/// identity. With no notable component it is `"No big changes"` when a
+/// sub-threshold change exists, else `"No changes"` (an exact identity).
+fn align_summary(t: &AffineTransformation) -> String {
+    let notable_translation = !isclose(t.tx, 0.0, 0.01) || !isclose(t.ty, 0.0, 0.01);
+    let notable_scale = !isclose(t.sx, 1.0, 0.01) || !isclose(t.sy, 1.0, 0.01);
+    let notable_rotation = !isclose(t.rotation, 0.0, 0.01);
+
+    let mut parts = Vec::new();
+    if notable_translation {
+        parts.push("Translation");
+    }
+    if notable_scale {
+        parts.push("Scale");
+    }
+    if notable_rotation {
+        parts.push("Rotation");
+    }
+    if !parts.is_empty() {
+        return parts.join("+");
+    }
+    // No notable component: silx distinguishes a tiny change from exact identity
+    // with numpy.isclose's default tolerances.
+    let any_translation = !isclose(t.tx, 0.0, 1e-8) || !isclose(t.ty, 0.0, 1e-8);
+    let any_scale = !isclose(t.sx, 1.0, 1e-8) || !isclose(t.sy, 1.0, 1e-8);
+    let any_rotation = !isclose(t.rotation, 0.0, 1e-8);
+    if any_translation || any_scale || any_rotation {
+        "No big changes".to_string()
+    } else {
+        "No changes".to_string()
+    }
+}
+
+/// The detailed per-component tooltip for a SIFT affine, mirroring silx
+/// `CompareImagesStatusBar` (`Translation x/y` in px, `Scale x/y`, `Rotation`
+/// in degrees), one line per component that differs from identity, or
+/// `"No transformation"` when none do. silx gates the `Translation x` line on
+/// `ty` — a transcription slip; siplot gates it on `tx` so the x line tracks the
+/// x translation.
+fn align_tooltip(t: &AffineTransformation) -> String {
+    let mut lines = Vec::new();
+    if !isclose(t.tx, 0.0, 1e-8) {
+        lines.push(format!("Translation x: {:.3}px", t.tx));
+    }
+    if !isclose(t.ty, 0.0, 1e-8) {
+        lines.push(format!("Translation y: {:.3}px", t.ty));
+    }
+    if !isclose(t.sx, 1.0, 1e-8) {
+        lines.push(format!("Scale x: {:.3}", t.sx));
+    }
+    if !isclose(t.sy, 1.0, 1e-8) {
+        lines.push(format!("Scale y: {:.3}", t.sy));
+    }
+    if !isclose(t.rotation, 0.0, 1e-8) {
+        lines.push(format!(
+            "Rotation: {:.3}deg",
+            t.rotation * 180.0 / std::f64::consts::PI
+        ));
+    }
+    if lines.is_empty() {
+        "No transformation".to_string()
+    } else {
+        lines.join("\n")
     }
 }
 
@@ -15277,6 +15368,64 @@ mod tests {
         assert_eq!(
             compare_aligned_coords(CompareAlignment::Stretch, 2.0, 1.0, 4, 2, 8, 6),
             ((2.0, 1.0), (4.0, 3.0))
+        );
+    }
+
+    #[test]
+    fn align_summary_classifies_the_sift_transform() {
+        let id = AffineTransformation {
+            tx: 0.0,
+            ty: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+            rotation: 0.0,
+        };
+        assert_eq!(align_summary(&id), "No changes");
+
+        // A tiny (sub-0.01) translation is "No big changes".
+        let tiny = AffineTransformation { tx: 0.001, ..id };
+        assert_eq!(align_summary(&tiny), "No big changes");
+
+        // Notable translation only.
+        let shift = AffineTransformation {
+            tx: 4.0,
+            ty: 3.0,
+            ..id
+        };
+        assert_eq!(align_summary(&shift), "Translation");
+
+        // Translation + scale + rotation, joined in silx order.
+        let all = AffineTransformation {
+            tx: 4.0,
+            ty: 0.0,
+            sx: 1.2,
+            sy: 1.0,
+            rotation: 0.3,
+        };
+        assert_eq!(align_summary(&all), "Translation+Scale+Rotation");
+    }
+
+    #[test]
+    fn align_tooltip_lists_nonidentity_components() {
+        let id = AffineTransformation {
+            tx: 0.0,
+            ty: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+            rotation: 0.0,
+        };
+        assert_eq!(align_tooltip(&id), "No transformation");
+
+        let t = AffineTransformation {
+            tx: 4.0,
+            ty: -2.0,
+            sx: 1.0,
+            sy: 1.0,
+            rotation: std::f64::consts::FRAC_PI_2, // 90°
+        };
+        assert_eq!(
+            align_tooltip(&t),
+            "Translation x: 4.000px\nTranslation y: -2.000px\nRotation: 90.000deg"
         );
     }
 }

@@ -21,12 +21,12 @@ use siplot::{Colormap, CompareAlignment, CompareImages};
 /// (blob-detector) target, deterministic for reproducibility.
 fn blob_image(w: usize, h: usize) -> Vec<f32> {
     let blobs = [
-        (22.0f32, 26.0, 4.0, 1.0f32),
-        (54.0, 20.0, 6.0, 0.9),
-        (36.0, 54.0, 5.0, 1.0),
-        (62.0, 58.0, 3.0, 0.8),
-        (44.0, 40.0, 7.0, 0.7),
-        (26.0, 62.0, 4.5, 0.85),
+        (25.0f32, 30.0, 4.0, 1.0f32),
+        (60.0, 25.0, 6.0, 0.9),
+        (40.0, 60.0, 5.0, 1.0),
+        (70.0, 65.0, 3.0, 0.8),
+        (50.0, 45.0, 7.0, 0.7),
+        (30.0, 70.0, 4.5, 0.85),
     ];
     let mut img = vec![0.0f32; w * h];
     for y in 0..h {
@@ -97,9 +97,9 @@ fn harness_auto(
 
 #[test]
 fn auto_alignment_registers_a_shifted_image() {
-    let (w, h) = (80usize, 80usize);
+    let (w, h) = (96usize, 96usize);
     let a = blob_image(w, h);
-    let b = shift_image(&a, w, h, 4, 3);
+    let b = shift_image(&a, w, h, 3, 2);
 
     let (app, _harness) = harness_auto(w, h, a.clone(), b);
     let cmp = app.borrow();
@@ -114,13 +114,24 @@ fn auto_alignment_registers_a_shifted_image() {
     // Under an interior display coordinate, the raw B value (looked up through the
     // estimated affine) matches the raw A value there, because B is A shifted and
     // the affine inverts that shift.
-    let (va, vb) = cmp.raw_pixel_data(44.0, 40.0);
+    let (va, vb) = cmp.raw_pixel_data(50.0, 45.0);
     let va = va.expect("A value in range");
     let vb = vb.expect("B value in range");
     assert!(
         (va - vb).abs() < 0.1,
         "aligned B value {vb} should track A value {va}"
     );
+
+    // getTransformation (silx `getTransformation`) recovers the (+3, +2) shift
+    // with a near-identity linear part.
+    let t = cmp
+        .transformation()
+        .expect("AUTO populates the affine transform");
+    assert!((t.tx - 3.0).abs() < 1.0, "tx={}", t.tx);
+    assert!((t.ty - 2.0).abs() < 1.0, "ty={}", t.ty);
+    assert!((t.sx - 1.0).abs() < 0.1, "sx={}", t.sx);
+    assert!((t.sy - 1.0).abs() < 0.1, "sy={}", t.sy);
+    assert!(t.rotation.abs() < 0.1, "rot={}", t.rotation);
 }
 
 #[test]
@@ -136,5 +147,10 @@ fn auto_alignment_falls_back_to_origin_without_features() {
         cmp.alignment(),
         CompareAlignment::Origin,
         "a featureless pair should fall back to ORIGIN"
+    );
+    // No SIFT registration in effect → getTransformation is None (silx).
+    assert!(
+        cmp.transformation().is_none(),
+        "a fallback to ORIGIN should leave no transform"
     );
 }
