@@ -10,7 +10,7 @@
 //!   the `numpy` arrays silx builds, and is applied to a *column* vector as
 //!   `M·v` ([`Mat4::transform_point`]). Translation lives in the 4th column
 //!   (`rows[i][3]`), as in `mat4Translate`.
-//! - [`Mat4::mul`] is the standard matrix product, matching `numpy.dot(a, b)`.
+//! - `Mat4::mul` is the standard matrix product, matching `numpy.dot(a, b)`.
 //! - Angles passed to [`mat4_rotate`] are in **radians** (silx
 //!   `mat4RotateFromAngleAxis` takes radians; the degree→radian conversion lives
 //!   in the camera layer, as in silx).

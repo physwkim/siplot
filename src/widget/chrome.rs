@@ -1508,7 +1508,7 @@ fn fill_polygon(painter: &Painter, pts: &[Pos2], color: Color32) {
 /// area (silx `addShape`): filled and/or outlined polygons and rectangles, open
 /// polylines, and full-span horizontal/vertical lines, in the shape's line
 /// style. Drawing is clipped to the data area. Polygon/rectangle fill is drawn
-/// as a triangulated [`egui::Mesh`] via [`fill_polygon`], so concave polygons
+/// as a triangulated [`egui::Mesh`] via `fill_polygon`, so concave polygons
 /// fill correctly (`doc/design.md` §8).
 ///
 /// The `overlay` filter is the silx `isOverlay` split (items/shape.py:54-73):

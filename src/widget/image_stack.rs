@@ -23,7 +23,7 @@
 //!   branch in `setCurrentUrl`, :516-527).
 //!
 //! Frame-navigation logic (index clamping, prev/next stepping, visibility
-//! filtering) lives in the pure [`FrameNav`] state struct, so it is
+//! filtering) lives in the pure `FrameNav` state struct, so it is
 //! unit-testable without a GPU; the GPU-backed [`ImageStack`] delegates to it.
 
 use egui_wgpu::RenderState;
@@ -269,7 +269,7 @@ fn navigation_toolbar_ui(ui: &mut egui::Ui, current: usize, len: usize) -> Optio
 /// Browse an in-memory ordered list of 2D frames.
 ///
 /// Owns an internal [`Plot2D`] (like `ComplexImageView`/`StackView`) plus the
-/// pure [`FrameNav`] navigation state. The displayed image is rebuilt in place
+/// pure `FrameNav` navigation state. The displayed image is rebuilt in place
 /// from the current slot, reusing the plot item handle so browsing does not
 /// reset the zoom unless [`Self::set_auto_reset_zoom`] is enabled (silx
 /// `_autoResetZoom`, default `true`).

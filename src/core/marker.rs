@@ -421,7 +421,7 @@ impl Marker {
         }
     }
 
-    /// Drag the marker to data position `to`, applying its [`constraint`] anchored
+    /// Drag the marker to data position `to`, applying its [`constraint`](Self::constraint) anchored
     /// at `from` (silx `DraggableMixIn.drag` → `setPosition`, `marker.py:113-114`
     /// and the per-kind `setPosition` overrides `marker.py:177-206`, `296-352`).
     ///

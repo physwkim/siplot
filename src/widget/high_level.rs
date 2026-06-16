@@ -40,8 +40,8 @@ use crate::widget::position_info::{
 
 /// Live profile extraction mode (silx profile toolbar).
 ///
-/// Used with [`Plot2D::show_profile_toolbar`] and
-/// [`Plot2D::try_update_profile_from_response`].
+/// Used with [`PlotWidget::show_profile_toolbar`] and
+/// [`ImageView::profile_values`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProfileMode {
     /// Profile disabled.
@@ -1512,7 +1512,7 @@ fn bilinear_sample(width: usize, height: usize, data: &[f32], col: f64, row: f64
 /// [`line_profile_values`]; integer coordinates are pixel centres, so silx's
 /// `-0.5` plot-corner shift is *not* applied here). The profile has
 /// `ceil(length + 1)` samples; each sample bilinearly interpolates
-/// ([`bilinear_sample`]) `linewidth` points spaced one pixel apart along the
+/// (`bilinear_sample`) `linewidth` points spaced one pixel apart along the
 /// perpendicular to the line and centred on it, then reduces them by `method`
 /// ([`ProfileMethod::Mean`] = mean of the in-bounds finite band points, silx
 /// default; [`ProfileMethod::Sum`] = their sum). Band points outside the image
@@ -2717,7 +2717,7 @@ fn set_line_visibility(
 /// style, or `None` to inherit the curve's base value — exactly silx's "set a
 /// value to `None` to use the default" convention. The active-curve highlight
 /// merges these over the curve's retained [`CurveData`] via
-/// [`current_curve_style`].
+/// `current_curve_style`.
 ///
 /// The default value used for the active-curve highlight is
 /// `CurveStyle { line_width: Some(2.0), ..Default::default() }`, mirroring
@@ -5482,7 +5482,7 @@ impl PlotWidget {
         self.retained_data(handle).map(retained_data_to_stats_input)
     }
 
-    /// Feed the active item's retained data into a [`StatsWidget`], recomputing
+    /// Feed the active item's retained data into a [`StatsWidget`](crate::StatsWidget), recomputing
     /// its rows from the live data (silx `StatsWidget` bound to the active
     /// item). The row is labelled with the item's legend.
     ///
@@ -5516,7 +5516,7 @@ impl PlotWidget {
     }
 
     /// Feed *every* plot item that has retained scalar data into a
-    /// [`StatsWidget`], one row per item labelled by its legend — silx
+    /// [`StatsWidget`](crate::StatsWidget), one row per item labelled by its legend — silx
     /// `StatsWidget` in its default all-items mode, the counterpart to the
     /// active-only [`Self::feed_active_stats`] (silx `setDisplayOnlyActiveItem`
     /// chooses between them). Items with no retained scalar data (RGBA images,
@@ -5638,7 +5638,7 @@ impl PlotWidget {
         widget.ui(ui);
     }
 
-    /// Feed an item's retained curve `(x, y)` into a [`FitWidget`] as its fit
+    /// Feed an item's retained curve `(x, y)` into a [`FitWidget`](crate::FitWidget) as its fit
     /// target, so a fit runs against the live curve (silx `FitWidget.setData`
     /// bound to a plot curve). Returns `true` when the item is a curve with
     /// retained data; `false` for an unknown handle or a non-curve item (the fit
@@ -5657,7 +5657,7 @@ impl PlotWidget {
         }
     }
 
-    /// Feed the active item's retained curve `(x, y)` into a [`FitWidget`] as its
+    /// Feed the active item's retained curve `(x, y)` into a [`FitWidget`](crate::FitWidget) as its
     /// fit target (silx `FitWidget` bound to the active curve). Returns `true`
     /// when the active item is a curve with retained data.
     pub fn set_active_fit_target(&self, fit: &mut crate::widget::fit_widget::FitWidget) -> bool {
@@ -5665,9 +5665,9 @@ impl PlotWidget {
             .is_some_and(|handle| self.set_fit_target(fit, handle))
     }
 
-    /// Feed the active item's retained data into a [`StatsWidget`] and render
+    /// Feed the active item's retained data into a [`StatsWidget`](crate::StatsWidget) and render
     /// its table (silx `StatsWidget`). Combines [`Self::feed_active_stats`] with
-    /// [`StatsWidget::ui`]; the widget recomputes as the active item changes.
+    /// [`StatsWidget::ui`](crate::StatsWidget::ui); the widget recomputes as the active item changes.
     pub fn show_active_stats_widget(
         &self,
         ui: &mut egui::Ui,
@@ -5692,9 +5692,9 @@ impl PlotWidget {
         }
     }
 
-    /// Feed *all* items with retained scalar data into a [`StatsWidget`] and
+    /// Feed *all* items with retained scalar data into a [`StatsWidget`](crate::StatsWidget) and
     /// render its table (silx all-items `StatsWidget`). Combines
-    /// [`Self::feed_all_stats`]'s selection with [`StatsWidget::ui`]; the table
+    /// [`Self::feed_all_stats`]'s selection with [`StatsWidget::ui`](crate::StatsWidget::ui); the table
     /// follows every plot item, recomputing as items are added/removed.
     ///
     /// [`StatsWidget::ui`]: crate::widget::stats_widget::StatsWidget::ui
@@ -6850,7 +6850,7 @@ impl PlotWidget {
     /// retained vertices to pixels through the cached display transform
     /// (axis-aware, so a y2 curve snaps in its own axis), and returns the
     /// [`snap_to_nearest`] result within [`SNAP_THRESHOLD_DIST`] logical pixels —
-    /// its `data` is the snapped coordinate to show in a [`PositionInfo`], with a
+    /// its `data` is the snapped coordinate to show in a [`PositionInfo`](crate::PositionInfo), with a
     /// `None` result meaning "no snap" (feed `false` to
     /// [`PositionInfo::ui_snapped`](crate::widget::position_info::PositionInfo::ui_snapped)).
     ///
@@ -7291,10 +7291,10 @@ impl PlotWidget {
     /// target or (for CSV) there is no active curve to save.
     ///
     /// All recognized figure formats are routed through
-    /// [`Self::save_graph_with_format`] at [`DEFAULT_SAVE_DPI`]; PNG remains
+    /// [`Self::save_graph_with_format`] at `DEFAULT_SAVE_DPI`; PNG remains
     /// byte-identical to [`Self::save_graph`] (both go through
     /// [`crate::render::save::encode_png`]). The extension-to-target decision is
-    /// the pure, unit-tested [`SaveTarget::from_path`].
+    /// the pure, unit-tested [`SaveTarget::from_path`](crate::SaveTarget::from_path).
     pub fn save_to_path(&self, path: &Path, size: (u32, u32)) -> Result<bool, SaveError> {
         use crate::widget::actions::io::{SaveTarget, curve_to_csv};
 
@@ -7444,7 +7444,7 @@ impl PlotWidget {
     /// The GPU readback and the printer submission are untested native shims (a
     /// real printer / spooler is required); the rasterization step reuses the
     /// unit-tested [`crate::render::save`] encoders, and the temp-path naming is
-    /// unit-tested via [`print_temp_png_path`]. The toolbar Print button opens a
+    /// unit-tested via `print_temp_png_path`. The toolbar Print button opens a
     /// printer-selection dialog ([`crate::widget::print_dialog::PrintDialog`])
     /// that routes to [`Self::print_graph_to`]; this method is the
     /// dialog-less direct path to the default printer.
@@ -8508,7 +8508,7 @@ impl CompareImages {
     /// `CompareImages.getRawPixelData`. `(x, y)` is in the reference of the
     /// displayed (aligned) grid; it is mapped back to each raw image's own
     /// coordinates per the [`alignment`](Self::alignment) mode by
-    /// [`compare_aligned_coords`]. Each value is `None` when that image has no
+    /// `compare_aligned_coords`. Each value is `None` when that image has no
     /// data or the mapped position is outside it.
     pub fn raw_pixel_data(&self, x: f64, y: f64) -> (Option<f32>, Option<f32>) {
         let ((xa, ya), (xb, yb)) = compare_aligned_coords(
@@ -9901,7 +9901,7 @@ impl ImageView {
         &self.colormap
     }
 
-    /// A [`ColorBarWidget`] for the active image's colormap, used by
+    /// A [`ColorBarWidget`](crate::ColorBarWidget) for the active image's colormap, used by
     /// [`Self::show`] to render the side colorbar (silx
     /// `ImageView.getColorBarWidget`, ImageView.py:501). The bar's value limits
     /// track the colormap's `vmin`/`vmax`.
@@ -10807,7 +10807,7 @@ impl ScatterView {
     /// Set the per-point alpha array (silx `Scatter.setData(alpha=...)`,
     /// scatter.py:1051-1060), consumed at construction. Each entry is clamped to
     /// `[0, 1]`; the array should have one entry per point (the silx contract),
-    /// but a length mismatch does not panic — see [`compose_per_point_alpha`].
+    /// but a length mismatch does not panic — see `compose_per_point_alpha`.
     /// In [`ScatterVisualization::Points`] mode each point's colormap RGBA alpha
     /// is multiplied by its per-point alpha, with the curve's global alpha
     /// multiplying on top in-shader (silx three-stage `colormap.alpha *
@@ -11005,7 +11005,7 @@ impl ScatterView {
     /// triangle surface (built via
     /// [`crate::core::scatter_viz::solid_triangles`]); the grid modes render the
     /// retained `(x, y, value)` points as a colormapped image (built via
-    /// [`scatter_grid_image`]). Re-renders immediately against the data from the
+    /// `scatter_grid_image`). Re-renders immediately against the data from the
     /// last [`Self::set_data`].
     pub fn set_visualization(&mut self, mode: ScatterVisualization) {
         if self.visualization == mode {
@@ -11302,9 +11302,9 @@ impl ScatterView {
     ///
     /// Pass the [`PlotResponse`] returned by [`Self::show`] this frame: the
     /// cursor is updated from its pointer event and the pick is done in pixel
-    /// space through its display [`Transform`] (so the snap radius is constant on
+    /// space through its display [`Transform`](crate::Transform) (so the snap radius is constant on
     /// screen regardless of zoom). When a point is within
-    /// [`SCATTER_PICK_RADIUS_PX`] of the cursor, `X`/`Y` snap to it and
+    /// `SCATTER_PICK_RADIUS_PX` of the cursor, `X`/`Y` snap to it and
     /// `Data`/`Index` show its value/index; otherwise `X`/`Y` show the cursor
     /// coordinates and `Data`/`Index` show `"-"`.
     pub fn show_position_info(&mut self, ui: &mut egui::Ui, response: &PlotResponse) {
@@ -12229,7 +12229,7 @@ impl StackView {
     /// endpoints, routing to the 1D or 2D window per the current
     /// [`profile_dimension`](Self::profile_dimension) and the armed
     /// [`profile_mode`](Self::profile_mode). The shared body of the interactive
-    /// drag ([`handle_profile_drag`](Self::handle_profile_drag)); also callable
+    /// drag (`handle_profile_drag`); also callable
     /// directly to drive the profile without a `Ui`. Returns `true` when a
     /// profile was produced and its window opened.
     ///

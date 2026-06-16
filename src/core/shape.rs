@@ -284,7 +284,7 @@ impl Line {
     /// the line does not cross the bounds (silx `Line.__updatePoints`,
     /// `shape.py:305-340`).
     ///
-    /// `bounds` is the data-space window expressed as a [`Rect`]: `bounds.min` is
+    /// `bounds` is the data-space window expressed as a [`Rect`](egui::Rect): `bounds.min` is
     /// `(xmin, ymin)`, `bounds.max` is `(xmax, ymax)`. The returned endpoints are
     /// in **data coordinates** (`Pos2` = `(x, y)`); the data-to-screen transform
     /// and drawing are the renderer's job (deferred).

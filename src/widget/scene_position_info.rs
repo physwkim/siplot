@@ -5,7 +5,7 @@
 //! value of the item picked under the cursor (silx fields `_xLabel`/`_yLabel`/
 //! `_zLabel`/`_dataLabel`), each `-` when nothing is picked. silx drives it from
 //! the cursor position (`updateInfo` → `pick(x, y)`); here the owner
-//! ([`crate::widget::SceneWindow`]) feeds it the pick result of
+//! ([`crate::SceneWindow`]) feeds it the pick result of
 //! [`crate::ScalarFieldView::pick`] each frame.
 //!
 //! The Qt picking-mode toggle action is not ported (interactive-mode toolbars

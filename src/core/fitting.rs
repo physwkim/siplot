@@ -1290,7 +1290,7 @@ fn step_denom(fwhm: f64) -> f64 {
 ///
 /// `params = [height, centroid, fwhm, background]`. Mirrors C `sum_stepdown`:
 /// `y = background + height * 0.5 * erfc((x - centroid) / denom)` where `denom`
-/// is [`step_denom`]. `fwhm` is the full-width at half maximum of the step's
+/// is `step_denom`. `fwhm` is the full-width at half maximum of the step's
 /// derivative (its sharpness).
 pub fn stepdown_model(x: &[f64], params: &[f64]) -> Vec<f64> {
     let (height, centroid, fwhm, bg) = (params[0], params[1], params[2], params[3]);
@@ -2111,7 +2111,7 @@ pub struct BackgroundPeakFit {
 ///
 /// # Deviation from silx
 ///
-/// silx's background theories are `is_background=True` [`FitTheory`]s whose
+/// silx's background theories are `is_background=True` `FitTheory`s whose
 /// parameters are concatenated with the peak parameters into ONE `leastsq`, so
 /// the analytic-background coefficients (Constant / Linear / Polynomial) are
 /// refined *simultaneously* with the peak. Here the background is estimated once

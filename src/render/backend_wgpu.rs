@@ -53,7 +53,7 @@ pub struct WgpuResources {
 
 impl WgpuResources {
     /// Build the clear pipeline and shared bind group layout. Per-plot state is
-    /// allocated lazily by [`WgpuResources::get_or_insert_plot`].
+    /// allocated lazily by `WgpuResources::get_or_insert_plot`.
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("siplot clear"),
@@ -587,7 +587,7 @@ impl WgpuBackend {
     /// Markers are the per-frame mirror `plot.markers` (rebuilt from the backend
     /// items on every sync), so a live drag that mutates the mirror does not
     /// persist on its own — the next sync clobbers it. This writes the new data
-    /// back to the owning [`BackendItem::Marker`] so subsequent syncs stay
+    /// back to the owning `BackendItem::Marker` so subsequent syncs stay
     /// consistent. Markers are painter-drawn from `plot.markers`, not part of the
     /// GPU item set, so only `sync_plot_items` is needed (no `sync_gpu_items`).
     pub fn update_marker(&mut self, handle: ItemHandle, marker: Marker) -> bool {
@@ -1181,7 +1181,7 @@ pub fn install(render_state: &RenderState) {
 
 /// Upload `image` to the GPU and make it the plot's current image. Requires
 /// [`install`] to have run first. The image is uploaded once here; the per-frame
-/// transform is applied by [`ImageCallback`].
+/// transform is applied by `ImageCallback`.
 pub fn set_image(render_state: &RenderState, plot_id: PlotId, image: &ImageData) {
     set_images(render_state, plot_id, std::slice::from_ref(image));
 }
@@ -1211,7 +1211,7 @@ pub fn set_images(render_state: &RenderState, plot_id: PlotId, images: &[ImageDa
 
 /// Upload `curve` to the GPU as the plot's sole curve (replacing any existing
 /// curves). Requires [`install`] to have run first. The vertices are uploaded
-/// once here; the per-frame transform is applied by [`CurveCallback`].
+/// once here; the per-frame transform is applied by `CurveCallback`.
 pub fn set_curve(render_state: &RenderState, plot_id: PlotId, curve: &CurveData) {
     set_curves(render_state, plot_id, std::slice::from_ref(curve));
 }

@@ -9,11 +9,11 @@
 //! screen-space quad (two triangles) of the curve's pixel width, so the line is
 //! a uniform thickness regardless of the data aspect ratio. The points are read
 //! from a read-only storage buffer; the draw is `6 × segment count` vertices,
-//! no vertex buffer. In-place re-upload ([`GpuCurve::update`]) reuses the buffer
+//! no vertex buffer. In-place re-upload (`GpuCurve::update`) reuses the buffer
 //! for live updates. Optional markers and per-vertex color are supported.
 //! Analytical AA is applied in the fragment shader via a 1-px feather zone
 //! (each quad is expanded 1 px and alpha fades to zero at the outer edge).
-//! Solid lines also get round joins + round caps ([`GpuCurve::draw_caps`],
+//! Solid lines also get round joins + round caps (`GpuCurve::draw_caps`,
 //! `shaders/linecaps.wgsl`): an AA disc of the line width stamped at every
 //! vertex, the silx pygfx `LineMaterial` default (`doc/design.md` §13 B1).
 

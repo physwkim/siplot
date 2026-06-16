@@ -5,7 +5,7 @@
 //! This is the plot3d analogue of [`crate::render::backend_wgpu`]: persistent
 //! GPU state ([`Scene3dResources`]) lives in `egui_wgpu`'s `callback_resources`
 //! type map, installed once via [`install_scene3d`]; the egui side re-registers
-//! a lightweight [`Scene3dCallback`] each frame via [`paint_scene3d`].
+//! a lightweight `Scene3dCallback` each frame via [`paint_scene3d`].
 //!
 //! Why offscreen-then-blit: egui's render pass has **no depth attachment**
 //! (`doc/plot3d-parity-roadmap.md` Architecture), so depth-tested 3D cannot
@@ -107,7 +107,7 @@ impl PointMarker {
 
 /// One scatter point (one instance): world-space centre, linear-premultiplied
 /// RGBA, pixel diameter, and marker id. `repr(C)` so the 36-byte stride matches
-/// [`SCENE3D_POINT_ATTRS`] and `scene3d_points.wgsl`.
+/// `SCENE3D_POINT_ATTRS` and `scene3d_points.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Scene3dPoint {
@@ -148,7 +148,7 @@ const SCENE3D_POINT_ATTRS: [wgpu::VertexAttribute; 4] = [
 
 /// One shaded-mesh vertex: world-space position, linear-premultiplied RGBA, and
 /// a world-space normal for lighting. `repr(C)` so the 40-byte stride matches
-/// [`SCENE3D_MESH_ATTRS`] and `scene3d_mesh.wgsl`.
+/// `SCENE3D_MESH_ATTRS` and `scene3d_mesh.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Scene3dMeshVertex {
@@ -370,7 +370,7 @@ impl Scene3dGeometry {
     /// (iso-surfaces, colormapped meshes, the cylindrical-volume primitives).
     /// Image quads and textured meshes (the cut plane) are excluded — those are
     /// picked as planes/volumes by the field-aware pickers, not as raw triangles.
-    /// Used by [`crate::widget::SceneWidget::pick`].
+    /// Used by [`crate::SceneWidget::pick`].
     pub fn pick_triangles(&self) -> Vec<[Vec3; 3]> {
         let mut out = Vec::with_capacity(self.triangles.len() / 3 + self.meshes.len() / 3);
         for tri in self.triangles.chunks_exact(3) {
@@ -391,7 +391,7 @@ impl Scene3dGeometry {
     }
 
     /// World-space scatter-point positions (the `points` channel), for
-    /// threshold picking. Used by [`crate::widget::SceneWidget::pick`].
+    /// threshold picking. Used by [`crate::SceneWidget::pick`].
     pub fn pick_points(&self) -> Vec<Vec3> {
         self.points
             .iter()

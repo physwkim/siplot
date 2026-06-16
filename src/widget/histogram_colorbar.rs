@@ -59,7 +59,7 @@ const V_INSET: f32 = 6.0;
 
 /// The bar's value axis `(lo, hi)` for a `data_range` under `norm`: the data
 /// range, sanitized (swapped if reversed, expanded if degenerate, floored
-/// positive for log) and padded by [`AXIS_PAD_FRAC`] of the transformed span on
+/// positive for log) and padded by `AXIS_PAD_FRAC` of the transformed span on
 /// each end for drag headroom.
 pub fn axis_range(data_range: (f64, f64), norm: Normalization) -> (f64, f64) {
     let (mut lo, mut hi) = data_range;
@@ -197,7 +197,7 @@ pub struct HistogramColorBar {
     /// Absolute screen `(top, bottom)` the gradient strip + histogram + handles
     /// should span, so the bar aligns with an external reference (the owning
     /// image's data-area guides). `None` falls back to the allocated box inset by
-    /// [`V_INSET`]. Set by the owner from the image plot's data-area rect.
+    /// `V_INSET`. Set by the owner from the image plot's data-area rect.
     pub bar_bounds: Option<(f32, f32)>,
 }
 

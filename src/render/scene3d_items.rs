@@ -282,7 +282,7 @@ fn positions_bounds(positions: &[[f32; 3]]) -> Option<(Vec3, Vec3)> {
 /// Port of silx `plot3d.items.Mesh` (a `DataItem3D` wrapping a
 /// `scene.primitives.Mesh3D`). Vertices carry positions, colours and optional
 /// normals; when no normals are supplied the geometric flat face normal is used
-/// per triangle (via [`flat_normal`]), so the headlight still shades the surface.
+/// per triangle (via `flat_normal`), so the headlight still shades the surface.
 /// Strips and fans are expanded to a triangle list on the CPU since the GPU path
 /// is `TriangleList` only.
 #[derive(Clone, Debug)]
@@ -673,7 +673,7 @@ fn volume_color_valid(color: &[Color32], n_positions: usize) -> bool {
 }
 
 /// One or many axis-aligned boxes (silx `items.mesh.Box`), a four-segment
-/// [`cylindrical_volume_mesh`] with faceted faces.
+/// `cylindrical_volume_mesh` with faceted faces.
 #[derive(Clone, Debug)]
 pub struct Box3D {
     size: [f32; 3],
@@ -777,7 +777,7 @@ impl Box3D {
 }
 
 /// One or many cylinders (silx `items.mesh.Cylinder`), an `nb_faces`-segment
-/// [`cylindrical_volume_mesh`] with smooth (radial-normal) sides.
+/// `cylindrical_volume_mesh` with smooth (radial-normal) sides.
 #[derive(Clone, Debug)]
 pub struct Cylinder3D {
     radius: f32,
@@ -879,7 +879,7 @@ impl Cylinder3D {
 }
 
 /// One or many uniform hexagonal prisms (silx `items.mesh.Hexagon`), a
-/// six-segment [`cylindrical_volume_mesh`] with faceted faces.
+/// six-segment `cylindrical_volume_mesh` with faceted faces.
 #[derive(Clone, Debug)]
 pub struct Hexagon3D {
     radius: f32,
@@ -2108,7 +2108,7 @@ impl ScalarField3D {
     /// Sample the field value at world position `world`, or `None` when the field
     /// is empty or `world` lies outside the volume box. Uses the cut plane's
     /// interpolation (nearest vs trilinear) so a picked value matches the slice
-    /// the user sees. The single field sampler ([`sample_field_value`], the same
+    /// the user sees. The single field sampler (`sample_field_value`, the same
     /// owner the cut-plane raster uses), with an explicit box test so a point
     /// past the edge reads `None` rather than the clamped edge voxel.
     pub fn value_at(&self, world: Vec3) -> Option<f32> {

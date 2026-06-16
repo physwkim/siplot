@@ -184,7 +184,7 @@ impl ItemsSelectionDialog {
         &self.items
     }
 
-    /// The kinds the filter offers, in [`KIND_ORDER`] order: the
+    /// The kinds the filter offers, in `KIND_ORDER` order: the
     /// [`set_available_kinds`](Self::set_available_kinds) override if set, else
     /// the distinct kinds present in the entries (silx `KindsSelector` available
     /// kinds — derived from the plot's items, or replaced by `setAvailableKinds`).
@@ -277,7 +277,7 @@ impl ItemsSelectionDialog {
     }
 
     /// The indices, into [`Self::items`], of the rows that are visible under
-    /// the current kind filter, grouped by kind in [`KIND_ORDER`] order. Used
+    /// the current kind filter, grouped by kind in `KIND_ORDER` order. Used
     /// by [`Self::ui`] to render grouped sections; exposed for testing the
     /// grouping/filtering logic without an egui context.
     pub fn visible_groups(&self) -> Vec<(PlotItemKind, Vec<usize>)> {

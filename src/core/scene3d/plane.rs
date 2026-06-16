@@ -171,7 +171,7 @@ pub fn angle_between_vectors(ref_vector: Vec3, vectors: &[Vec3], norm: Vec3) -> 
 ///
 /// Returns an empty vector when the plane misses the box (≤ 2 crossings); 3
 /// points as-is; > 3 points ordered around their centroid (a convex polygon on
-/// the box faces). Vertices are de-duplicated within [`DEDUP_EPS`].
+/// the box faces). Vertices are de-duplicated within `DEDUP_EPS`.
 pub fn box_plane_intersect(bounds: (Vec3, Vec3), plane_norm: Vec3, plane_pt: Vec3) -> Vec<Vec3> {
     let (lo, hi) = bounds;
     let span = hi - lo;

@@ -496,7 +496,7 @@ fn arrange_irregular_grid_points(
 /// faithful to silx's quadrilateral-grid render (items/scatter.py:682-797).
 ///
 /// The points are arranged onto the detected grid
-/// ([`arrange_irregular_grid_points`]), expanded into a dual grid of cell
+/// (`arrange_irregular_grid_points`), expanded into a dual grid of cell
 /// corners, and emitted as `2` flat-shaded triangles per input point: every
 /// point owns four consecutive vertices carrying its colormapped `colors[k]`
 /// (silx `gridcolors[first::4] = rgbacolors[:nbpoints]`). The caller maps
@@ -971,7 +971,7 @@ fn is_monotonic(array: &[f64]) -> i8 {
 /// Auto-detect that the points lie on a regular grid, faithful to silx
 /// `_guess_grid` (`scatter.py:148-188`).
 ///
-/// First tries a Z-like 2D grid via [`guess_z_grid_shape`]. Failing that, falls
+/// First tries a Z-like 2D grid via `guess_z_grid_shape`. Failing that, falls
 /// back to a single line when either coordinate is monotonic (the line runs
 /// along whichever axis varies more), reported as row-major. Returns `None`
 /// when the points form neither a grid nor a guessable line.

@@ -16,7 +16,7 @@ use std::sync::{OnceLock, RwLock};
 
 /// How a scalar value is mapped to the `[0, 1]` LUT coordinate before the color
 /// lookup (silx `Colormap.normalization`). Mirrors silx's `GLPlotImage`
-/// normalizations; the numeric [`Normalization::code`] matches its `normID`.
+/// normalizations; the numeric `Normalization::code` matches its `normID`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Normalization {
     /// `t = (v - vmin) / (vmax - vmin)`.
@@ -87,7 +87,7 @@ impl Normalization {
 /// A named colormap in the built-in catalog. The perceptual maps are backed by
 /// `colorous` gradients; silx's analytic maps (`gray`, `red`, `green`, `blue`,
 /// `temperature`) and the matplotlib-derived `jet`/`hsv` are built by
-/// [`ColormapName::build_lut`].
+/// `ColormapName::build_lut`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColormapName {
     /// Perceptually-uniform default (matplotlib's viridis).
@@ -912,7 +912,7 @@ impl AutoscaleMode {
     /// [`DEFAULT_PERCENTILES`] for silx's default. Non-finite samples are
     /// dropped first. Mirrors `silx.math.colormap` linear-normalization
     /// autoscale, including its fallbacks: empty / non-finite results collapse
-    /// to [`DEFAULT_RANGE`], and an inverted range is clamped so `vmax >= vmin`.
+    /// to `DEFAULT_RANGE`, and an inverted range is clamped so `vmax >= vmin`.
     pub fn range(self, data: &[f64], percentiles: (f64, f64)) -> (f64, f64) {
         let finite: Vec<f64> = data.iter().copied().filter(|v| v.is_finite()).collect();
 

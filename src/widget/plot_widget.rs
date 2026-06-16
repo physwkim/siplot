@@ -125,7 +125,7 @@ pub enum PlotInteractionMode {
     /// mask, so it must not pan, draw a box zoom, or start an ROI/box-select
     /// (silx `MaskToolsWidget` activating the plot's pencil draw interaction,
     /// `MaskToolsWidget.py:849-876`). Secondary-drag panning and wheel zoom are
-    /// left intact, matching silx's draw interaction. [`apply_interaction`]
+    /// left intact, matching silx's draw interaction. `apply_interaction`
     /// suppresses pan (`== Pan`) and box-zoom (`== Zoom`) by mode comparison and
     /// suppresses the ROI-edge grab explicitly, so no primary-drag plot gesture
     /// fires in this mode.
@@ -184,17 +184,17 @@ pub struct PlotResponse {
     pub roi_created: Option<usize>,
     /// Index of the ROI a right-click context-menu "Remove" targeted this frame
     /// (silx `_createMenuForRoi` remove action), or `None`. `PlotWidget::show`
-    /// performs the removal via [`PlotWidget::remove_roi`] (emitting
+    /// performs the removal via [`crate::PlotWidget::remove_roi`] (emitting
     /// [`crate::PlotEvent::RoiAboutToBeRemoved`]); the menu only signals intent.
     pub roi_removed: Option<usize>,
     /// Index of the ROI a right-click context-menu "Make current" targeted this
     /// frame, or `None`. `PlotWidget::show` applies it via
-    /// [`PlotWidget::set_current_roi`] (emitting
+    /// [`crate::PlotWidget::set_current_roi`] (emitting
     /// [`crate::PlotEvent::CurrentRoiChanged`]).
     pub roi_make_current: Option<usize>,
     /// `(index, mode)` chosen this frame from a ROI's right-click
     /// interaction-mode submenu (silx `createMenuForInteractionMode`), or `None`.
-    /// `PlotWidget::show` applies it via [`PlotWidget::set_roi_interaction_mode`]
+    /// `PlotWidget::show` applies it via [`crate::PlotWidget::set_roi_interaction_mode`]
     /// (emitting [`crate::PlotEvent::RoiInteractionModeChanged`]).
     pub roi_set_interaction_mode: Option<(usize, RoiInteractionMode)>,
     /// Handle of the marker an on-screen drag moved this frame (silx
@@ -269,7 +269,7 @@ impl<'a> PlotView<'a> {
     }
 
     /// Append custom entries to the plot's built-in right-click context menu,
-    /// after the Zoom Back / Reset Zoom items. See [`Self::menu_ext`] for why
+    /// after the Zoom Back / Reset Zoom items. See `Self::menu_ext` for why
     /// this hook (and not a second `Response::context_menu`) is the way to add
     /// custom menu entries.
     pub fn with_context_menu(mut self, ext: &'a mut dyn FnMut(&mut Ui)) -> Self {

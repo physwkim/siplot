@@ -123,7 +123,7 @@ impl ColormapDialog {
     /// `ColormapAction` (`actions/control.py:352-448`): a checkable action whose
     /// state tracks the colormap dialog's visibility. The button's selected
     /// state reflects [`Self::open`]; clicking it flips it. Place it in a plot
-    /// toolbar row, e.g. inside [`Plot2D::show_toolbar_with`]. Returns the button
+    /// toolbar row, e.g. inside [`PlotWidget::show_toolbar_with`](crate::PlotWidget::show_toolbar_with). Returns the button
     /// response.
     pub fn toggle_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let response = ui

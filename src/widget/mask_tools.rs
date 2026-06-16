@@ -788,10 +788,10 @@ impl MaskToolsWidget {
     ///
     /// Mirrors the silx pencil drag (`MaskToolsWidget.py:848-876`): while the
     /// primary button is held, the pointer is converted to an array cell and
-    /// fed to [`Self::paint_pencil_point`], which interpolates a thick line
+    /// fed to `Self::paint_pencil_point`, which interpolates a thick line
     /// from the previous sample (so a fast drag leaves no gap) and stamps a
     /// disk at the point. Releasing the button ends the stroke
-    /// ([`Self::end_pencil_stroke`]) so the next stroke starts fresh.
+    /// (`Self::end_pencil_stroke`) so the next stroke starts fresh.
     pub fn handle_interaction(&mut self, plot_response: &PlotResponse) {
         if !matches!(self.active_tool, MaskTool::Pencil | MaskTool::Eraser) {
             // Not in a drawing tool: drop any in-progress stroke so re-entering
@@ -924,10 +924,10 @@ impl MaskToolsWidget {
     ///
     /// Dispatches on the active tool: pencil / eraser brush strokes
     /// ([`Self::handle_interaction`]), rectangle / ellipse / polygon shape draws
-    /// ([`Self::handle_shape_draw`]), each with the matching cursor preview
+    /// (`Self::handle_shape_draw`), each with the matching cursor preview
     /// (silx `MaskToolsWidget._plotDrawEvent`). The caller still calls
     /// [`Self::apply`] afterwards to upload the overlay. Put the plot in
-    /// [`crate::widget::high_level::PlotInteractionMode::MaskDraw`] so the
+    /// [`crate::PlotInteractionMode::MaskDraw`] so the
     /// primary drag is reserved for drawing rather than pan / zoom / box-select.
     pub fn handle_draw(&mut self, ui: &egui::Ui, plot_response: &PlotResponse) {
         match self.active_tool {
@@ -1816,7 +1816,7 @@ impl MaskToolsWidget {
     /// when a file was written, `Ok(false)` on cancel or when an HDF5 dataset
     /// choice is pending (the modal completes the write later). The picker is a
     /// native shim; the codecs and the extension dispatch
-    /// ([`resolve_mask_save_format`]) are unit-tested.
+    /// (`resolve_mask_save_format`) are unit-tested.
     pub fn save_mask_dialog(&mut self) -> io::Result<bool> {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("NumPy mask", &["npy"])
@@ -1852,7 +1852,7 @@ impl MaskToolsWidget {
     /// HDF5 dataset choice is pending (the modal completes the read later). An
     /// unknown extension is rejected (faithful to silx `load` raising on an
     /// unknown extension). Native shim; the codecs and the extension dispatch
-    /// ([`resolve_mask_load_format`]) are unit-tested.
+    /// (`resolve_mask_load_format`) are unit-tested.
     pub fn load_mask_dialog(&mut self) -> io::Result<Option<bool>> {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("NumPy mask", &["npy"])

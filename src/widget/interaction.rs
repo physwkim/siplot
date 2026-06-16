@@ -1,7 +1,7 @@
 //! Interaction math: pure functions mapping pointer input to new data limits.
 //!
 //! The widget reads egui input, converts it through the *current* on-screen
-//! [`Transform`](crate::core::transform::Transform), and applies one of these to
+//! [`Transform`], and applies one of these to
 //! produce the next limits. Because everything downstream (the wgpu ortho matrix
 //! and the egui chrome) derives from those limits, the image, curve, and axes
 //! move together with no extra bookkeeping (`doc/design.md` §4·§8·§11.6).
@@ -1384,7 +1384,7 @@ pub fn arc_from_two_points(point0: (f64, f64), point1: (f64, f64)) -> Roi {
 ///   at the `start`–`end` midpoint. The transient rect editing shape is not
 ///   modeled (deviation noted on the roadmap row).
 /// - otherwise → the circumscribed circle through the three points
-///   ([`circle_through`], silx `_circleEquation`) with the sweep direction
+///   (`circle_through`, silx `_circleEquation`) with the sweep direction
 ///   disambiguated from the mid angle (silx `:652-660`).
 pub fn arc_from_three_points(
     start: (f64, f64),

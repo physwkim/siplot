@@ -349,7 +349,7 @@ impl Roi {
     }
 
     /// Screen-space midpoints of this ROI's draggable edges, for drawing handle
-    /// marks (one per edge, in [`Roi::edges`] order).
+    /// marks (one per edge, in `Roi::edges` order).
     ///
     /// Each handle is located by the *data* point its [`RoiEdge`] names (mapped
     /// through the transform), not by the screen-rect's geometric corners — so,
@@ -782,7 +782,7 @@ impl Roi {
     /// `BandGeometry.slope` / `intercept` / `edgesIntercept`,
     /// `items/_band_roi.py:99-125`): the band drawn as three parallel infinite
     /// lines — a middle line through `begin → end` plus the two width edges —
-    /// instead of the bounded corner polygon ([`band_corners`] / the default
+    /// instead of the bounded corner polygon (`band_corners` / the default
     /// BoundedMode). Returns `None` for a non-band ROI.
     ///
     /// Where silx encodes a vertical band with an `inf` slope and reuses the

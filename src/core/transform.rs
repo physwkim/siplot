@@ -257,7 +257,7 @@ impl Transform {
     }
 
     /// Column-major transformed→NDC orthographic matrix for the wgpu shader.
-    /// Maps each axis's [`Axis::effective_range`] to NDC `[-1, 1]` at `z = 0`,
+    /// Maps each axis's `Axis::effective_range` to NDC `[-1, 1]` at `z = 0`,
     /// with the high edge of Y at `+1` (top) to match egui-wgpu's viewport.
     /// Affine, so it expresses linear and inverted axes exactly; for a log axis
     /// the producers must upload `log10`-mapped coordinates (`doc/design.md`

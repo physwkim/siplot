@@ -20,7 +20,7 @@
 //! state transition each, named after the silx actions so they group with the
 //! other `actions/*` ports. The load-bearing per-mode gating lives in
 //! `apply_interaction` (tested there); the only logic here is the mode each
-//! setter maps to, exercised by [`mode_for_*`] pure helpers below.
+//! setter maps to, exercised by `mode_for_*` pure helpers below.
 
 use crate::widget::high_level::PlotWidget;
 use crate::widget::plot_widget::PlotInteractionMode;

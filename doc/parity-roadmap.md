@@ -281,6 +281,18 @@ named dataset). Deviation from silx: the secondary "overwrite existing dataset?"
 reproduced (the save modal lists the existing datasets and OK overwrites directly). siplot: fmt + clippy
 (`-p siplot --all-targets`) + nextest (1379 tests) + doctests all pass; sidm/adl2sidm rebuild (public-API add).
 
+**Rustdoc intra-doc link cleanup (main, not pushed):** no parity-row change (doc-comment-only). Closed the entire
+pre-existing backlog of rustdoc intra-doc-link diagnostics across 26 files (68 sites): 51 `private_intra_doc_links`
+(public docs hyperlinking private internals → unlinked to plain backticked code, the correct fix — public docs must not
+link private items), 26 `broken_intra_doc_links` (wrong paths → retargeted to the real `crate::`-rooted item, e.g.
+`Plot2D::show_profile_toolbar`→`PlotWidget::show_profile_toolbar`, `crate::widget::SceneWidget::pick`→
+`crate::SceneWidget::pick`, `StatsWidget`/`FitWidget`/`ColorBarWidget`/`Transform`/`PositionInfo`/`SaveTarget::from_path`
+→ their `crate::` re-exports; concept-only `FitTheory`/glob `mode_for_*`/trait `Mat4::mul` unlinked), plus 1
+`redundant_explicit_links`. No `#[allow]` was used and no code/signatures/visibility changed — only `///`/`//!`
+comments. Verified: `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links" cargo doc
+--no-deps -p siplot` is clean (0 errors, 0 warnings); siplot fmt + clippy (`-p siplot --all-targets`) + nextest (1379
+tests) + doctests all pass.
+
 **Histogram bin alignment (main, not pushed):** ≈219 Done · ~102 open — 1 M row closed (row 108, ◐→✅). `HistogramAlign`
 {Left,Center,Right} + the pure `histogram_edges(positions, align)` mirror silx `items.histogram._computeEdges`
 (`Histogram.setData(align=)`): Left treats positions as left edges (append `x[-1]+last_gap`), Right as right edges

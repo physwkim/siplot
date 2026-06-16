@@ -14,7 +14,7 @@
 //! with its own scalar texture and data-space rect, sharing the colormap LUT
 //! and samplers; the tiles abut seamlessly because each rect maps its texture
 //! onto exactly its pixel sub-grid. The initial upload happens at creation; a
-//! sub-region can be re-uploaded in place via [`GpuImage::update_region`]
+//! sub-region can be re-uploaded in place via `GpuImage::update_region`
 //! (dirty update), which routes the region to the overlapping tiles. Autoscale
 //! is a later step (`doc/design.md` §6·§7·§13 D2).
 
@@ -659,7 +659,7 @@ enum GpuImageKind {
 }
 
 /// One uploaded image's GPU resources, persisting across frames. The image is
-/// stored as one or more [`ImageTile`]s so it can exceed the single-texture
+/// stored as one or more `ImageTile`s so it can exceed the single-texture
 /// dimension limit.
 pub struct GpuImage {
     tiles: Vec<ImageTile>,

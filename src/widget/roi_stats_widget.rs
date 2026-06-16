@@ -76,7 +76,7 @@ impl RoiStatsWidget {
     /// integral | COM | coord min | coord max` (silx ROIStatsWidget stat
     /// columns incl. `StatCOM`/`StatCoordMin`/`StatCoordMax`); numeric cells use
     /// the shared [`format_stat`] formatting (silx-style significant digits, `-`
-    /// for an empty selection), coordinate cells use [`format_coord`].
+    /// for an empty selection), coordinate cells use `format_coord`.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         egui::Grid::new("roi_stats_grid")
             .striped(true)
