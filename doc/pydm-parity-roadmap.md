@@ -37,6 +37,18 @@ Plan of record: `~/.claude/plans/deep-growing-balloon.md`.
 - **Deferred** (tracked, not dropped): rules engine, `.ui`/`.adl` display
   loading, `archiver://` + archiver time plot, embedded display / template
   repeater / related-display navigation / shell command / log display.
+- **Deferred channel widgets, each blocked on a new structural surface**
+  (genuine PyDM widgets, not silently dropped — they need more than a widget
+  module): `PyDMWaveformTable` (an editable N-column array grid — needs a table
+  UI primitive sidm does not use); `PyDMNTTable` (a PVA `NTTable` view — needs a
+  structured-table channel type, but `PvValue` models only scalars and 1-D
+  arrays, so the engine delivers no `NTTable` data); `PyDMTabWidget`/`PyDMTabBar`
+  (a per-tab-channel-gated tab container — a Qt navigation container);
+  `PyDMTerminator` (closes the display after inactivity — a session/runtime
+  behaviour, not a display widget). Drawing `Arc`/`Pie`/`Chord`/`Polygon`/
+  `Polyline`/`Image` subclasses remain T4's documented deviation. Qt-Designer
+  plugins, `*CurvesModel` table models, and `PyDMPrimitive*` bases are N/A
+  (no Qt Designer). All other PyDM channel widgets are ported (W/P/T/PT rows).
 
 ## Status legend
 
