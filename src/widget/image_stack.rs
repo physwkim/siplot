@@ -1,12 +1,17 @@
-//! Browse an in-memory ordered list of 2D frames with a navigation slider,
-//! a frame table, per-frame visibility, and a waiting overlay for empty slots.
+//! Browse an ordered list of 2D frames with a navigation slider, a frame
+//! table, per-frame visibility, and a waiting overlay for empty/loading slots.
 //!
-//! Ports silx `ImageStack.py`. The upstream widget loads images lazily from a
-//! list of `DataUrl`s, prefetching neighbours on background threads; that
-//! file-IO / threading machinery (`UrlLoader`, `_preFetch`, `silx.io`) is out
-//! of scope here. This port accepts frames already resident in memory as a
-//! [`Frame`] list, each carrying its own dimensions and label, and reproduces
-//! the navigation behaviour:
+//! Ports silx `ImageStack.py`, with both upstream modes:
+//!
+//! - **In-memory** ([`ImageStack::set_frames`]): frames already resident as a
+//!   [`Frame`] list, each carrying its own dimensions and label.
+//! - **Lazy** ([`ImageStack::set_sources`] + [`ImageStack::set_loader`]): a list
+//!   of opaque source strings whose frames are loaded on demand on background
+//!   threads through a pluggable [`FrameLoader`] (silx `UrlLoader` /
+//!   `setUrlLoaderClass`); the current slot is loaded as you browse to it and
+//!   the result is drained back on the UI thread (silx `_urlLoaded`).
+//!
+//! Either mode reproduces the navigation behaviour:
 //!
 //! - a current-frame index driven by a slider with first/prev/next/last
 //!   stepping (silx `_HorizontalSlider` / `FrameBrowser`, `ImageStack.py`
@@ -25,6 +30,9 @@
 //! Frame-navigation logic (index clamping, prev/next stepping, visibility
 //! filtering) lives in the pure `FrameNav` state struct, so it is
 //! unit-testable without a GPU; the GPU-backed [`ImageStack`] delegates to it.
+
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 
 use egui_wgpu::RenderState;
 
@@ -67,6 +75,95 @@ impl Frame {
     pub fn is_displayable(&self) -> bool {
         let expected = (self.width as usize).saturating_mul(self.height as usize);
         expected != 0 && self.data.len() == expected
+    }
+}
+
+/// Loads a [`Frame`] for a source string on demand, off the UI thread.
+///
+/// This is the pluggable seam silx exposes through `ImageStack.setUrlLoaderClass`
+/// (`ImageStack.py` :207-223): the stack does not know how to turn a `DataUrl`
+/// into pixels — it delegates to a loader. [`ImageStack::set_sources`] hands the
+/// loader one opaque `source` string (an HDF5/image URL, a file path — whatever
+/// the concrete loader understands) per slot; [`load`](Self::load) is then
+/// called on a background thread when that slot is browsed to or prefetched.
+///
+/// Implementors MUST be `Send + Sync` (the load runs on a spawned thread) and
+/// SHOULD return `None` rather than panicking when a source cannot be read,
+/// mirroring silx `UrlLoader.run` returning `None` on `OSError` (`ImageStack.py`
+/// :141-145). A `None` result marks the slot failed and is not retried.
+pub trait FrameLoader: Send + Sync {
+    /// Load the frame for `source`, or `None` if it cannot be read. Runs on a
+    /// background thread; keep it self-contained (no shared mutable UI state).
+    fn load(&self, source: &str) -> Option<Frame>;
+}
+
+/// Per-source load state for the lazy/threaded loading path.
+///
+/// A slot is `NotRequested` until its background load is dispatched
+/// (`InFlight`), then `Loaded` (its frame is resident in the nav) or `Failed`
+/// (the loader returned `None`). `Failed` is terminal and never re-dispatched,
+/// mirroring silx storing the `None` result in `_urlData` so it is not retried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum LoadState {
+    #[default]
+    NotRequested,
+    InFlight,
+    Loaded,
+    Failed,
+}
+
+/// Pure per-slot load bookkeeping for the threaded loader: one [`LoadState`] per
+/// source slot.
+///
+/// Decides which slots still need dispatching ([`needs_load`](Self::needs_load)
+/// / [`to_dispatch`](Self::to_dispatch)) and records each outcome, with no GPU
+/// or threads, so the dispatch/dedup logic is unit-testable in isolation.
+/// [`ImageStack`] owns one and consults it before spawning a load thread.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LoadSchedule {
+    state: Vec<LoadState>,
+}
+
+impl LoadSchedule {
+    /// Reset to `len` slots, all `NotRequested` (silx `reset` clears `_urlData`).
+    fn reset(&mut self, len: usize) {
+        self.state = vec![LoadState::NotRequested; len];
+    }
+
+    /// `true` when slot `i` has not yet been dispatched, so it is eligible to
+    /// load. `InFlight`/`Loaded`/`Failed` slots return `false` (no re-dispatch).
+    fn needs_load(&self, i: usize) -> bool {
+        matches!(self.state.get(i), Some(LoadState::NotRequested))
+    }
+
+    fn mark_in_flight(&mut self, i: usize) {
+        if let Some(s) = self.state.get_mut(i) {
+            *s = LoadState::InFlight;
+        }
+    }
+
+    fn mark_loaded(&mut self, i: usize) {
+        if let Some(s) = self.state.get_mut(i) {
+            *s = LoadState::Loaded;
+        }
+    }
+
+    fn mark_failed(&mut self, i: usize) {
+        if let Some(s) = self.state.get_mut(i) {
+            *s = LoadState::Failed;
+        }
+    }
+
+    /// Filter `candidates` to the slots that still need loading, deduped in
+    /// first-seen order — the set of loads to dispatch this frame.
+    fn to_dispatch(&self, candidates: impl IntoIterator<Item = usize>) -> Vec<usize> {
+        let mut out = Vec::new();
+        for i in candidates {
+            if self.needs_load(i) && !out.contains(&i) {
+                out.push(i);
+            }
+        }
+        out
     }
 }
 
@@ -291,6 +388,19 @@ pub struct ImageStack {
     image_handle: Option<ItemHandle>,
     auto_reset_zoom: bool,
     show_table: bool,
+    /// Per-slot source strings for the lazy path (silx `_urls`); empty in the
+    /// in-memory [`Self::set_frames`] mode.
+    sources: Vec<String>,
+    /// Loader used to turn a source into a [`Frame`] off-thread (silx
+    /// `_url_loader`); `None` until [`Self::set_loader`] is called.
+    loader: Option<Arc<dyn FrameLoader>>,
+    /// Pure per-slot load bookkeeping (silx `_urlData` keys + in-flight set).
+    schedule: LoadSchedule,
+    /// Sends `(slot index, loaded frame or None)` from a load thread back to the
+    /// UI thread (silx `UrlLoader.finished` → `_urlLoaded`, queued connection).
+    load_tx: Sender<(usize, Option<Frame>)>,
+    /// Receives load results, drained each frame in [`Self::ui`].
+    load_rx: Receiver<(usize, Option<Frame>)>,
 }
 
 impl ImageStack {
@@ -299,6 +409,7 @@ impl ImageStack {
         let mut plot = Plot2D::new(render_state, id);
         plot.set_keep_data_aspect_ratio(true);
         plot.set_graph_cursor(true);
+        let (load_tx, load_rx) = std::sync::mpsc::channel();
         Self {
             plot,
             nav: FrameNav::default(),
@@ -307,15 +418,55 @@ impl ImageStack {
             // silx ImageStack defaults _autoResetZoom = True.
             auto_reset_zoom: true,
             show_table: true,
+            sources: Vec::new(),
+            loader: None,
+            schedule: LoadSchedule::default(),
+            load_tx,
+            load_rx,
         }
     }
 
-    /// Replace the whole frame list, resetting the current index to 0 and
-    /// marking every frame visible (silx `setUrls` -> `reset` then re-add).
+    /// Replace the whole frame list with in-memory frames, resetting the current
+    /// index to 0 and marking every frame visible (silx `setUrls` -> `reset`
+    /// then re-add). Leaves the lazy-loading mode: any source list and pending
+    /// load state are cleared, so these resident frames are shown as-is.
     pub fn set_frames(&mut self, frames: Vec<Option<Frame>>) {
         self.nav.set_frames(frames);
+        self.sources.clear();
+        self.schedule.reset(0);
         self.image_handle = None;
         self.plot.clear_images();
+    }
+
+    /// Set the loader used to turn a source string into a [`Frame`] off the UI
+    /// thread (silx `setUrlLoaderClass`, `ImageStack.py` :207-215). Must be set
+    /// before (or together with) [`Self::set_sources`] for lazy loading to run;
+    /// sources browsed to while no loader is set stay empty (waiting overlay).
+    pub fn set_loader(&mut self, loader: Arc<dyn FrameLoader>) {
+        self.loader = Some(loader);
+    }
+
+    /// Switch to lazy loading from `sources` (silx `setUrls`, `ImageStack.py`
+    /// :337-361): each source is an opaque string the [`FrameLoader`] resolves
+    /// to a frame on demand. Every slot starts empty (waiting overlay) and is
+    /// loaded on a background thread when browsed to (and, with a prefetch
+    /// radius set, when it falls within it). Resets the current index to 0 and
+    /// drops any in-memory frames previously set.
+    pub fn set_sources(&mut self, sources: Vec<String>) {
+        let len = sources.len();
+        // Every slot empty -> the existing None-slot waiting-overlay path covers
+        // "not yet loaded"; a completed load fills the slot in place.
+        self.nav.set_frames(vec![None; len]);
+        self.sources = sources;
+        self.schedule.reset(len);
+        self.image_handle = None;
+        self.plot.clear_images();
+    }
+
+    /// The source strings backing the lazy path, in slot order (empty in the
+    /// in-memory [`Self::set_frames`] mode). Mirrors silx `getUrls`.
+    pub fn sources(&self) -> &[String] {
+        &self.sources
     }
 
     /// Number of frame slots in the stack.
@@ -426,6 +577,64 @@ impl ImageStack {
         &mut self.plot
     }
 
+    /// The slot indices that should be loaded given the current position: just
+    /// the current slot (the displayed frame). The prefetch radius extends this.
+    fn load_candidates(&self) -> Vec<usize> {
+        if self.nav.is_empty() {
+            return Vec::new();
+        }
+        vec![self.nav.current]
+    }
+
+    /// Move every completed background load into its slot and update its load
+    /// state (silx `_urlLoaded`): a `Some` frame becomes resident and, if it is
+    /// the current slot, marks the display dirty; a `None` marks the slot failed
+    /// (terminal, not retried).
+    fn drain_loaded(&mut self) {
+        while let Ok((index, frame)) = self.load_rx.try_recv() {
+            match frame {
+                Some(frame) => {
+                    if let Some(slot) = self.nav.frames.get_mut(index) {
+                        *slot = Some(frame);
+                        self.schedule.mark_loaded(index);
+                        if index == self.nav.current {
+                            self.nav.dirty = true;
+                        }
+                    }
+                }
+                None => self.schedule.mark_failed(index),
+            }
+        }
+    }
+
+    /// Spawn a background load for each candidate slot that still needs one
+    /// (silx `_load` / `_preFetch`): clones the loader, source, result sender,
+    /// and `ctx` into a thread that loads off the UI thread and requests a
+    /// repaint when done. A no-op when no loader is set.
+    fn dispatch_loads(&mut self, ctx: &egui::Context) {
+        let Some(loader) = self.loader.clone() else {
+            return;
+        };
+        for index in self.schedule.to_dispatch(self.load_candidates()) {
+            let Some(source) = self.sources.get(index).cloned() else {
+                continue;
+            };
+            self.schedule.mark_in_flight(index);
+            let loader = loader.clone();
+            let tx = self.load_tx.clone();
+            let ctx = ctx.clone();
+            // Detached: the worker only sends on `tx` and pokes `ctx`, both of
+            // which stay valid (Arc-backed) even if the stack is dropped, in
+            // which case the send fails harmlessly. Mirrors silx's per-url
+            // QThread (`_loadingThreads`), freed implicitly on drop here.
+            std::thread::spawn(move || {
+                let frame = loader.load(&source);
+                let _ = tx.send((index, frame));
+                ctx.request_repaint();
+            });
+        }
+    }
+
     /// Rebuild the displayed image from the current slot, reusing the existing
     /// item handle when possible so the zoom is preserved (silx
     /// `addImage(resetzoom=self._autoResetZoom)`; when auto-reset is on we drop
@@ -472,6 +681,12 @@ impl ImageStack {
             self.frame_table_ui(ui);
         }
         self.navigation_ui(ui);
+
+        // Lazy path: pull in any finished loads, then dispatch loads for the
+        // (possibly just-changed) current slot and its prefetch neighbours.
+        let ctx = ui.ctx().clone();
+        self.drain_loaded();
+        self.dispatch_loads(&ctx);
 
         if self.nav.dirty {
             self.rebuild_image();
@@ -767,6 +982,48 @@ mod tests {
         assert!(!n.dirty);
         n.set_visible(0, false); // current -> dirty.
         assert!(n.dirty);
+    }
+
+    // ── LoadSchedule dispatch/dedup (lazy path) ─────────────────────────────
+
+    #[test]
+    fn schedule_reset_marks_all_not_requested() {
+        let mut s = LoadSchedule::default();
+        s.reset(3);
+        assert!(s.needs_load(0));
+        assert!(s.needs_load(1));
+        assert!(s.needs_load(2));
+        assert!(!s.needs_load(3)); // out of range.
+    }
+
+    #[test]
+    fn schedule_in_flight_and_loaded_are_not_redispatched() {
+        let mut s = LoadSchedule::default();
+        s.reset(2);
+        s.mark_in_flight(0);
+        s.mark_loaded(1);
+        assert!(!s.needs_load(0)); // in flight.
+        assert!(!s.needs_load(1)); // loaded.
+        assert_eq!(s.to_dispatch([0, 1]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn schedule_failed_is_terminal_not_retried() {
+        let mut s = LoadSchedule::default();
+        s.reset(1);
+        s.mark_in_flight(0);
+        s.mark_failed(0);
+        assert!(!s.needs_load(0));
+        assert_eq!(s.to_dispatch([0]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn schedule_to_dispatch_filters_and_dedups() {
+        let mut s = LoadSchedule::default();
+        s.reset(4);
+        s.mark_loaded(1);
+        // 1 is loaded (dropped); 5 is out of range (dropped); 2 repeats (deduped).
+        assert_eq!(s.to_dispatch([0, 1, 2, 2, 5]), vec![0, 2]);
     }
 
     // ── frame_label fallbacks ───────────────────────────────────────────────
