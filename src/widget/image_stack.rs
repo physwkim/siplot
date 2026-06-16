@@ -99,6 +99,47 @@ pub trait FrameLoader: Send + Sync {
     fn load(&self, source: &str) -> Option<Frame>;
 }
 
+/// A [`FrameLoader`] that reads frames from HDF5 datasets — the common
+/// `ImageStack` source (silx resolves a `DataUrl` through `silx.io.get_data`).
+///
+/// Each source string is one of:
+///
+/// - `"<file>::<dataset>"` — a 2D dataset, read as one frame
+///   ([`read_image_hdf5`](crate::render::save::read_image_hdf5)).
+/// - `"<file>::<dataset>::<index>"` — frame `index` of a 3D `[N, H, W]` stack
+///   dataset; only that slice is read off disk
+///   ([`read_image_hdf5_slice`](crate::render::save::read_image_hdf5_slice)),
+///   which is the point of the lazy path.
+///
+/// Float datasets only — see
+/// [`read_image_hdf5`](crate::render::save::read_image_hdf5) for the dtype
+/// caveat (the dependency exposes only the element byte size). Any failure
+/// (missing file/dataset, wrong rank, unsupported dtype, out-of-range slice, or
+/// a malformed source string) yields `None`, matching silx `UrlLoader.run`
+/// returning `None` on `OSError`. Each `load` opens its own file handle, so it
+/// is safe to call from several prefetch threads at once.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hdf5FrameLoader;
+
+impl FrameLoader for Hdf5FrameLoader {
+    fn load(&self, source: &str) -> Option<Frame> {
+        let parts: Vec<&str> = source.split("::").collect();
+        let (path, data_path, slice) = match parts.as_slice() {
+            [path, data_path] => (*path, *data_path, None),
+            [path, data_path, index] => (*path, *data_path, Some(index.parse::<usize>().ok()?)),
+            _ => return None,
+        };
+        let p = std::path::Path::new(path);
+        // read_image_hdf5* return (height, width, row-major data); Frame is
+        // (width, height, data).
+        let (height, width, data) = match slice {
+            None => crate::render::save::read_image_hdf5(p, data_path).ok()?,
+            Some(index) => crate::render::save::read_image_hdf5_slice(p, data_path, index).ok()?,
+        };
+        Some(Frame::new(width, height, data, Some(source.to_string())))
+    }
+}
+
 /// Per-source load state for the lazy/threaded loading path.
 ///
 /// A slot is `NotRequested` until its background load is dispatched
@@ -1102,6 +1143,78 @@ mod tests {
     fn prefetch_window_radius_exceeds_length() {
         // n larger than the stack: every other slot, no out-of-range indices.
         assert_eq!(prefetch_candidates(1, 3, 10), vec![1, 2, 0]);
+    }
+
+    // ── Hdf5FrameLoader source parsing + read ───────────────────────────────
+
+    fn temp_h5(tag: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "siplot_image_stack_h5_{}_{}.h5",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn seed_dataset<T: rust_hdf5::types::H5Type>(
+        path: &std::path::Path,
+        name: &str,
+        shape: &[usize],
+        data: &[T],
+    ) {
+        use rust_hdf5::H5File;
+        let file = if path.exists() {
+            H5File::open_rw(path).unwrap()
+        } else {
+            H5File::create(path).unwrap()
+        };
+        let ds = file.new_dataset::<T>().shape(shape).create(name).unwrap();
+        ds.write_raw(data).unwrap();
+        file.close().unwrap();
+    }
+
+    #[test]
+    fn hdf5_loader_reads_a_2d_dataset() {
+        let path = temp_h5("loader_2d");
+        seed_dataset(&path, "/img", &[2, 3], &[0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let source = format!("{}::/img", path.display());
+        let frame = Hdf5FrameLoader.load(&source).expect("2D frame loads");
+        assert_eq!((frame.width, frame.height), (3, 2)); // (width, height).
+        assert_eq!(frame.data, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(frame.is_displayable());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hdf5_loader_reads_a_3d_slice() {
+        let path = temp_h5("loader_3d");
+        seed_dataset(&path, "/stack", &[2, 1, 2], &[0.0f32, 1.0, 10.0, 11.0]);
+        let frame = Hdf5FrameLoader
+            .load(&format!("{}::/stack::1", path.display()))
+            .expect("3D slice loads");
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.data, vec![10.0, 11.0]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hdf5_loader_returns_none_on_bad_source() {
+        // No "::" separator -> malformed.
+        assert!(Hdf5FrameLoader.load("no-separator").is_none());
+        // Slice index does not parse.
+        assert!(
+            Hdf5FrameLoader
+                .load("/tmp/x.h5::/stack::notanumber")
+                .is_none()
+        );
+        // Well-formed but missing file -> read fails -> None.
+        assert!(
+            Hdf5FrameLoader
+                .load("/nonexistent/siplot_missing.h5::/img")
+                .is_none()
+        );
     }
 
     // ── frame_label fallbacks ───────────────────────────────────────────────

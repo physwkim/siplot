@@ -143,7 +143,7 @@ pub use crate::widget::high_level::{
 pub use crate::widget::histogram_colorbar::{
     Handle as HistogramColorBarHandle, HistogramColorBar, HistogramColorBarResponse,
 };
-pub use crate::widget::image_stack::{Frame, FrameLoader, ImageStack};
+pub use crate::widget::image_stack::{Frame, FrameLoader, Hdf5FrameLoader, ImageStack};
 pub use crate::widget::interaction::{
     ArcControlPoint, ArcControlPoints, CursorShape, DrawEvent, DrawInput, DrawMode, DrawParams,
     DrawState, FillMode, MouseButton, PanDirection, PlotPointerEvent, PointPick, RoiDrawKind,

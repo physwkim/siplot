@@ -566,6 +566,131 @@ pub fn read_mask_hdf5_auto(path: &std::path::Path) -> std::io::Result<(u32, u32,
     read_mask_hdf5(path, first)
 }
 
+/// Read an HDF5 dataset's elements as `f32`, dispatching on the stored element
+/// byte size.
+///
+/// CAVEAT: `rust-hdf5` 0.2's public dataset API surfaces only the *byte size* of
+/// an element ([`element_size`](rust_hdf5::H5Dataset::element_size)), not its
+/// datatype *class*. So this reads a 4-byte element as `f32` and an 8-byte
+/// element as `f64` (cast to `f32`) — correct for float datasets (the common
+/// scientific-image case), but a 4-byte *integer* dataset would be reinterpreted
+/// as `f32` bit-for-bit (wrong values), as the crate cannot distinguish them.
+/// Datasets with any other element size are rejected. This is a documented
+/// limitation of the dependency, not silently masked. `elements` is the expected
+/// element count, used to reject a short/long read.
+fn read_hdf5_elements_as_f32(
+    ds: &rust_hdf5::H5Dataset,
+    elements: usize,
+) -> std::io::Result<Vec<f32>> {
+    let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
+    let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+    let data: Vec<f32> = match ds.element_size() {
+        4 => ds.read_raw::<f32>().map_err(to_io)?,
+        8 => ds
+            .read_raw::<f64>()
+            .map_err(to_io)?
+            .into_iter()
+            .map(|x| x as f32)
+            .collect(),
+        n => {
+            return Err(invalid(format!(
+                "unsupported HDF5 element size {n} (only 4-byte f32 / 8-byte f64 images are read)"
+            )));
+        }
+    };
+    if data.len() != elements {
+        return Err(invalid(format!(
+            "HDF5 image body length {} does not match its shape ({elements} elements)",
+            data.len()
+        )));
+    }
+    Ok(data)
+}
+
+/// Read a 2D HDF5 dataset at `data_path` as `(height, width, row-major f32)`
+/// (the `(rows, cols)` convention shared with [`read_mask_hdf5`]).
+///
+/// This is the on-demand image read behind [`crate::Hdf5FrameLoader`] (the
+/// `ImageStack` lazy path / silx `silx.io.get_data` of a `DataUrl`). A non-2D
+/// dataset is rejected. Only float datasets are read (4-byte `f32` / 8-byte
+/// `f64`→`f32`); `rust-hdf5` 0.2 exposes only an element's byte size, not its
+/// datatype class, so a same-width integer dataset would be reinterpreted — a
+/// documented limitation of the dependency, with other element sizes rejected.
+pub fn read_image_hdf5(
+    path: &std::path::Path,
+    data_path: &str,
+) -> std::io::Result<(u32, u32, Vec<f32>)> {
+    use rust_hdf5::H5File;
+    let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
+    let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string());
+    let file = H5File::open(path).map_err(to_io)?;
+    let ds = file.dataset(data_path).map_err(to_io)?;
+    if ds.ndims() != 2 {
+        return Err(invalid("HDF5 image dataset must be 2-dimensional"));
+    }
+    let shape = ds.shape();
+    let (height, width) = (shape[0], shape[1]);
+    let data = read_hdf5_elements_as_f32(&ds, height.saturating_mul(width))?;
+    Ok((height as u32, width as u32, data))
+}
+
+/// Read one 2D slice (frame `index` along axis 0) of a 3D HDF5 dataset at
+/// `data_path` as `(height, width, row-major f32)`.
+///
+/// This is the lazy-stack read for a `[N, H, W]` image stack stored as a single
+/// 3D dataset: only the requested frame is read off disk
+/// ([`read_slice`](rust_hdf5::H5Dataset::read_slice)), which is the point of the
+/// lazy path. A non-3D dataset or an out-of-range `index` is rejected. Only
+/// float datasets are read (4-byte `f32` / 8-byte `f64`→`f32`); see
+/// [`read_image_hdf5`] for the float-dtype caveat.
+pub fn read_image_hdf5_slice(
+    path: &std::path::Path,
+    data_path: &str,
+    index: usize,
+) -> std::io::Result<(u32, u32, Vec<f32>)> {
+    use rust_hdf5::H5File;
+    let to_io = |e: rust_hdf5::Hdf5Error| std::io::Error::other(e.to_string());
+    let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+    let file = H5File::open(path).map_err(to_io)?;
+    let ds = file.dataset(data_path).map_err(to_io)?;
+    if ds.ndims() != 3 {
+        return Err(invalid(
+            "HDF5 image-stack dataset must be 3-dimensional".into(),
+        ));
+    }
+    let shape = ds.shape();
+    let (n, height, width) = (shape[0], shape[1], shape[2]);
+    if index >= n {
+        return Err(invalid(format!(
+            "HDF5 slice index {index} out of range (stack has {n} frames)"
+        )));
+    }
+    let elements = height.saturating_mul(width);
+    let data: Vec<f32> = match ds.element_size() {
+        4 => ds
+            .read_slice::<f32>(&[index, 0, 0], &[1, height, width])
+            .map_err(to_io)?,
+        8 => ds
+            .read_slice::<f64>(&[index, 0, 0], &[1, height, width])
+            .map_err(to_io)?
+            .into_iter()
+            .map(|x| x as f32)
+            .collect(),
+        sz => {
+            return Err(invalid(format!(
+                "unsupported HDF5 element size {sz} (only 4-byte f32 / 8-byte f64 images are read)"
+            )));
+        }
+    };
+    if data.len() != elements {
+        return Err(invalid(format!(
+            "HDF5 slice body length {} does not match its shape ({elements} elements)",
+            data.len()
+        )));
+    }
+    Ok((height as u32, width as u32, data))
+}
+
 /// Encode a 2D mask as an Andy Hammersley fit2d `.msk` byte stream.
 ///
 /// Faithful port of fabio `Fit2dMaskImage.write` (fabio/fit2dmaskimage.py:118-142).
@@ -1182,6 +1307,92 @@ mod tests {
         mapped[0..4].copy_from_slice(&[30, 20, 10, 40]); // stored BGRA
         let out = rows_to_rgba8(&mapped, 1, 1, bpr, wgpu::TextureFormat::Bgra8UnormSrgb);
         assert_eq!(out, vec![10, 20, 30, 40]); // → RGBA
+    }
+
+    // ── HDF5 image read (ImageStack lazy path) ──────────────────────────────
+
+    fn temp_h5(tag: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("siplot_image_h5_{}_{}.h5", tag, std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// Write one dataset of any [`rust_hdf5::H5Type`] at `name` with `shape`.
+    fn seed_dataset<T: rust_hdf5::types::H5Type>(
+        path: &std::path::Path,
+        name: &str,
+        shape: &[usize],
+        data: &[T],
+    ) {
+        use rust_hdf5::H5File;
+        let file = if path.exists() {
+            H5File::open_rw(path).unwrap()
+        } else {
+            H5File::create(path).unwrap()
+        };
+        let ds = file.new_dataset::<T>().shape(shape).create(name).unwrap();
+        ds.write_raw(data).unwrap();
+        file.close().unwrap();
+    }
+
+    #[test]
+    fn read_image_hdf5_roundtrips_f32() {
+        let path = temp_h5("f32_2d");
+        // 2 rows x 3 cols, row-major.
+        seed_dataset(&path, "/img", &[2, 3], &[0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let (h, w, data) = read_image_hdf5(&path, "/img").expect("read 2D f32");
+        assert_eq!((h, w), (2, 3));
+        assert_eq!(data, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_image_hdf5_casts_f64_to_f32() {
+        let path = temp_h5("f64_2d");
+        seed_dataset(&path, "/img", &[1, 2], &[1.5f64, 2.5]);
+        let (h, w, data) = read_image_hdf5(&path, "/img").expect("read 2D f64");
+        assert_eq!((h, w), (1, 2));
+        assert_eq!(data, vec![1.5f32, 2.5]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_image_hdf5_rejects_non_2d() {
+        let path = temp_h5("rank");
+        seed_dataset(&path, "/vec", &[4], &[0.0f32, 1.0, 2.0, 3.0]);
+        assert!(read_image_hdf5(&path, "/vec").is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_image_hdf5_slice_reads_one_frame() {
+        let path = temp_h5("f32_3d");
+        // 2 frames x 2 rows x 2 cols: frame 0 = 0..4, frame 1 = 10..14.
+        seed_dataset(
+            &path,
+            "/stack",
+            &[2, 2, 2],
+            &[0.0f32, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0, 13.0],
+        );
+        let (h, w, f0) = read_image_hdf5_slice(&path, "/stack", 0).expect("slice 0");
+        assert_eq!((h, w), (2, 2));
+        assert_eq!(f0, vec![0.0, 1.0, 2.0, 3.0]);
+        let (_, _, f1) = read_image_hdf5_slice(&path, "/stack", 1).expect("slice 1");
+        assert_eq!(f1, vec![10.0, 11.0, 12.0, 13.0]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_image_hdf5_slice_rejects_oob_and_non_3d() {
+        let path = temp_h5("slice_reject");
+        seed_dataset(&path, "/stack", &[2, 1, 1], &[0.0f32, 1.0]);
+        // index past the last frame.
+        assert!(read_image_hdf5_slice(&path, "/stack", 2).is_err());
+        // a 2D dataset is not sliceable as a stack.
+        seed_dataset(&path, "/img2d", &[1, 2], &[0.0f32, 1.0]);
+        assert!(read_image_hdf5_slice(&path, "/img2d", 0).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
