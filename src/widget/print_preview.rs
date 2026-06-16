@@ -47,7 +47,7 @@ const DEFAULT_PAGE: Vec2 = vec2(794.0, 1123.0);
 /// the top-left corner fixed. Faithful to silx `_GraphicsResizeRectItem`: with
 /// `keep_ratio` the smaller of the x/y growth ratios drives a uniform scale (so
 /// the item follows whichever axis grew least, preserving the aspect ratio);
-/// otherwise each axis scales independently. Clamped to [`MIN_ITEM_SIZE`].
+/// otherwise each axis scales independently. Clamped to a `16.0`-unit minimum.
 pub fn resize_item_rect(rect: Rect, delta: Vec2, keep_ratio: bool) -> Rect {
     let w = rect.width();
     let h = rect.height();
