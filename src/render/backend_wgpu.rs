@@ -261,6 +261,9 @@ impl WgpuResources {
                 curve.draw(&mut rp, &self.curve_pipeline);
             }
             for curve in &plot_data.curves {
+                curve.draw_caps(&mut rp, &self.curve_pipeline);
+            }
+            for curve in &plot_data.curves {
                 curve.draw_markers(&mut rp, &self.curve_pipeline);
             }
         }
@@ -1494,6 +1497,9 @@ impl egui_wgpu::CallbackTrait for CurveCallback {
             }
             for curve in &plot_data.curves {
                 curve.draw(render_pass, &res.curve_pipeline);
+            }
+            for curve in &plot_data.curves {
+                curve.draw_caps(render_pass, &res.curve_pipeline);
             }
             for curve in &plot_data.curves {
                 curve.draw_markers(render_pass, &res.curve_pipeline);

@@ -484,6 +484,11 @@ eframe 앱 부트스트랩 시 `NativeOptions`에서 wgpu 백엔드를 선택하
 
 - **B1. 두꺼운 라인**: line-strip → quad-expansion(triangle-strip) 셰이더,
   픽셀 폭 uniform(물리픽셀 기준, §12 DPI). done = 폭 ≥1px 가변 라인.
+  **라운드 join/cap 완료**: 각 정점에 선 폭 지름의 AA 디스크를 찍어
+  (`shaders/linecaps.wgsl`, `GpuCurve::draw_caps`) 꺾임의 바깥쪽 틈을 메우고
+  끝을 둥글게 — silx pygfx `LineMaterial` 기본값. 실선 전용(점선은 butt 유지),
+  반투명 선은 세그먼트와 겹쳐 합성되는 한계(불투명은 정확). GPU readback 검증
+  (`tests/curve_caps_joins.rs`).
 - **B2. 마커/심볼**: 점 인스턴싱 + SDF 프래그먼트(circle/square/cross/plus/
   triangle). done = 곡선 정점에 심볼, 크기 픽셀 기준.
 
@@ -510,8 +515,8 @@ eframe 앱 부트스트랩 시 `NativeOptions`에서 wgpu 백엔드를 선택하
   reverse. done = 이름으로 컬러맵 선택 + 컬러바 반영.
 
 순서 메모: A가 토대(B/C가 좌표·픽셀폭에 의존), E2는 독립적이라 어느 시점에나
-가능(워밍업으로 먼저 처리). 이미지+log, 두꺼운 라인 join/cap, ROI 전체 종류는
-각 항목 내 후속으로 표시한다.
+가능(워밍업으로 먼저 처리). 이미지+log, ROI 전체 종류는
+각 항목 내 후속으로 표시한다. (두꺼운 라인 join/cap는 B1에서 완료.)
 
 ---
 

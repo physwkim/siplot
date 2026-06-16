@@ -6,9 +6,9 @@
 // The points live in a read-only storage buffer; a non-instanced draw of
 // 6 * (segment count) vertices builds two triangles per segment. Offsetting in
 // pixel space (using the data-area viewport size) keeps the width uniform
-// regardless of the data aspect ratio. Butt caps, no joins — for finely sampled
-// curves the per-segment gap at a turn is sub-pixel; round joins/caps are a
-// later step (doc/design.md §7·§13 B1). Each quad is expanded by 1 px beyond
+// regardless of the data aspect ratio. Each segment is butt-capped here; round
+// joins + round caps are added by `linecaps.wgsl` (an AA disc at every vertex,
+// drawn alongside the line for solid styles). Each quad is expanded by 1 px beyond
 // the nominal half-width; the fragment shader fades alpha smoothly to zero over
 // that outermost pixel, giving analytical sub-pixel AA without MSAA.
 //

@@ -13,7 +13,9 @@
 //! for live updates. Optional markers and per-vertex color are supported.
 //! Analytical AA is applied in the fragment shader via a 1-px feather zone
 //! (each quad is expanded 1 px and alpha fades to zero at the outer edge).
-//! Round joins/caps remain a later step (`doc/design.md` §7·§13 B1).
+//! Solid lines also get round joins + round caps ([`GpuCurve::draw_caps`],
+//! `shaders/linecaps.wgsl`): an AA disc of the line width stamped at every
+//! vertex, the silx pygfx `LineMaterial` default (`doc/design.md` §13 B1).
 
 use std::num::NonZeroU64;
 
@@ -320,6 +322,9 @@ impl CurveData {
 pub struct CurvePipeline {
     pub(crate) pipeline: wgpu::RenderPipeline,
     pub(crate) marker_pipeline: wgpu::RenderPipeline,
+    /// Round joins/caps: an AA disc of the line width at every vertex. Shares the
+    /// marker bind-group layout (uniform + points + per-vertex colors).
+    pub(crate) caps_pipeline: wgpu::RenderPipeline,
     pub(crate) fill_pipeline: wgpu::RenderPipeline,
     pub(crate) errorbar_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -337,6 +342,10 @@ impl CurvePipeline {
         let marker_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("siplot markers"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/markers.wgsl").into()),
+        });
+        let caps_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("siplot line caps"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/linecaps.wgsl").into()),
         });
         let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("siplot fill"),
@@ -522,6 +531,35 @@ impl CurvePipeline {
             cache: None,
         });
 
+        // Round joins/caps pipeline: a disc per vertex. Reuses the marker layout
+        // (same bindings: uniform + points + per-vertex colors) and pipeline
+        // layout, but the AA disc shader instead of the symbol shader.
+        let caps_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("siplot line caps pipeline"),
+            layout: Some(&marker_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &caps_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &caps_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Fill pipeline: its own layout (fill uniform at 0, the shared points at
         // 1, the baseline at 2). Two data-space triangles per segment.
         let fill_bind_group_layout =
@@ -666,6 +704,7 @@ impl CurvePipeline {
         Self {
             pipeline,
             marker_pipeline,
+            caps_pipeline,
             fill_pipeline,
             errorbar_pipeline,
             bind_group_layout,
@@ -711,6 +750,10 @@ pub struct GpuCurve {
     /// Marker uniform + bind group (shares the points buffer at binding 1).
     marker_params: wgpu::Buffer,
     marker_bind_group: wgpu::BindGroup,
+    /// Round joins/caps uniform + bind group (shares the points + per-vertex
+    /// color buffers; an AA disc of the line width at every vertex).
+    caps_params: wgpu::Buffer,
+    caps_bind_group: wgpu::BindGroup,
     /// Whether to draw the fill band between the curve and its baseline.
     fill: bool,
     /// Per-vertex baseline y (binding 2 of the fill layout); holds `count`
@@ -1008,6 +1051,34 @@ impl GpuCurve {
             ],
         });
 
+        // Round joins/caps uniform + bind group: reuses the marker layout,
+        // sharing the points buffer (binding 1) and the per-vertex color buffer
+        // (binding 2, so a join takes its own vertex's color).
+        let caps_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("siplot line caps params"),
+            size: std::mem::size_of::<MarkerParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let caps_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("siplot line caps bg"),
+            layout: &pipeline.marker_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: caps_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: points.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: vcolors.as_entire_binding(),
+                },
+            ],
+        });
+
         // Baseline buffer for fill. Sized to `capacity` (filled curves never
         // decimate, so `count == capacity`) when the curve is filled at
         // creation, else a 1-element placeholder.
@@ -1107,6 +1178,8 @@ impl GpuCurve {
             arclen_key: None,
             marker_params,
             marker_bind_group,
+            caps_params,
+            caps_bind_group,
             fill: curve.fill,
             baseline_buf,
             baseline_capacity,
@@ -1376,6 +1449,22 @@ impl GpuCurve {
         };
         queue.write_buffer(&self.marker_params, 0, bytemuck::bytes_of(&marker));
 
+        // Round joins/caps uniform: an AA disc of the line *width* at every
+        // vertex (radius = half the width), the curve color, and the same
+        // per-vertex-color flag so a coloured join takes its vertex's color.
+        // `symbol` is unused by the caps shader.
+        let caps = MarkerParams {
+            ortho,
+            color: self.color,
+            axis_log,
+            viewport_px,
+            half_size_px: 0.5 * self.width,
+            symbol: 0,
+            use_vertex_color: if self.vertex_color { 1.0 } else { 0.0 },
+            _pad: 0.0,
+        };
+        queue.write_buffer(&self.caps_params, 0, bytemuck::bytes_of(&caps));
+
         // Fill uniform shares the transform; the fill takes the curve color.
         let fill = FillParams {
             ortho,
@@ -1445,6 +1534,31 @@ impl GpuCurve {
         let vertices = 6 * (self.count - 1);
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw(0..vertices, 0..1);
+    }
+
+    /// Draw round joins/caps: an AA disc of the line width at every vertex, so a
+    /// sharp turn has no wedge gap (round join) and the two ends are rounded
+    /// (round cap), matching silx's pygfx `LineMaterial` default. Drawn with the
+    /// line (under markers). A no-op below two points, for a zero-width line, or
+    /// for a non-solid line: a dashed line is intentionally broken, so a disc at
+    /// every vertex would fill its gaps — dashes keep butt ends.
+    pub(crate) fn draw_caps(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &CurvePipeline,
+    ) {
+        if self.count < 2
+            || self.width <= 0.0
+            || !self.line_style.draws_line()
+            || self.line_style.dash_spec(self.width).is_some()
+        {
+            return;
+        }
+        // One disc quad (6 vertices) per point.
+        let vertices = 6 * self.count;
+        render_pass.set_pipeline(&pipeline.caps_pipeline);
+        render_pass.set_bind_group(0, &self.caps_bind_group, &[]);
         render_pass.draw(0..vertices, 0..1);
     }
 
