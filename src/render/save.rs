@@ -399,6 +399,56 @@ fn edf_header_field(header: &str, key: &str) -> Option<String> {
     })
 }
 
+/// Encode a 2D `uint8` mask `(height, width)` (row-major / C-order) as a
+/// single-page grayscale TIFF byte stream.
+///
+/// Mirrors silx `MaskToolsWidget.save(.., "tif")` (via fabio / `tifffile`): a
+/// 2D `uint8` image is exactly a `width × height` grayscale TIFF. Encoded with
+/// the image-rs `tiff` crate (uncompressed `Gray8`), so the row-major mask bytes
+/// map directly to scanlines. Fallible (the encoder writes into an in-memory
+/// buffer); `data` is expected to be `height * width` bytes long.
+pub fn encode_mask_tiff(height: u32, width: u32, data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use tiff::encoder::{TiffEncoder, colortype::Gray8};
+    let to_io = |e: tiff::TiffError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut encoder = TiffEncoder::new(&mut cursor).map_err(to_io)?;
+    encoder
+        .write_image::<Gray8>(width, height, data)
+        .map_err(to_io)?;
+    Ok(cursor.into_inner())
+}
+
+/// Decode a single-page grayscale `uint8` TIFF byte stream into
+/// `(height, width, data)` in C (row-major) order.
+///
+/// Accepts the 2D `uint8` layout that [`encode_mask_tiff`] / fabio / `tifffile`
+/// produce — any common single-channel compression (deflate/lzw/packbits) the
+/// `tiff` crate handles. A multi-channel (e.g. RGB) image, a non-`uint8` sample
+/// type, or a body whose length is not `width * height` is an
+/// [`std::io::ErrorKind::InvalidData`] error (a mask is a single-channel 2D
+/// `uint8` array, faithful to silx loading the image as a 2D mask).
+pub fn decode_mask_tiff(bytes: &[u8]) -> std::io::Result<(u32, u32, Vec<u8>)> {
+    use tiff::decoder::{Decoder, DecodingResult};
+    let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, msg.to_string());
+    let to_io = |e: tiff::TiffError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+
+    let mut decoder = Decoder::new(std::io::Cursor::new(bytes)).map_err(to_io)?;
+    let (width, height) = decoder.dimensions().map_err(to_io)?;
+    let data = match decoder.read_image().map_err(to_io)? {
+        DecodingResult::U8(v) => v,
+        _ => return Err(invalid("TIFF mask must be 8-bit (uint8) samples")),
+    };
+    // A 2D mask is single-channel: width*height samples. An RGB(A) image has
+    // 3/4× that and is not a mask.
+    let count = (width as usize) * (height as usize);
+    if data.len() != count {
+        return Err(invalid(
+            "TIFF mask must be single-channel (width * height uint8 samples)",
+        ));
+    }
+    Ok((height, width, data))
+}
+
 /// Standard base64 alphabet (RFC 4648), used by [`encode_svg`].
 const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1214,6 +1264,33 @@ mod tests {
         let mut short = encode_mask_edf(4, 4, &[1u8; 16]);
         short.truncate(short.len() - 8);
         let err = decode_mask_edf(&short).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn mask_tiff_round_trips_bytes_and_shape() {
+        // A small 2x3 uint8 mask round-trips through the grayscale TIFF codec
+        // with identical shape and row-major data (full uint8 range included).
+        let data: Vec<u8> = vec![0, 1, 127, 200, 254, 255];
+        let bytes = encode_mask_tiff(2, 3, &data).expect("encode");
+        let (h, w, out) = decode_mask_tiff(&bytes).expect("decode");
+        assert_eq!((h, w), (2, 3));
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn mask_tiff_rejects_a_multichannel_image() {
+        // An RGB (3-channel) TIFF is not a 2D uint8 mask: its sample count is
+        // 3 × width × height, so decode_mask_tiff must reject it rather than
+        // silently mis-shape the mask.
+        use tiff::encoder::{TiffEncoder, colortype::RGB8};
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        TiffEncoder::new(&mut cursor)
+            .unwrap()
+            .write_image::<RGB8>(2, 2, &[0u8; 12])
+            .unwrap();
+        let rgb_tiff = cursor.into_inner();
+        let err = decode_mask_tiff(&rgb_tiff).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 

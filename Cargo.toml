@@ -28,6 +28,11 @@ colorous = "1"
 # PNG encoding for save_graph (offscreen readback → file). Already in the tree
 # transitively via egui's image loading, so this pins no new major version.
 png = "0.18"
+# TIFF mask save/load (silx MaskToolsWidget save/load TIFF branch, via fabio /
+# tifffile). The image-rs `tiff` crate reads/writes a single-page grayscale
+# uint8 image — exactly a 2D uint8 mask. Default features cover the common
+# compressions (deflate/lzw/packbits) so masks other tools wrote still load.
+tiff = "0.11"
 # Native Save/load file dialog for the toolbar Save action (mirrors silx's QFileDialog).
 rfd = "0.17"
 # System clipboard for the toolbar Copy action (set_image with the wgpu readback RGBA).

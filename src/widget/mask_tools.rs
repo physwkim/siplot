@@ -1209,8 +1209,9 @@ impl MaskToolsWidget {
     /// Single owner of silx's crop/pad rule (`resizedMask[:h, :w] =
     /// mask[:h, :w]`, gui/plot/MaskToolsWidget.py:350-368) shared by every
     /// file-format loader ([`read_npy`](Self::read_npy),
-    /// [`read_edf`](Self::read_edf)). Returns `true` when the loaded shape
-    /// differed from the current image (silx raises `RuntimeWarning`).
+    /// [`read_edf`](Self::read_edf), [`read_tiff`](Self::read_tiff)). Returns
+    /// `true` when the loaded shape differed from the current image (silx raises
+    /// `RuntimeWarning`).
     fn apply_loaded_mask(&mut self, height: u32, width: u32, data: Vec<u8>) -> bool {
         let resized = height != self.height || width != self.width;
         if resized {
@@ -1255,6 +1256,29 @@ impl MaskToolsWidget {
         let mut bytes = Vec::new();
         r.read_to_end(&mut bytes)?;
         let (height, width, data) = crate::render::save::decode_mask_edf(&bytes)?;
+        Ok(self.apply_loaded_mask(height, width, data))
+    }
+
+    /// Write the current mask as a single-page grayscale TIFF stream.
+    ///
+    /// Mirrors silx `MaskToolsWidget.save(filename, "tif")` (fabio / `tifffile`)
+    /// for the `uint8` mask; the byte format lives in the single-owner codec
+    /// [`crate::render::save::encode_mask_tiff`].
+    pub fn write_tiff(&self, w: &mut impl Write) -> io::Result<()> {
+        let bytes = crate::render::save::encode_mask_tiff(self.height, self.width, &self.mask)?;
+        w.write_all(&bytes)
+    }
+
+    /// Read a 2D `uint8` TIFF mask and apply it, cropping or padding to the
+    /// current image geometry (silx `MaskToolsWidget.load`, TIFF branch).
+    ///
+    /// Returns `Ok(true)` when the loaded shape differed from the current image
+    /// (a resize occurred), `Ok(false)` when it matched. Decoded by the
+    /// single-owner codec [`crate::render::save::decode_mask_tiff`].
+    pub fn read_tiff(&mut self, mut r: impl Read) -> io::Result<bool> {
+        let mut bytes = Vec::new();
+        r.read_to_end(&mut bytes)?;
+        let (height, width, data) = crate::render::save::decode_mask_tiff(&bytes)?;
         Ok(self.apply_loaded_mask(height, width, data))
     }
 
@@ -1342,11 +1366,53 @@ impl MaskToolsWidget {
         self.load_edf(path)
     }
 
+    /// Save the current mask to a `.tif`/`.tiff` file.
+    ///
+    /// File wrapper over [`write_tiff`](Self::write_tiff); see it for the format.
+    pub fn save_tiff(&self, path: impl AsRef<std::path::Path>) -> io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        let mut writer = io::BufWriter::new(file);
+        self.write_tiff(&mut writer)?;
+        writer.flush()
+    }
+
+    /// Load a mask from a `.tif`/`.tiff` file, cropping/padding to the current
+    /// image.
+    ///
+    /// File wrapper over [`read_tiff`](Self::read_tiff); returns `Ok(true)` when
+    /// the loaded shape differed from the current image (resize occurred).
+    pub fn load_tiff(&mut self, path: impl AsRef<std::path::Path>) -> io::Result<bool> {
+        let file = std::fs::File::open(path)?;
+        let reader = io::BufReader::new(file);
+        self.read_tiff(reader)
+    }
+
+    /// Save the current mask to a TIFF file at the given in-app path string
+    /// (silx `MaskToolsWidget.save(filename, "tif")`).
+    ///
+    /// Takes a plain `&str` path entered in-app rather than opening a native
+    /// file dialog. The TIFF bytes are produced by the single-owner codec
+    /// [`crate::render::save::encode_mask_tiff`].
+    pub fn save_mask_tiff(&self, path: &str) -> io::Result<()> {
+        self.save_tiff(path)
+    }
+
+    /// Load a mask from a TIFF file at the given in-app path string, cropping or
+    /// padding to the current image geometry (silx `MaskToolsWidget.load`, TIFF
+    /// branch).
+    ///
+    /// Takes a plain `&str` path entered in-app rather than opening a native
+    /// file dialog. Returns `Ok(true)` when the loaded shape differed from the
+    /// current image. The bytes are decoded by the single-owner codec
+    /// [`crate::render::save::decode_mask_tiff`].
+    pub fn load_mask_tiff(&mut self, path: &str) -> io::Result<bool> {
+        self.load_tiff(path)
+    }
+
     /// Open a native save-file dialog (silx `MaskToolsWidget._saveMask`) and
-    /// write the current mask to the chosen path, dispatching to the `.npy` or
-    /// `.edf` codec by file extension — the two mask formats siplot encodes
-    /// without an external crate (silx also offers TIFF/HDF5/msk, which are
-    /// crate-bound and remain unsupported here). An extensionless path defaults
+    /// write the current mask to the chosen path, dispatching to the `.npy`,
+    /// `.edf`, or `.tif`/`.tiff` codec by file extension (silx also offers
+    /// HDF5/msk, which remain unsupported here). An extensionless path defaults
     /// to `.npy` (silx's default kind); an unsupported extension is rejected
     /// (faithful to silx `save` raising on an unknown kind). Returns `Ok(true)`
     /// when a file was written, `Ok(false)` on cancel. The picker is a native
@@ -1356,6 +1422,7 @@ impl MaskToolsWidget {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("NumPy mask", &["npy"])
             .add_filter("EDF mask", &["edf"])
+            .add_filter("TIFF mask", &["tif", "tiff"])
             .save_file()
         else {
             return Ok(false);
@@ -1363,21 +1430,24 @@ impl MaskToolsWidget {
         match resolve_mask_save_format(&path)? {
             MaskFileFormat::Npy => self.save_npy(&path)?,
             MaskFileFormat::Edf => self.save_edf(&path)?,
+            MaskFileFormat::Tiff => self.save_tiff(&path)?,
         }
         Ok(true)
     }
 
     /// Open a native open-file dialog (silx `MaskToolsWidget._loadMask`) and load
-    /// a mask from the chosen path, dispatching by extension (`.npy`/`.edf`) and
-    /// cropping/padding to the current image. Returns `Ok(Some(resized))` — where
-    /// `resized` is `true` when the loaded shape differed from the current image
-    /// — or `Ok(None)` on cancel. An unknown extension is rejected (faithful to
-    /// silx `load` raising on an unknown extension). Native shim; the codecs and
-    /// the extension dispatch ([`resolve_mask_load_format`]) are unit-tested.
+    /// a mask from the chosen path, dispatching by extension
+    /// (`.npy`/`.edf`/`.tif`/`.tiff`) and cropping/padding to the current image.
+    /// Returns `Ok(Some(resized))` — where `resized` is `true` when the loaded
+    /// shape differed from the current image — or `Ok(None)` on cancel. An
+    /// unknown extension is rejected (faithful to silx `load` raising on an
+    /// unknown extension). Native shim; the codecs and the extension dispatch
+    /// ([`resolve_mask_load_format`]) are unit-tested.
     pub fn load_mask_dialog(&mut self) -> io::Result<Option<bool>> {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("NumPy mask", &["npy"])
             .add_filter("EDF mask", &["edf"])
+            .add_filter("TIFF mask", &["tif", "tiff"])
             .pick_file()
         else {
             return Ok(None);
@@ -1385,18 +1455,20 @@ impl MaskToolsWidget {
         let resized = match resolve_mask_load_format(&path)? {
             MaskFileFormat::Npy => self.load_npy(&path)?,
             MaskFileFormat::Edf => self.load_edf(&path)?,
+            MaskFileFormat::Tiff => self.load_tiff(&path)?,
         };
         Ok(Some(resized))
     }
 }
 
-/// The mask file formats siplot can encode/decode without an external crate
-/// (silx `MaskToolsWidget` save/load also handle TIFF/HDF5/msk, which are
-/// crate-bound and unsupported here).
+/// The mask file formats siplot can encode/decode (silx `MaskToolsWidget`
+/// save/load additionally handle HDF5 and fit2d `.msk`, which remain
+/// unsupported here).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MaskFileFormat {
     Npy,
     Edf,
+    Tiff,
 }
 
 /// Map a (case-insensitive) file extension to its [`MaskFileFormat`], or `None`
@@ -1407,6 +1479,7 @@ fn mask_format_for_ext(ext: &str) -> Option<MaskFileFormat> {
     match ext.to_ascii_lowercase().as_str() {
         "npy" => Some(MaskFileFormat::Npy),
         "edf" => Some(MaskFileFormat::Edf),
+        "tif" | "tiff" => Some(MaskFileFormat::Tiff),
         _ => None,
     }
 }
@@ -1420,7 +1493,7 @@ fn resolve_mask_save_format(path: &std::path::Path) -> io::Result<MaskFileFormat
         Some(ext) => mask_format_for_ext(ext).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unsupported mask format: .{ext} (siplot writes .npy/.edf)"),
+                format!("unsupported mask format: .{ext} (siplot writes .npy/.edf/.tif)"),
             )
         }),
     }
@@ -1436,7 +1509,7 @@ fn resolve_mask_load_format(path: &std::path::Path) -> io::Result<MaskFileFormat
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "unsupported mask format (siplot reads .npy/.edf)",
+                "unsupported mask format (siplot reads .npy/.edf/.tif)",
             )
         })
 }
@@ -1785,9 +1858,18 @@ mod tests {
             resolve_mask_save_format(Path::new("mask")).unwrap(),
             MaskFileFormat::Npy
         );
-        // An unsupported extension is rejected, not silently written as npy.
-        assert!(resolve_mask_save_format(Path::new("m.tif")).is_err());
+        // TIFF (.tif/.tiff, case-insensitive) is now a supported format.
+        assert_eq!(
+            resolve_mask_save_format(Path::new("m.tif")).unwrap(),
+            MaskFileFormat::Tiff
+        );
+        assert_eq!(
+            resolve_mask_save_format(Path::new("M.TIFF")).unwrap(),
+            MaskFileFormat::Tiff
+        );
+        // A still-unsupported extension is rejected, not silently written as npy.
         assert!(resolve_mask_save_format(Path::new("m.h5")).is_err());
+        assert!(resolve_mask_save_format(Path::new("m.msk")).is_err());
     }
 
     #[test]
@@ -1805,11 +1887,16 @@ mod tests {
             resolve_mask_load_format(Path::new("m.Npy")).unwrap(),
             MaskFileFormat::Npy
         );
+        // TIFF (.tif/.tiff) is now a supported load format.
+        assert_eq!(
+            resolve_mask_load_format(Path::new("m.tiff")).unwrap(),
+            MaskFileFormat::Tiff
+        );
         // A file's format cannot be guessed: a missing or unsupported extension
         // errors (faithful to silx `load` raising on an unknown extension).
         assert!(resolve_mask_load_format(Path::new("mask")).is_err());
-        assert!(resolve_mask_load_format(Path::new("m.tif")).is_err());
         assert!(resolve_mask_load_format(Path::new("m.h5")).is_err());
+        assert!(resolve_mask_load_format(Path::new("m.msk")).is_err());
     }
 
     #[test]
@@ -2582,6 +2669,40 @@ mod tests {
 
         let mut small = MaskToolsWidget::new(2, 2);
         let resized = small.read_edf(buf.as_slice()).unwrap();
+        assert!(resized, "shape mismatch must report a resize");
+        assert_eq!(small.mask, vec![1, 2, 4, 5]);
+    }
+
+    #[test]
+    fn tiff_round_trips_via_read_write() {
+        // A same-shape TIFF write -> read is bit-identical with no resize.
+        let mut src = MaskToolsWidget::new(3, 2); // width 3, height 2
+        src.mask = vec![0, 1, 2, 200, 254, 255];
+        let mut buf = Vec::new();
+        src.write_tiff(&mut buf).unwrap();
+
+        let mut dst = MaskToolsWidget::new(3, 2);
+        let resized = dst.read_tiff(buf.as_slice()).unwrap();
+        assert!(!resized, "same shape must not report a resize");
+        assert_eq!(dst.mask, vec![0, 1, 2, 200, 254, 255]);
+        assert!(dst.can_undo(), "load must commit to history");
+    }
+
+    #[test]
+    fn tiff_load_crops_larger_mask() {
+        // Loaded 3x3 TIFF mask into a 2x2 widget: crop to the top-left 2x2 and
+        // report a resize (the shared apply_loaded_mask crop/pad owner).
+        let mut big = MaskToolsWidget::new(3, 3);
+        big.mask = vec![
+            1, 2, 3, //
+            4, 5, 6, //
+            7, 8, 9, //
+        ];
+        let mut buf = Vec::new();
+        big.write_tiff(&mut buf).unwrap();
+
+        let mut small = MaskToolsWidget::new(2, 2);
+        let resized = small.read_tiff(buf.as_slice()).unwrap();
         assert!(resized, "shape mismatch must report a resize");
         assert_eq!(small.mask, vec![1, 2, 4, 5]);
     }
