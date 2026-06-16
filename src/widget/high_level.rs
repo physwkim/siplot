@@ -3186,6 +3186,23 @@ fn draw_legend_symbol(
             egui::pos2(c.x - half, c.y - half),
             egui::pos2(c.x + half, c.y - half),
         ),
+        Symbol::Heart => {
+            // Two upper humps + a lower point: a simplified filled heart icon for
+            // the legend, standing in for the GPU cardioid marker (silx '♥').
+            let hump = half * 0.5;
+            let hy = c.y - half * 0.35;
+            painter.circle_filled(egui::pos2(c.x - half * 0.45, hy), hump, color);
+            painter.circle_filled(egui::pos2(c.x + half * 0.45, hy), hump, color);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x - half * 0.95, hy),
+                    egui::pos2(c.x + half * 0.95, hy),
+                    egui::pos2(c.x, c.y + half * 0.95),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
     }
 }
 

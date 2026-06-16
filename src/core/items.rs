@@ -71,8 +71,8 @@ impl LineStyle {
 
 /// Marker symbol drawn at each curve vertex (silx `addCurve` `symbol`). The
 /// catalog mirrors silx's full GL-backend symbol set (`silx.gui.plot.items.core`
-/// `SymbolMixIn._SUPPORTED_SYMBOLS`); [`Symbol::Triangle`] is an egui extra silx
-/// has no code for. The `Heart` glyph (silx `'♥'`) is not implemented.
+/// `SymbolMixIn._SUPPORTED_SYMBOLS`), including the `'♥'` [`Symbol::Heart`]
+/// glyph; [`Symbol::Triangle`] is an egui extra silx has no code for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
     /// Circle marker. silx `'o'`.
@@ -111,6 +111,8 @@ pub enum Symbol {
     CaretUp,
     /// Down-pointing open caret. silx `'caretdown'`.
     CaretDown,
+    /// Heart glyph. silx `'♥'` (U+2665).
+    Heart,
 }
 
 impl Symbol {
@@ -135,6 +137,7 @@ impl Symbol {
             Symbol::CaretRight => 15,
             Symbol::CaretUp => 16,
             Symbol::CaretDown => 17,
+            Symbol::Heart => 18,
         }
     }
 
@@ -186,6 +189,7 @@ impl Symbol {
             Symbol::CaretRight => "caretright",
             Symbol::CaretUp => "caretup",
             Symbol::CaretDown => "caretdown",
+            Symbol::Heart => "\u{2665}",
             Symbol::Triangle => return None,
         })
     }
@@ -193,10 +197,10 @@ impl Symbol {
     /// Parse a silx symbol code or human-readable name into a [`Symbol`], or
     /// `None` if unrecognized. Mirrors silx `SymbolMixIn.setSymbol`: a code from
     /// `_SUPPORTED_SYMBOLS` matches first, otherwise the human-readable name is
-    /// matched case-insensitively. silx's empty-string ("None") symbol and the
-    /// `'♥'` Heart glyph are not representable here, so they return `None`.
-    /// [`Symbol::Triangle`] has no silx code and is reachable only by its name
-    /// `"triangle"`.
+    /// matched case-insensitively (so `'♥'` or `"heart"` both give
+    /// [`Symbol::Heart`]). silx's empty-string ("None") symbol is not
+    /// representable here, so it returns `None`. [`Symbol::Triangle`] has no
+    /// silx code and is reachable only by its name `"triangle"`.
     pub fn from_code(s: &str) -> Option<Symbol> {
         let symbol = match s {
             "o" => Symbol::Circle,
@@ -216,6 +220,7 @@ impl Symbol {
             "caretright" => Symbol::CaretRight,
             "caretup" => Symbol::CaretUp,
             "caretdown" => Symbol::CaretDown,
+            "\u{2665}" => Symbol::Heart,
             // Not a silx code: case-insensitive match on the human-readable name.
             _ => {
                 return match s.to_ascii_lowercase().as_str() {
@@ -236,6 +241,7 @@ impl Symbol {
                     "caret right" => Some(Symbol::CaretRight),
                     "caret up" => Some(Symbol::CaretUp),
                     "caret down" => Some(Symbol::CaretDown),
+                    "heart" => Some(Symbol::Heart),
                     "triangle" => Some(Symbol::Triangle),
                     _ => None,
                 };
@@ -267,16 +273,17 @@ impl Symbol {
             Symbol::CaretRight => "Caret right",
             Symbol::CaretUp => "Caret up",
             Symbol::CaretDown => "Caret down",
+            Symbol::Heart => "Heart",
             Symbol::Triangle => "Triangle",
         }
     }
 
     /// Every supported symbol, ordered to match silx `_SUPPORTED_SYMBOLS`
     /// (silx `getSupportedSymbols`) with [`Symbol::Triangle`] — an egui extra
-    /// silx lacks — appended last. silx's empty "None" symbol and the `'♥'`
-    /// Heart glyph are not representable here and so are absent (see
-    /// [`Symbol::from_code`]). Used to build the silx `SymbolToolButton` menu.
-    pub const ALL: [Symbol; 18] = [
+    /// silx lacks — appended last. silx's empty "None" symbol is not
+    /// representable here and so is absent (see [`Symbol::from_code`]). Used to
+    /// build the silx `SymbolToolButton` menu.
+    pub const ALL: [Symbol; 19] = [
         Symbol::Circle,
         Symbol::Diamond,
         Symbol::Square,
@@ -294,6 +301,7 @@ impl Symbol {
         Symbol::CaretRight,
         Symbol::CaretUp,
         Symbol::CaretDown,
+        Symbol::Heart,
         Symbol::Triangle,
     ];
 }
@@ -545,6 +553,7 @@ mod tests {
         ("caretright", Symbol::CaretRight),
         ("caretup", Symbol::CaretUp),
         ("caretdown", Symbol::CaretDown),
+        ("\u{2665}", Symbol::Heart),
     ];
 
     #[test]
@@ -592,6 +601,7 @@ mod tests {
         assert_eq!(Symbol::from_code("Caret right"), Some(Symbol::CaretRight));
         assert_eq!(Symbol::from_code("Caret up"), Some(Symbol::CaretUp));
         assert_eq!(Symbol::from_code("Caret down"), Some(Symbol::CaretDown));
+        assert_eq!(Symbol::from_code("Heart"), Some(Symbol::Heart));
     }
 
     #[test]
@@ -604,21 +614,30 @@ mod tests {
 
     #[test]
     fn from_code_rejects_unsupported_codes() {
-        // silx None symbol (empty string), the Heart glyph, and any garbage.
+        // silx None symbol (empty string) and any garbage.
         assert_eq!(Symbol::from_code(""), None);
-        assert_eq!(Symbol::from_code("\u{2665}"), None);
-        assert_eq!(Symbol::from_code("heart"), None);
         assert_eq!(Symbol::from_code("nope"), None);
     }
 
     #[test]
+    fn heart_is_supported_by_glyph_name_and_code() {
+        // silx '♥' (U+2665) is the last entry in `_SUPPORTED_SYMBOLS`.
+        assert_eq!(Symbol::from_code("\u{2665}"), Some(Symbol::Heart));
+        assert_eq!(Symbol::from_code("heart"), Some(Symbol::Heart));
+        assert_eq!(Symbol::from_code("Heart"), Some(Symbol::Heart));
+        assert_eq!(Symbol::Heart.code_str(), Some("\u{2665}"));
+        assert_eq!(Symbol::Heart.code(), 18);
+        assert_eq!(Symbol::Heart.name(), "Heart");
+    }
+
+    #[test]
     fn all_catalog_covers_every_variant_with_unique_round_tripping_names() {
-        // `ALL` lists every variant exactly once (17 silx symbols + Triangle).
-        assert_eq!(Symbol::ALL.len(), 18);
+        // `ALL` lists every variant exactly once (18 silx symbols + Triangle).
+        assert_eq!(Symbol::ALL.len(), 19);
         let mut names: Vec<&str> = Symbol::ALL.iter().map(|s| s.name()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 18, "symbol names must be unique");
+        assert_eq!(names.len(), 19, "symbol names must be unique");
         // Every catalog name parses back to the same symbol (silx getSymbolName /
         // setSymbol round-trip), so the tool-button labels are valid codes.
         for symbol in Symbol::ALL {

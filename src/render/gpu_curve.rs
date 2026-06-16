@@ -1605,6 +1605,7 @@ mod tests {
         assert_eq!(Symbol::CaretRight.code(), 15);
         assert_eq!(Symbol::CaretUp.code(), 16);
         assert_eq!(Symbol::CaretDown.code(), 17);
+        assert_eq!(Symbol::Heart.code(), 18);
     }
 
     #[test]

@@ -14,7 +14,7 @@ struct Params {
     half_size_px: f32,        // half the marker size, in physical pixels
     // 0 circle, 1 square, 2 cross, 3 plus, 4 triangle, 5 diamond, 6 point,
     // 7 pixel, 8 vertical line, 9 horizontal line, 10..13 tick left/right/up/down,
-    // 14..17 caret left/right/up/down (matches Symbol::code).
+    // 14..17 caret left/right/up/down, 18 heart (matches Symbol::code).
     symbol: u32,
     use_vertex_color: f32,    // >0.5 to take each marker's color from `vcolors`
 };
@@ -152,6 +152,20 @@ fn inside(uv: vec2<f32>) -> bool {
         }
         case 17u: { // caret down: silx |pix.y| - |pix.x| >= -0.1, pix.y < 0.5
             return pix.y < 0.5 && (abs(pix.y) - abs(pix.x)) >= -0.1;
+        }
+        case 18u: { // heart: silx cardioid SDF (GLPlotCurve.py HEART fragment).
+            // silx works in `coord = (gl_PointCoord - 0.5) * 2`, which is exactly
+            // our `uv`. It then scales, biases, and tests r - d(theta) against the
+            // implicit heart curve. silx feathers the edge with
+            // smoothstep(0.1, 0.001, r - d); the 0.5-alpha silhouette contour sits
+            // at r - d ~= 0.05, which we use as the hard inside test.
+            var p = uv * 0.75;
+            p.y = p.y + 0.25;
+            let a = atan2(p.x, -p.y) / 3.141593;
+            let r = length(p);
+            let h = abs(a);
+            let d = (13.0 * h - 22.0 * h * h + 10.0 * h * h * h) / (6.0 - 5.0 * h);
+            return (r - d) <= 0.05;
         }
         default: {
             return dot(uv, uv) <= 1.0;
