@@ -11,6 +11,12 @@ library), **sidm** (a PyDM-style EPICS display layer built on siplot), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-16
+
+This release completes the `silx.gui.plot` 2D parity port (the queue is now
+exhausted save for a handful of documented platform/perf residuals) and adds a
+full true-3D scene subsystem ported from `silx.gui.plot3d`.
+
 ### Added — `siplot` 3D scene subsystem (`silx.gui.plot3d` port)
 
 A full true-3D scene stack ported from `silx.gui.plot3d` onto siplot's
@@ -54,6 +60,61 @@ blits into egui's color-only render pass. Tracked wave by wave in
   `_pickFull` richer payloads (data-index/bin resolution, image pixel indices —
   beyond world position + sampled value) and its generic `plot3d._model`
   scene-graph tree editor are deferred, noted in the roadmap rather than stubbed.
+
+### Added — `siplot` 2D plotting completions (`silx.gui.plot` parity)
+
+The remaining `silx.gui.plot` gaps were closed, finishing the parity port begun
+in 0.1.0 / 0.2.0. Tracked row by row in `doc/parity-roadmap.md`.
+
+- **`ImageStack` lazy/threaded loading**: a second mode beside the in-memory
+  `set_frames` — `set_sources` + a pluggable `set_loader` (`FrameLoader` trait,
+  silx `setUrls`/`setUrlLoaderClass`) load each slot on a background thread, with
+  a configurable prefetch radius (`set_n_prefetch`, silx `_preFetch`/`N_PRELOAD`)
+  that preloads neighbours as you browse. A concrete `Hdf5FrameLoader` reads 2D
+  datasets and 3D-stack slices on demand, and the frame table shows each source
+  URL with a per-row remove (silx `UrlList`/`removeUrl`).
+- **`CompareImages` SIFT auto-alignment**: the `AUTO` mode registers image B onto
+  image A via SIFT keypoints + affine least squares (`core::sift_align` on the
+  pure-Rust `lowe-sift` crate, mirroring silx `__createSiftData`→`LinearAlign`),
+  with `transformation()` exposing the decomposed affine (silx `getTransformation`),
+  an `Align:` status-bar summary, and a toggleable matched-keypoint overlay.
+- **`PrintPreview` page editor**: a print-preview window with page layout/scale
+  controls (silx `PrintPreviewToolButton`/`PrintPreviewDialog`).
+- **Mask file save/load — all five silx formats**: npy, EDF (fabio-style), TIFF,
+  HDF5 (with a "Select a 2D dataset" picker, faithful to silx's `"a"` append
+  mode), and fit2d `.msk` (byte-verified against fabio), behind native Load/Save
+  toolbar actions.
+- **Per-pixel image alpha map** (silx `ImageData.setAlphaData`), preserved across
+  image re-uploads.
+- **Round line joins + caps** for thick polylines (silx line-join rendering).
+- Completed interactive 2D tooling: the ruler measurement tool, `PositionInfo`
+  live cursor snapping, the `AlphaSlider` active-image binding, the
+  `ComplexImageView` amplitude-range dialog, the `StackView` 3D-profile toolbar +
+  2D stacked-profile window, the `CompareImages` draggable split separator, the
+  `ScatterView` line-/scatter-profile tools, and the ROI manager table widget
+  with Arc three-point/polar modes, Band unbounded mode, an interaction-mode
+  submenu, save/load dialogs, the `sigRoiAboutToBeRemoved` signal, and concave
+  polygon fill via ear-clipping triangulation.
+- **Colormap registry**: `register_colormap` for named LUTs and colormap-state
+  serialization round-trips.
+
+### Changed — `siplot`
+
+- New optional-feature-free dependencies scoped to the mask/alignment work:
+  `tiff` and the pure-Rust `rust-hdf5` (mask TIFF/HDF5 save/load) and `lowe-sift`
+  (CompareImages AUTO alignment). All are plain build-everywhere crates — no
+  native `libhdf5` and no Python/OpenCV.
+
+### Note on parity scope
+
+The `silx.gui.plot` parity queue is exhausted. The remaining non-ported items
+are documented accepted residuals, not omissions: custom marker fonts (egui
+`FontId` cannot express QFont weight/italic without bundled font assets), async
+GPU stats/histogram (CPU equivalents are complete), the mid-gesture
+`sigInteractiveRoiCreated` signal (immediate-mode emits `DrawingProgress`
+instead), runtime matplotlib-dynamic colormap loading (needs a Python
+dependency), a native print dialog/printer submission (OS-native; the preview is
+ported), and an OpenGL backend selector (N/A — siplot is wgpu-only).
 
 ## [0.2.0] - 2026-06-13
 
@@ -141,6 +202,7 @@ instead of Qt `.ui` XML.
 - siplot is now the root of a three-crate workspace; `sidm` reaches egui/wgpu
   through `siplot::egui` to keep a single egui/wgpu in the tree.
 
-[Unreleased]: https://github.com/physwkim/siplot/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/physwkim/siplot/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/physwkim/siplot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/physwkim/siplot/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/physwkim/siplot/releases/tag/v0.1.0
